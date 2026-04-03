@@ -4,3 +4,4 @@ resources:
   - kape.io_kapehandlers.yaml
   - kape.io_kapetools.yaml
   - kape.io_kapeschemas.yaml
+  - kape-handler-webhook.yaml

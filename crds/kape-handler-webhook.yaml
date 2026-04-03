@@ -1,0 +1,35 @@
+# ValidatingWebhookConfiguration for KapeHandler cross-resource checks.
+# Implements H1 (schemaRef existence), H2 (minReplicas <= maxReplicas), H3 (llm.provider supported).
+# The webhook server is implemented in the operator binary (Phase 2).
+# cert-manager injects the caBundle via the annotation below.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: kape-handler-validator
+  annotations:
+    cert-manager.io/inject-ca-from: kape-system/kape-operator-webhook-cert
+spec:
+  webhooks:
+    - name: kapehandler.kape.io
+      admissionReviewVersions: ["v1"]
+      sideEffects: None
+      failurePolicy: Fail
+      matchPolicy: Equivalent
+      rules:
+        - apiGroups: ["kape.io"]
+          apiVersions: ["v1alpha1"]
+          operations: ["CREATE", "UPDATE"]
+          resources: ["kapehandlers"]
+          scope: "Namespaced"
+      clientConfig:
+        service:
+          name: kape-operator-webhook
+          namespace: kape-system
+          port: 9443
+          path: /validate-kape-io-v1alpha1-kapehandler
+        caBundle: ""
+      namespaceSelector:
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values: ["kube-system"]
