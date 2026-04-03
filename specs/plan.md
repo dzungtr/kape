@@ -75,7 +75,7 @@ Before starting any session, Claude must treat the following as settled design d
 | 9       | UI Dashboard design                                           | ✅ Done | `kape-dashboard-design.md`         |
 | 10      | CRD CEL validation rules                                      | ✅ Done | `kape-cel-validation.md`           |
 | 11      | Repository structure and project layout                       | ✅ Done | `kape-repo-structure.md`           |
-| 12      | v1 implementation roadmap                                     | ⬜      | `kape-v1-roadmap.md`               |
+| 12      | v1 implementation roadmap                                     | ✅ Done | `kape-v1-roadmap.md`               |
 | 13      | v2 design: Argo, KapePolicy, KapeConfig                       | ⬜      | `kape-v2-design.md`                |
 
 ---
