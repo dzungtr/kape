@@ -73,8 +73,8 @@ Before starting any session, Claude must treat the following as settled design d
 | 7       | Security hardening deep dive                                  | ✅ Done | `kape-security-design.md`          |
 | 8       | Audit DB and Task record schema                               | ✅ Done | `kape-audit-design.md`             |
 | 9       | UI Dashboard design                                           | ✅ Done | `kape-dashboard-design.md`         |
-| 10      | CRD CEL validation rules                                      | ⬜      | `kape-cel-validation.md`           |
-| 11      | Repository structure and project layout                       | ⬜      | `kape-repo-structure.md`           |
+| 10      | CRD CEL validation rules                                      | ✅ Done | `kape-cel-validation.md`           |
+| 11      | Repository structure and project layout                       | ✅ Done | `kape-repo-structure.md`           |
 | 12      | v1 implementation roadmap                                     | ⬜      | `kape-v1-roadmap.md`               |
 | 13      | v2 design: Argo, KapePolicy, KapeConfig                       | ⬜      | `kape-v2-design.md`                |
 

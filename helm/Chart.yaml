@@ -1,0 +1,16 @@
+apiVersion: v2
+name: kape
+description: Kubernetes Agentic Platform Execution
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - ai
+  - agent
+  - kape
+home: https://github.com/kape-io/kape
+sources:
+  - https://github.com/kape-io/kape
+maintainers:
+  - name: Dzung Tran

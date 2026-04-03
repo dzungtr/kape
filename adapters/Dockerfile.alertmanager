@@ -1,0 +1,9 @@
+FROM golang:1.23-alpine AS builder
+WORKDIR /workspace
+COPY go.work go.work.sum ./
+COPY adapters/ adapters/
+RUN go build -o /out/kape-adapter-alertmanager ./adapters/cmd/alertmanager/...
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /out/kape-adapter-alertmanager /kape-adapter-alertmanager
+ENTRYPOINT ["/kape-adapter-alertmanager"]

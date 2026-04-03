@@ -1,0 +1,55 @@
+operator:
+  image:
+    repository: ghcr.io/kape-io/kape-operator
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  leaderElect: true
+
+taskService:
+  image:
+    repository: ghcr.io/kape-io/kape-task-service
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  database:
+    secretName: kape-task-service-db
+
+runtime:
+  image:
+    repository: ghcr.io/kape-io/kape-runtime
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+dashboard:
+  image:
+    repository: ghcr.io/kape-io/kape-dashboard
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  ingress:
+    enabled: false
+    host: ""
+
+adapters:
+  falco:
+    enabled: true
+    image:
+      repository: ghcr.io/kape-io/kape-adapter-falco
+      tag: "0.1.0"
+  alertmanager:
+    enabled: false
+    image:
+      repository: ghcr.io/kape-io/kape-adapter-alertmanager
+      tag: "0.1.0"
+  audit:
+    enabled: false
+    image:
+      repository: ghcr.io/kape-io/kape-adapter-audit
+      tag: "0.1.0"
+
+nats:
+  replicaCount: 1
+  storage: 10Gi
+
+namespace: kape-system

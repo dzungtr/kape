@@ -1,0 +1,10 @@
+go 1.23
+
+use (
+	./operator/domain
+	./operator/infra
+	./operator/controller
+	./operator/cmd
+	./task-service
+	./adapters
+)

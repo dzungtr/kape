@@ -1,0 +1,23 @@
+# Go
+bin/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+build/
+
+# Generated
+crds/*.yaml
+!crds/kustomization.yaml
+dashboard/app/types/generated/*.ts
+
+# IDE
+.idea/
+.vscode/
+*.swp
