@@ -25,9 +25,9 @@ type TriggerSpec struct {
 	Dedup *DedupSpec `json:"dedup,omitempty"`
 
 	// ReplayOnStartup controls whether events are replayed on handler startup.
-	// +kubebuilder:default=true
 	// +optional
-	ReplayOnStartup bool `json:"replayOnStartup,omitempty"`
+	// +kubebuilder:default=true
+	ReplayOnStartup *bool `json:"replayOnStartup,omitempty"`
 
 	// MaxEventAgeSeconds is the maximum age of events to process, in seconds.
 	// +kubebuilder:validation:Minimum=0
@@ -100,6 +100,8 @@ type ActionSpec struct {
 	Name string `json:"name"`
 
 	// Condition is a CEL expression that must evaluate to true for this action to execute.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Condition string `json:"condition"`
 
 	// Type specifies the action implementation.
