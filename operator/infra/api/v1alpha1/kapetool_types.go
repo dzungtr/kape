@@ -34,10 +34,10 @@ type RedactionSpec struct {
 
 // AuditSpec defines audit logging configuration for MCP tool calls.
 type AuditSpec struct {
-	// Enabled controls whether audit logging is active.
-	// +kubebuilder:default=true
+	// Enabled controls per-call audit logging. Defaults to true. Always true in v1.
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	// +kubebuilder:default=true
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // MCPSpec defines the configuration for an MCP server sidecar tool.
