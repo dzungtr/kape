@@ -16,14 +16,13 @@ type JSONSchemaObject struct {
 	// +kubebuilder:validation:MinItems=1
 	Required []string `json:"required"`
 
-	// properties defines the schema properties.
+	// properties defines the schema properties as a map of raw JSON schema objects.
 	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties map[string]apiextensionsv1.JSONSchemaProps `json:"properties"`
+	Properties map[string]apiextensionsv1.JSON `json:"properties"`
 
-	// additionalProperties optionally restricts or allows additional properties.
-	// +kubebuilder:pruning:PreserveUnknownFields
+	// additionalProperties when set to false disallows any properties not listed in properties.
 	// +optional
-	AdditionalProperties *apiextensionsv1.JSONSchemaPropsOrBool `json:"additionalProperties,omitempty"`
+	AdditionalProperties *bool `json:"additionalProperties,omitempty"`
 }
 
 // KapeSchemaSpec defines the desired state of KapeSchema.
