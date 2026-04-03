@@ -21,3 +21,6 @@ dashboard/app/types/generated/*.ts
 .idea/
 .vscode/
 *.swp
+
+# Git worktrees
+.worktrees/
