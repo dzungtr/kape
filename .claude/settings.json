@@ -33,12 +33,9 @@
       "Bash(git show:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git pull:*)",
-      "mcp__sequentialthinking__sequentialthinking"
+      "Bash(git pull:*)"
     ],
-    "deny": [
-      "Bash(go install:*)",
-      "Bash(rm -rf /)"
-    ]
+    "deny": ["Bash(go install:*)", "Bash(rm -rf /)"]
   }
 }
+
