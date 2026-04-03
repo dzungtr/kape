@@ -394,35 +394,17 @@ to decide the database technology, full schema with types and indexes, Task life
 state machine, and query patterns the UI Dashboard will need.
 ```
 
-**Topics to work through:**
+**Key decisions made:**
 
-**Database technology decision**
+- Database: **PostgreSQL via CloudNativePG** — mixed access patterns (point lookups + time-range scans + JSONB) make PostgreSQL the correct choice over ClickHouse
+- `tool_audit_log`: **dropped** — MCP tool call detail owned by OTEL backend via OpenInference; `kape.task_id` span attribute enables cross-referencing
+- `llm_prompt` / `llm_response`: **excluded** — owned by OTEL trace; doubles PII exposure with no query value
+- `event_raw`: **added** as permanent immutable JSONB — required for retry re-publish flow
+- Partitioning: **by month on `received_at`**
+- Handler health aggregates: **Prometheus/OTEL backend** — not re-derived from PostgreSQL
+- Dashboard elapsed time: **client-side** from `received_at` — no DB-layer computation
 
-- ClickHouse vs PostgreSQL — evaluate on: append-only write pattern, query performance for time-range scans, JSON column support for decision objects, operational simplicity in Kubernetes, existing team familiarity
-- Decide and document rationale
-
-**Task record full schema**
-
-- All fields from RFC with precise types, nullable/required, indexes
-- `tools_called` and `tool_results` — JSON array vs normalised table?
-- `llm_prompt` and `llm_response` — stored as text, encrypted at rest?
-- Partitioning strategy (by handler name? by time?)
-
-**Task lifecycle state machine**
-
-- States: `pending → running → completed / failed / low-confidence`
-- Transitions and what triggers each
-- Timeout: what happens if a running Task is never completed (pod crash mid-execution)?
-
-**UI Dashboard query patterns**
-
-- Live feed: all Tasks in last 5 minutes ordered by timestamp
-- Handler health: Task count, failure rate, avg latency grouped by handler
-- Decision distribution: count by decision value over time
-- DLQ monitor: Tasks with status failed, ordered by timestamp
-- Trace lookup: find Task by otel_trace_id
-
-**Expected output:** `kape-audit-design.md` — database choice with rationale, full schema DDL, state machine diagram, and query specifications.
+**Expected output:** `kape-audit-design.md` — database choice with rationale, full schema DDL, state machine, and access patterns.
 
 ---
 

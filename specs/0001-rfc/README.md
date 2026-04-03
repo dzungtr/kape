@@ -3,7 +3,7 @@
 **Status:** Draft
 **Author:** Dzung Tran
 **Created:** 2026-03-06
-**Last Updated:** 2026-04-01 (rev 5 — Session 6 event broker and CloudEvents adapter decisions applied)
+**Last Updated:** 2026-04-03 (rev 6 — Session 8 audit DB decisions applied)
 
 ---
 
@@ -142,14 +142,12 @@ There is no platform today that combines **event-driven signal collection**, **L
 │  - Task CRUD (PG)        │   │  kape.events.gitops.*             │
 │  - Timeout management    │   │    → gitops-pr-agent handler      │
 │  - Retry / redeliver     │   │  kape.events.security.*           │
-│  - Tool audit log        │   │    → next chained handler         │
-└──────────┬───────────────┘   └───────────────────────────────────┘
-           │
+└──────────┬───────────────┘   │    → next chained handler         │
+           │                   └───────────────────────────────────┘
            ▼
 ┌──────────────────────────┐
 │  PostgreSQL              │
 │  - tasks                 │
-│  - tool_audit_log        │
 └──────────┬───────────────┘
            │
            ▼
@@ -316,9 +314,6 @@ metadata:
   name: karpenter-consolidation-watcher
   namespace: kape-system
 spec:
-  # Subjects are producer-level. The engineer assigns kape.events.cost.karpenter
-  # via the kape_subject label on their PrometheusRule alert definition.
-  # Intra-producer selectivity uses trigger.filter.jsonpath.
   trigger:
     source: alertmanager
     type: kape.events.cost.karpenter
@@ -331,10 +326,6 @@ spec:
     replayOnStartup: true
     maxEventAgeSeconds: 300
 
-  # LLM provider, model, and reasoning instructions.
-  # systemPrompt is a Jinja2 template.
-  # Available context: handler_name, cluster_name, namespace,
-  # timestamp, event (full CloudEvents envelope), env (all injected envs)
   llm:
     provider: anthropic # anthropic | openai | azure-openai | ollama
     model: claude-sonnet-4-20250514
@@ -354,19 +345,13 @@ spec:
       Decide: ignore / investigate / change-required.
     maxIterations: 25 # default: 50 (from kape-config)
 
-  # KapeTool references available to the LLM during its ReAct loop.
-  # mcp and memory types only.
   tools:
     - ref: grafana-mcp
     - ref: k8s-mcp-read
     - ref: karpenter-memory
 
-  # Structured output contract reference
   schemaRef: karpenter-decision-schema
 
-  # Deterministic post-decision actions.
-  # Conditions are simpleeval expressions against the decision object.
-  # All actions execute in parallel. Per-action outcomes recorded in Task.
   actions:
     - name: "request-gitops-pr"
       condition: "decision.decision == 'change-required'"
@@ -397,8 +382,6 @@ spec:
           nodepool: "{{ event.data.labels.nodepool }}"
           decision: "{{ decision.decision }}"
 
-  # Engineer-defined env vars — same pattern as Pod/Deployment envs
-  # Available in action data templates as {{ env.VAR_NAME }}
   envs:
     - name: SLACK_WEBHOOK_URL
       valueFrom:
@@ -406,12 +389,8 @@ spec:
           name: slack-credentials
           key: webhook_url
 
-  # DryRun: full agent loop runs but all actions are skipped
-  # Task is written with dry_run: true and full action_results showing
-  # what would have executed. Use for prompt/schema validation.
   dryRun: false
 
-  # Operator generates a KEDA ScaledObject from this section
   scaling:
     minReplicas: 1
     maxReplicas: 5
@@ -439,7 +418,7 @@ Registers a tool capability. Three types are supported.
 | `memory`        | Vector DB (Qdrant / pgvector / Weaviate)    | `tools[]`        |
 | `event-publish` | Nothing — uses existing broker connection   | `actions[]` only |
 
-**type: mcp** — the operator injects a `kapetool` sidecar container into the handler Deployment for this tool. The sidecar acts as an MCP proxy that enforces the allowlist, applies redaction, and writes per-call audit logs. The handler runtime communicates with the sidecar over localhost — the sidecar forwards allowed, redacted requests to the upstream MCP server.
+**type: mcp** — the operator injects a `kapetool` sidecar container into the handler Deployment for this tool. The sidecar acts as an MCP proxy that enforces the allowlist, applies redaction, and emits OTEL spans for every tool call. The handler runtime communicates with the sidecar over localhost — the sidecar forwards allowed, redacted requests to the upstream MCP server.
 
 The sidecar exposes the MCP protocol over both SSE (`:8080`) and Streamable HTTP (`:8081`). Transport is configurable per `KapeTool`.
 
@@ -468,26 +447,6 @@ spec:
         - jsonPath: "$.credentials"
       output:
         - jsonPath: "$.serviceAccountToken"
-    audit:
-      enabled: true
-
----
-apiVersion: kape.io/v1alpha1
-kind: KapeTool
-metadata:
-  name: k8s-mcp-write
-  namespace: kape-system
-spec:
-  description: "Write access — remediation handlers only"
-  type: mcp
-  mcp:
-    upstream:
-      transport: sse
-      url: http://k8s-mcp-svc.kape-system:8080
-    allowedTools:
-      - "delete_pod"
-      - "cordon_node"
-      - "restart_deployment"
     audit:
       enabled: true
 ```
@@ -539,6 +498,7 @@ spec:
   version: v1
   jsonSchema:
     type: object
+    additionalProperties: false
     required: [decision, confidence, reasoning, estimatedImpact]
     properties:
       decision:
@@ -551,27 +511,14 @@ spec:
       reasoning:
         type: string
         minLength: 30
+        maxLength: 2000
         description: "Evidence that led to this decision"
       estimatedImpact:
         type: string
         enum: [low, medium, high, critical]
       affectedNodepool:
         type: string
-      actions:
-        type: array
-        items:
-          type: object
-          required: [name, condition, type, data]
-          properties:
-            name:
-              type: string
-            condition:
-              type: string
-            type:
-              type: string
-              enum: [event-emitter, save-memory, webhook]
-            data:
-              type: object
+        maxLength: 253
 ```
 
 ### 5.5 Tool Registry
@@ -680,11 +627,11 @@ When the dashboard operator retries a Task, `kape-task-service` re-publishes the
 
 **Responsibilities:**
 
-- Task CRUD (PostgreSQL)
-- Tool audit log persistence (from `kapetool` sidecars)
+- Task CRUD (PostgreSQL via CloudNativePG)
 - Task status management: `Timeout` marking (single and bulk)
-- Retry: re-publish original CloudEvent to NATS with `retry_of` extension, mark original as `Retried`
+- Retry: re-publish original `event_raw` CloudEvent to NATS with `retry_of` extension, mark original as `Retried`
 - Dashboard query endpoints: filter by cluster, handler, status, time range
+- Retry lineage: walk `retry_of` FK chain for dashboard lineage view
 
 **Handler-facing API:**
 
@@ -697,12 +644,14 @@ When the dashboard operator retries a Task, `kape-task-service` re-publishes the
 
 **Dashboard-facing API:**
 
-| Method  | Path                 | Description                     |
-| ------- | -------------------- | ------------------------------- |
-| `GET`   | `/tasks`             | List tasks with filters         |
-| `PATCH` | `/tasks/{id}/status` | Mark single task Timeout        |
-| `PATCH` | `/tasks/bulk/status` | Mark multiple tasks Timeout     |
-| `POST`  | `/tasks/{id}/retry`  | Retry task — re-publish to NATS |
+| Method  | Path                  | Description                          |
+| ------- | --------------------- | ------------------------------------ |
+| `GET`   | `/tasks`              | List tasks with filters              |
+| `PATCH` | `/tasks/{id}/status`  | Mark single task Timeout             |
+| `PATCH` | `/tasks/bulk/status`  | Mark multiple tasks Timeout          |
+| `POST`  | `/tasks/{id}/retry`   | Retry task — re-publish to NATS      |
+| `GET`   | `/tasks/{id}/lineage` | Full retry chain from any task in it |
+| `GET`   | `/tasks/decisions`    | Decision distribution per handler    |
 
 ---
 
@@ -828,7 +777,7 @@ Multiple `KapeTool` instances can point to the same MCP server with different `a
 
 ### Layer 3 — Input/Output Redaction
 
-The `KapeTool` sidecar applies jsonPath-based redaction rules to both tool call inputs and outputs before forwarding to the upstream MCP server and before writing audit logs. Redacted fields are replaced with `[REDACTED]`.
+The `KapeTool` sidecar applies jsonPath-based redaction rules to both tool call inputs and outputs before forwarding to the upstream MCP server. Redacted fields are replaced with `[REDACTED]`.
 
 An additional PII layer (`PIIMiddleware`) is applied at the LangChain agent level — across all LLM input and output — using LangChain's built-in middleware. Strategies: `redact`, `mask`, `hash`, `block`.
 
@@ -865,7 +814,7 @@ CEL validation rules on `KapeHandler` and `KapeTool` CRDs reject misconfigured r
 
 ### Layer 7 — Immutable Audit Log (Task Record)
 
-Every event processing execution writes a Task record via `kape-task-service`. The Task record is the primary audit artifact. Every `kapetool` sidecar writes a per-call audit log entry to `tool_audit_log`. Together these provide a complete forensic trail of every automated action.
+Every event processing execution writes a Task record via `kape-task-service`. The Task record is the primary audit artifact. MCP tool call detail (inputs, outputs, latency, allow/deny outcomes) is owned by the OTEL backend via OpenInference auto-instrumentation — `kape.task_id` is set as a span attribute on the root trace to enable cross-referencing.
 
 **Task record schema:**
 
@@ -877,13 +826,14 @@ namespace         KapeHandler namespace
 event_id          CloudEvents id field
 event_source      CloudEvents source field
 event_type        CloudEvents type field
+event_raw         full CloudEvents envelope (immutable JSONB — used for retry re-publish)
 status            TaskStatus enum
 dry_run           boolean
 schema_output     validated KapeSchema output (JSONB)
 actions           list of ActionResult (JSONB)
 error             TaskError | null (JSONB)
 retry_of          original Task ID on retry
-otel_trace_id     links to OTEL trace
+otel_trace_id     links to OTEL backend (consumable property — not queried)
 received_at       when ACK was sent to NATS
 completed_at      when execution finished
 duration_ms       total processing duration
@@ -899,7 +849,7 @@ duration_ms       total processing duration
 | `SchemaValidationFailed` | LLM output did not match `KapeSchema`                           |
 | `ActionError`            | One or more actions failed in the ActionsRouter                 |
 | `UnprocessableEvent`     | CloudEvent envelope was malformed                               |
-| `PendingApproval`        | Approval event published — awaiting human decision              |
+| `PendingApproval`        | Approval event published — awaiting human decision (v2)         |
 | `Timeout`                | Manually marked by operator via dashboard                       |
 | `Retried`                | Superseded by a retry execution                                 |
 
@@ -916,7 +866,7 @@ A first-class management component that reads Task records via `kape-task-servic
 - **Live Task monitor** — real-time feed of handler executions with status, elapsed time for `Processing` tasks
 - **Task drill-down** — full schema output, per-action outcomes, error detail, linked OTEL trace
 - **Agent trace view** — links to OTEL backend (SigNoz, Tempo, or any OTLP-compatible backend) for LangGraph span-level debugging
-- **Handler health** — replica count, event throughput, LLM latency p99 per handler
+- **Handler health** — replica count, event throughput, LLM latency p99 per handler (sourced from Prometheus, not PostgreSQL)
 
 **Management capabilities:**
 
@@ -924,11 +874,13 @@ A first-class management component that reads Task records via `kape-task-servic
 - **Retry** — re-publish original CloudEvent to NATS, route based on `preRetryStatus`
 - **Approval management** — view and action `PendingApproval` tasks (v2)
 
-**Timeout detection:** the dashboard computes `elapsed = now() - received_at` for every `Processing` task and renders it live. There is no background job — no threshold, no automated state transition. The operator observes elapsed time and decides.
+**Timeout detection:** the dashboard queries all `Processing` tasks ordered by `received_at ASC` and computes elapsed time client-side. There is no background job — no threshold, no automated state transition. The operator observes elapsed time and decides.
 
 ### OTEL + Arize OpenInference
 
-Every handler pod is instrumented with `openinference-instrumentation-langchain` — the instrumentation library decided in this RFC. OpenInference provides auto-instrumentation for all LangGraph nodes, LLM calls, and tool invocations following OpenInference semantic conventions. No LangSmith dependency. The OTEL backend is a deployment configuration concern — any OTLP-compatible backend is supported (SigNoz, Grafana Tempo, etc.).
+Every handler pod is instrumented with `openinference-instrumentation-langchain`. OpenInference provides auto-instrumentation for all LangGraph nodes, LLM calls, and tool invocations following OpenInference semantic conventions. No LangSmith dependency. The OTEL backend is a deployment configuration concern — any OTLP-compatible backend is supported (SigNoz, Grafana Tempo, etc.).
+
+`kape.task_id` is set as a span attribute on the root trace, enabling cross-referencing between Task records in PostgreSQL and trace data in the OTEL backend.
 
 Each agent execution produces a trace with the following span structure:
 
@@ -946,7 +898,7 @@ trace: kape.handler.process_event
 
 W3C TraceContext headers are propagated from the handler to the `kapetool` sidecar on every tool call, producing a unified end-to-end trace across the pod boundary.
 
-The root span `trace_id` is stored as `otel_trace_id` on the Task record.
+The root span `trace_id` is stored as `otel_trace_id` on the Task record as a deep link — it is not indexed or queried.
 
 ### Prometheus Metrics (handler pods)
 
@@ -963,6 +915,8 @@ Each handler pod exposes the following metrics:
 | `kape_schema_validation_failures_total` | Counter   | Schema validation failures                 |
 | `kape_action_errors_total`              | Counter   | Action execution failures (by action type) |
 | `kape_nats_consumer_lag`                | Gauge     | Current NATS consumer lag                  |
+
+Handler health aggregates (throughput, latency p99, failure rate) are consumed from Prometheus by the dashboard — not re-derived from PostgreSQL.
 
 ---
 
@@ -990,7 +944,17 @@ Each handler pod exposes the following metrics:
 
 ## 10. Open Questions
 
-All questions from sessions 1–6 are resolved. No open items remain for v1 design.
+All questions from sessions 1–8 are resolved. No open items remain for v1 design.
+
+**Session 8 resolutions:**
+
+- Audit database: PostgreSQL via CloudNativePG — mixed access patterns (point lookups + time-range scans + JSONB) make PostgreSQL the correct choice over ClickHouse
+- `tool_audit_log` table: dropped — MCP tool call detail (inputs, outputs, latency, allow/deny) is owned by the OTEL backend via OpenInference auto-instrumentation; `kape.task_id` span attribute enables cross-referencing
+- `llm_prompt` / `llm_response`: excluded from Task record — owned by OTEL trace; storing in PostgreSQL doubles PII exposure with no query value
+- `event_raw`: added to Task record as permanent immutable JSONB — required for retry re-publish flow
+- Partitioning: by month on `received_at`; old partitions dropped via scheduled CronJob for retention
+- Handler health aggregates: sourced from Prometheus/OTEL backend — not re-derived from PostgreSQL
+- Dashboard elapsed time computation: client-side from `received_at`; no epoch computation at DB layer
 
 **Session 6 resolutions:**
 
@@ -1001,6 +965,7 @@ All questions from sessions 1–6 are resolved. No open items remain for v1 desi
 
 See `kape-open-questions.md` for full resolution records.
 See `kape-event-broker-design.md` for complete broker and adapter specifications.
+See `kape-audit-design.md` for complete audit database schema, state machine, and query patterns.
 
 ---
 
@@ -1017,6 +982,7 @@ See `kape-event-broker-design.md` for complete broker and adapter specifications
 - **Simulation mode** — Replay historical events against new handler configurations to validate behaviour before applying to production.
 - **KEDA threshold auto-tuning** — Operator observes handler LLM processing latency and automatically adjusts `natsLagThreshold` to maintain a target processing SLO.
 - **Deduplication window design** — Full design of the sliding window dedup/correlation mechanism deferred to Session 6 (complete — see `kape-event-broker-design.md` for handler consumer model; dedup logic implementation detail deferred to Session 4 handler runtime design).
+- **Audit DB hardening (v2)** — PostgreSQL role separation, immutability triggers, and row-level security deferred until compliance requirements justify added complexity. See `kape-audit-design.md` Layer 7 for candidate controls.
 
 ---
 
@@ -1026,6 +992,7 @@ See `kape-event-broker-design.md` for complete broker and adapter specifications
 - [NATS JetStream Documentation](https://docs.nats.io/nats-concepts/jetstream)
 - [NATS JetStream Helm Chart](https://github.com/nats-io/k8s/tree/main/helm/charts/nats)
 - [cert-manager](https://cert-manager.io/)
+- [CloudNativePG](https://cloudnative-pg.io/)
 - [falco-sidekick](https://github.com/falcosecurity/falcosidekick)
 - [Prometheus AlertManager](https://prometheus.io/docs/alerting/latest/alertmanager/)
 - [Prometheus Operator PrometheusRule](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.PrometheusRule)

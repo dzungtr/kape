@@ -4,7 +4,7 @@
 **Author:** Dzung Tran
 **Session:** 4 — Handler Runtime Technical Design
 **Created:** 2026-03-22
-**Last Updated:** 2026-03-22 (rev 2)
+**Last Updated:** 2026-04-03 (rev 3 — Session 8 audit DB decisions applied)
 **Depends on:** `kape-rfc.md`, `kape-crd-rfc.md`, `kape-open-questions.md`
 
 ---
@@ -201,7 +201,7 @@ fetch next message (blocking pull)
 ACK immediately
         │
         ▼
-POST /tasks → Task{status: Processing, received_at: now()}
+POST /tasks → Task{status: Processing, received_at: now(), event_raw: <full envelope>}
         │
         ▼
 Parse CloudEvents envelope
@@ -596,7 +596,7 @@ async def route_actions(state: AgentState) -> AgentState:
 
 ### 7.1 Storage and Access
 
-PostgreSQL only. All Task persistence is mediated entirely by `kape-task-service` — a Go REST API. The handler runtime never holds database credentials and never connects to PostgreSQL directly. All reads and writes go through HTTP calls to `kape-task-service`, whose endpoint is injected into the handler ConfigMap by the operator.
+PostgreSQL only (via CloudNativePG). All Task persistence is mediated entirely by `kape-task-service` — a Go REST API. The handler runtime never holds database credentials and never connects to PostgreSQL directly. All reads and writes go through HTTP calls to `kape-task-service`, whose endpoint is injected into the handler ConfigMap by the operator.
 
 ### 7.2 Task Service API (handler-facing endpoints)
 
@@ -614,7 +614,7 @@ Two writes per event:
 ```
 1. On ACK receipt:
    POST /tasks
-   → Task{status: Processing, received_at: now()}
+   → Task{status: Processing, received_at: now(), event_raw: <full CloudEvents envelope>}
 
 2. On agent completion:
    PATCH /tasks/{id}
@@ -624,44 +624,74 @@ Two writes per event:
 ### 7.4 Task Schema
 
 ```sql
+CREATE TYPE task_status AS ENUM (
+    'Processing',
+    'Completed',
+    'Failed',
+    'SchemaValidationFailed',
+    'ActionError',
+    'UnprocessableEvent',
+    'PendingApproval',
+    'Timeout',
+    'Retried'
+);
+
 CREATE TABLE tasks (
-    id              TEXT PRIMARY KEY,       -- ULID, sortable by time
-    cluster         TEXT NOT NULL,
-    handler         TEXT NOT NULL,
-    namespace       TEXT NOT NULL,
-    event_id        TEXT NOT NULL,
-    event_source    TEXT NOT NULL,
-    event_type      TEXT NOT NULL,
-    status          TEXT NOT NULL,
-    dry_run         BOOLEAN NOT NULL DEFAULT false,
+    -- Identity
+    id              TEXT        PRIMARY KEY,          -- ULID, time-sortable
+    cluster         TEXT        NOT NULL,
+    handler         TEXT        NOT NULL,
+    namespace       TEXT        NOT NULL,
+
+    -- Event provenance
+    event_id        TEXT        NOT NULL,
+    event_source    TEXT        NOT NULL,
+    event_type      TEXT        NOT NULL,
+    event_raw       JSONB       NOT NULL,             -- full CloudEvents envelope, immutable
+
+    -- Execution
+    status          task_status NOT NULL,
+    dry_run         BOOLEAN     NOT NULL DEFAULT false,
+
+    -- Output
     schema_output   JSONB,
-    actions         JSONB,                  -- list[ActionResult]
-    error           JSONB,                  -- TaskError | null
-    retry_of        TEXT REFERENCES tasks(id),
-    otel_trace_id   TEXT,
+    actions         JSONB,                            -- list[ActionResult]
+
+    -- Error
+    error           JSONB,                            -- TaskError | null
+
+    -- Lineage
+    retry_of        TEXT        REFERENCES tasks(id),
+
+    -- Observability
+    otel_trace_id   TEXT,                             -- consumable deep link — not indexed
+
+    -- Timing
     received_at     TIMESTAMPTZ NOT NULL,
     completed_at    TIMESTAMPTZ,
     duration_ms     INTEGER
-);
+) PARTITION BY RANGE (received_at);
 ```
+
+See `kape-audit-design.md` for the full schema specification including indexes, partitioning strategy, and state machine.
 
 ### 7.5 Task Status Enum
 
-| Status                   | Description                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------ |
-| `Processing`             | ACK received, agent running. Pod may be alive or crashed — black box.          |
-| `Completed`              | All actions succeeded (or `dry_run: true`).                                    |
-| `Failed`                 | Unhandled runtime exception, or max iterations exceeded.                       |
-| `SchemaValidationFailed` | LLM output did not match `KapeSchema`.                                         |
-| `ActionError`            | One or more actions failed in the ActionsRouter.                               |
-| `UnprocessableEvent`     | CloudEvent envelope was malformed — could not parse.                           |
-| `PendingApproval`        | `event-emitter` action published to approval subject; awaiting human approval. |
-| `Timeout`                | Manually marked via dashboard — operator judged task stuck.                    |
-| `Retried`                | Superseded by a retry execution. Original task preserved for lineage.          |
+| Status                   | Description                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `Processing`             | ACK received, agent running. Pod may be alive or crashed — black box.        |
+| `Completed`              | All actions succeeded (or `dry_run: true`).                                  |
+| `Failed`                 | Unhandled runtime exception, or max iterations exceeded.                     |
+| `SchemaValidationFailed` | LLM output did not match `KapeSchema`.                                       |
+| `ActionError`            | One or more actions failed in the ActionsRouter.                             |
+| `UnprocessableEvent`     | CloudEvent envelope was malformed — could not parse.                         |
+| `PendingApproval`        | Approval event published; awaiting human approval. (v2 — not written in v1.) |
+| `Timeout`                | Manually marked via dashboard — operator judged task stuck.                  |
+| `Retried`                | Superseded by a retry execution. Original task preserved for lineage.        |
 
 ### 7.6 Timeout Detection
 
-Timeout is a UI concern — no background jobs. The dashboard computes `elapsed = now() - received_at` for every `Processing` task and renders it live. The operator decides when elapsed time indicates a stuck task and manually marks it `Timeout` via the dashboard.
+Timeout is a UI concern — no background jobs. The dashboard fetches all `Processing` tasks ordered by `received_at ASC` and computes elapsed time client-side. The operator decides when elapsed time indicates a stuck task and manually marks it `Timeout` via the dashboard.
 
 `kape-task-service` exposes:
 
@@ -675,14 +705,14 @@ Timeout is a UI concern — no background jobs. The dashboard computes `elapsed 
 2. Dashboard calls POST /tasks/{id}/retry on kape-task-service
 3. Service fetches original Task from PostgreSQL
 4. Service PATCH /tasks/{id} → {status: Retried}
-5. Service re-publishes original CloudEvent to NATS with CloudEvent extension:
+5. Service re-publishes Task.event_raw to NATS with CloudEvent extension:
      retry_of: <original_task_id>
 6. Handler receives event, entry_router fetches original Task via GET /tasks/{retry_of}
 7. Routes based on preRetryStatus (see Section 5.2)
 8. New Task created with retry_of: <original_task_id>
 ```
 
-`retry_of` linkage is always written on the new Task — regardless of retry scenario. Full chain visibility in the dashboard.
+`retry_of` linkage is always written on the new Task — regardless of retry scenario. Full chain visibility in the dashboard via `GET /tasks/{id}/lineage`.
 
 **Retryable statuses and routing:**
 
@@ -702,7 +732,9 @@ Timeout is a UI concern — no background jobs. The dashboard computes `elapsed 
 
 OTEL scope is strictly KAPE business logic — event processing, LLM calls, tool calls, action execution. Kubernetes operational concerns (pod crash, eviction, startup failure) are handled via standard k8s tooling. OTEL is not used for infrastructure-level signals.
 
-**Instrumentation library:** `openinference-instrumentation-langchain` — decided in the main RFC. OpenInference provides auto-instrumentation for all LangGraph nodes, LLM calls, and tool invocations following OpenInference semantic conventions. No LangSmith dependency. Backend-agnostic — the OTLP endpoint is a configuration concern.
+**Instrumentation library:** `openinference-instrumentation-langchain`. OpenInference provides auto-instrumentation for all LangGraph nodes, LLM calls, and tool invocations following OpenInference semantic conventions. No LangSmith dependency. Backend-agnostic — the OTLP endpoint is a configuration concern.
+
+**Tool call audit:** MCP tool call detail (inputs, outputs, latency, allow/deny outcomes) is owned by the OTEL backend via OpenInference auto-instrumentation. No `tool_audit_log` table is maintained in PostgreSQL. The `kape.task_id` span attribute on the root trace enables cross-referencing between Task records and trace data.
 
 ### 8.2 Tracer Setup
 
@@ -740,7 +772,7 @@ trace: kape.handler.process_event
 │   kape.cluster    = prod-apse1
 │   kape.event_id   = 01HX...
 │   kape.event_type = falco.alert
-│   kape.task_id    = 01JK...
+│   kape.task_id    = 01JK...        ← set on root span for cross-referencing
 │   kape.dry_run    = false
 │
 ├── [auto] LangGraph.reason              (LLM call, iterations, token counts)
@@ -756,7 +788,7 @@ trace: kape.handler.process_event
       └── ...
 ```
 
-The root span's `trace_id` is stored as `otel_trace_id` on the Task record.
+The root span's `trace_id` is stored as `otel_trace_id` on the Task record as a consumable deep link to the OTEL backend. It is not indexed or queried in PostgreSQL.
 
 ### 8.4 KapeTool Sidecar Trace Propagation
 
@@ -794,7 +826,6 @@ async def handle(request: Request, body: ToolCallRequest):
     with tracer.start_as_current_span("kapetool.handle", context=ctx) as span:
         span.set_attribute("tool.name", body.tool)
         with tracer.start_as_current_span("kapetool.policy_check"): ...
-        with tracer.start_as_current_span("kapetool.audit_log"): ...
         with tracer.start_as_current_span("kapetool.upstream_mcp_call"): ...
 ```
 
@@ -871,8 +902,10 @@ Each `kapetool` sidecar container:
 1. Exposes an MCP proxy over **SSE** (`:8080`) and **Streamable HTTP** (`:8081`)
 2. Enforces `KapeTool.spec.allowedTools` whitelist (exact string + glob matching)
 3. Applies input/output redaction rules from `KapeTool.spec.redaction`
-4. Writes a structured audit log entry per tool call via `kape-task-service`
+4. Emits OTEL spans for every tool call (allow, deny, upstream call) via W3C TraceContext propagation
 5. Forwards allowed, redacted requests to the upstream MCP server
+
+Tool call audit detail (inputs, outputs, latency, allow/deny outcomes) is captured in the OTEL trace — not written to a separate database table. The `kape.task_id` span attribute on the root trace enables cross-referencing from any tool call span back to its Task record.
 
 ### 10.2 Language and Stack
 
@@ -891,7 +924,7 @@ Denied tool calls return a structured MCP error response. The handler runtime tr
 
 ### 10.4 Redaction
 
-Input and output fields are redacted using jsonPath rules before audit log write and before forwarding upstream. Redacted fields are replaced with `"[REDACTED]"`.
+Input and output fields are redacted using jsonPath rules before forwarding upstream and before emitting OTEL spans. Redacted fields are replaced with `"[REDACTED]"`.
 
 ```yaml
 redaction:
@@ -903,27 +936,7 @@ redaction:
     - jsonPath: "$.phoneNumber"
 ```
 
-### 10.5 Audit Log
-
-Every tool call writes an entry via `kape-task-service` (persisted to `tool_audit_log` in PostgreSQL):
-
-```sql
-CREATE TABLE tool_audit_log (
-    id          TEXT PRIMARY KEY,
-    task_id     TEXT NOT NULL,
-    handler     TEXT NOT NULL,
-    tool_name   TEXT NOT NULL,
-    kapetool    TEXT NOT NULL,
-    input       JSONB,
-    output      JSONB,
-    status      TEXT NOT NULL,    -- allowed | denied | error
-    deny_reason TEXT,
-    duration_ms INTEGER,
-    called_at   TIMESTAMPTZ NOT NULL
-);
-```
-
-### 10.6 KapeTool CRD Sidecar Fields
+### 10.5 KapeTool CRD Sidecar Fields
 
 ```yaml
 apiVersion: kape.io/v1alpha1
@@ -947,7 +960,7 @@ spec:
       - jsonPath: "$.email"
 
   audit:
-    enabled: true
+    enabled: true # controls OTEL span emission for tool calls
 ```
 
 ---
@@ -980,13 +993,14 @@ class Task(BaseModel):
     event_id:       str
     event_source:   str
     event_type:     str
+    event_raw:      dict          # full CloudEvents envelope — immutable, used for retry
     status:         TaskStatus
     dry_run:        bool
     schema_output:  dict | None
     actions:        list[ActionResult]
     error:          TaskError | None
-    retry_of:       str | None          # original Task ID — always set on retries
-    otel_trace_id:  str | None
+    retry_of:       str | None    # original Task ID — always set on retries
+    otel_trace_id:  str | None    # consumable deep link — not indexed
     received_at:    datetime
     completed_at:   datetime | None
     duration_ms:    int | None
