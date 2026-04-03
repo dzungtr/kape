@@ -71,7 +71,7 @@ Before starting any session, Claude must treat the following as settled design d
 | 5       | Kape Operator technical design                                | ✅ Done | `kape-operator-design.md`          |
 | 6       | Event broker and CloudEvents adapter design                   | ✅ Done | `kape-event-broker-design.md`      |
 | 7       | Security hardening deep dive                                  | ✅ Done | `kape-security-design.md`          |
-| 8       | Audit DB and Task record schema                               | ⬜      | `kape-audit-design.md`             |
+| 8       | Audit DB and Task record schema                               | ✅ Done | `kape-audit-design.md`             |
 | 9       | UI Dashboard design                                           | ⬜      | `kape-dashboard-design.md`         |
 | 10      | CRD CEL validation rules                                      | ⬜      | `kape-cel-validation.md`           |
 | 11      | Repository structure and project layout                       | ⬜      | `kape-repo-structure.md`           |
