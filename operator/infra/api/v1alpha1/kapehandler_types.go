@@ -146,7 +146,7 @@ type ScalingSpec struct {
 }
 
 // KapeHandlerSpec defines the desired state of a KapeHandler.
-// +kubebuilder:validation:XValidation:rule="self.llm.confidenceThreshold == 0.0 || (self.llm.confidenceThreshold >= 0.6 && self.llm.confidenceThreshold <= 1.0)",message="spec.llm.confidenceThreshold must be between 0.6 and 1.0 (or unset)"
+// +kubebuilder:validation:XValidation:rule="!has(self.llm.confidenceThreshold) || (self.llm.confidenceThreshold >= 0.6 && self.llm.confidenceThreshold <= 1.0)",message="spec.llm.confidenceThreshold must be between 0.6 and 1.0 (or unset)"
 type KapeHandlerSpec struct {
 	// Trigger defines the event source this handler subscribes to.
 	Trigger TriggerSpec `json:"trigger"`

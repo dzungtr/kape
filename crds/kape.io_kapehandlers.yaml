@@ -378,8 +378,8 @@ spec:
             x-kubernetes-validations:
             - message: spec.llm.confidenceThreshold must be between 0.6 and 1.0 (or
                 unset)
-              rule: self.llm.confidenceThreshold == 0.0 || (self.llm.confidenceThreshold
-                >= 0.6 && self.llm.confidenceThreshold <= 1.0)
+              rule: '!has(self.llm.confidenceThreshold) || (self.llm.confidenceThreshold
+                >= 0.6 && self.llm.confidenceThreshold <= 1.0)'
           status:
             description: KapeHandlerStatus defines the observed state of a KapeHandler.
             properties:

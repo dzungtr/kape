@@ -96,9 +96,9 @@ spec:
             - message: spec.jsonSchema.additionalProperties must be set to false
               rule: has(self.jsonSchema.additionalProperties) && self.jsonSchema.additionalProperties
                 == false
-            - message: all fields listed in spec.jsonSchema.required must be defined
-                in spec.jsonSchema.properties
-              rule: self.jsonSchema.required.all(f, f in self.jsonSchema.properties)
+            # S4 (required fields exist in properties) cannot be expressed in CEL
+            # because spec.jsonSchema.properties uses x-kubernetes-preserve-unknown-fields.
+            # Enforced at handler pod startup via Pydantic model generation.
           status:
             description: KapeSchemaStatus defines the observed state of KapeSchema.
             properties:
