@@ -1,6 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - kapehandler.yaml
-  - kapetool.yaml
-  - kapeschema.yaml
+  - kape.io_kapehandlers.yaml
+  - kape.io_kapetools.yaml
+  - kape.io_kapeschemas.yaml
+  - kape-handler-webhook.yaml

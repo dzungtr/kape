@@ -15,9 +15,13 @@ build/
 # Generated
 crds/*.yaml
 !crds/kustomization.yaml
+!crds/kape-handler-webhook.yaml
 dashboard/app/types/generated/*.ts
 
 # IDE
 .idea/
 .vscode/
 *.swp
+
+# Git worktrees
+.worktrees/

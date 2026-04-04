@@ -1,10 +1,12 @@
-go 1.23
+go 1.23.0
+
+toolchain go1.24.10
 
 use (
+	./adapters
+	./operator/cmd
+	./operator/controller
 	./operator/domain
 	./operator/infra
-	./operator/controller
-	./operator/cmd
 	./task-service
-	./adapters
 )

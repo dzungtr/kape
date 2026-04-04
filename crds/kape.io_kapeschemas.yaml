@@ -1,0 +1,167 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: kapeschemas.kape.io
+spec:
+  group: kape.io
+  names:
+    categories:
+    - kape
+    kind: KapeSchema
+    listKind: KapeSchemaList
+    plural: kapeschemas
+    singular: kapeschema
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: KapeSchema defines the structured output contract for LLM decisions.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: KapeSchemaSpec defines the desired state of KapeSchema.
+            properties:
+              jsonSchema:
+                description: jsonSchema is the JSON Schema definition for structured
+                  LLM output.
+                properties:
+                  additionalProperties:
+                    description: additionalProperties when set to false disallows
+                      any properties not listed in properties.
+                    type: boolean
+                  properties:
+                    additionalProperties:
+                      x-kubernetes-preserve-unknown-fields: true
+                    description: properties defines the schema properties as a map
+                      of raw JSON schema objects.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  required:
+                    description: required lists the required properties. Must have
+                      at least one entry.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  type:
+                    description: type must be "object".
+                    enum:
+                    - object
+                    type: string
+                required:
+                - properties
+                - required
+                - type
+                type: object
+              version:
+                description: version is the schema version identifier (e.g. v1, v2).
+                minLength: 1
+                type: string
+            required:
+            - jsonSchema
+            - version
+            type: object
+            x-kubernetes-validations:
+            - message: spec.version must match pattern v[0-9]+ (e.g. v1, v2, v10)
+              rule: self.version.matches('^v[0-9]+$')
+            - message: spec.jsonSchema.required must contain at least one field name
+              rule: size(self.jsonSchema.required) > 0
+            - message: spec.jsonSchema.additionalProperties must be set to false
+              rule: has(self.jsonSchema.additionalProperties) && self.jsonSchema.additionalProperties
+                == false
+            # S4 (required fields exist in properties) cannot be expressed in CEL
+            # because spec.jsonSchema.properties uses x-kubernetes-preserve-unknown-fields.
+            # Enforced at handler pod startup via Pydantic model generation.
+          status:
+            description: KapeSchemaStatus defines the observed state of KapeSchema.
+            properties:
+              conditions:
+                description: conditions holds the conditions for the KapeSchema.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
