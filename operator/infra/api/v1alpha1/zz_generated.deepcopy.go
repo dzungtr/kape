@@ -502,14 +502,14 @@ func (in *JSONSchemaObject) DeepCopyInto(out *JSONSchemaObject) {
 	}
 	if in.Properties != nil {
 		in, out := &in.Properties, &out.Properties
-		*out = make(map[string]apiextensionsv1.JSONSchemaProps, len(*in))
+		*out = make(map[string]apiextensionsv1.JSON, len(*in))
 		for key, val := range *in {
 			(*out)[key] = *val.DeepCopy()
 		}
 	}
 	if in.AdditionalProperties != nil {
 		in, out := &in.AdditionalProperties, &out.AdditionalProperties
-		*out = new(apiextensionsv1.JSONSchemaPropsOrBool)
+		*out = new(bool)
 		**out = **in
 	}
 }
