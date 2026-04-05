@@ -1,0 +1,164 @@
+// Package toml renders the settings.toml ConfigMap consumed by the handler runtime.
+package toml
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/pelletier/go-toml/v2"
+
+	domainconfig "github.com/kape-io/kape/operator/domain/config"
+	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
+)
+
+// Renderer implements ports.TOMLRenderer.
+type Renderer struct{}
+
+// NewRenderer returns a new Renderer.
+func NewRenderer() *Renderer { return &Renderer{} }
+
+// Render serialises a KapeHandler spec and platform config into a settings.toml string.
+func (r *Renderer) Render(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig) (string, error) {
+	cfg = cfg.WithDefaults()
+
+	replayOnStartup := true
+	if handler.Spec.Trigger.ReplayOnStartup != nil {
+		replayOnStartup = *handler.Spec.Trigger.ReplayOnStartup
+	}
+
+	maxIterations := handler.Spec.LLM.MaxIterations
+	if maxIterations == 0 {
+		maxIterations = cfg.DefaultMaxIterations
+	}
+
+	consumerName := strings.ReplaceAll(handler.Spec.Trigger.Type, ".", "-")
+	taskServiceEndpoint := fmt.Sprintf("http://kape-task-service.%s:8080", handler.Namespace)
+	otelEndpoint := "http://otel-collector.kape-system:4318"
+
+	actions, err := buildActions(handler)
+	if err != nil {
+		return "", fmt.Errorf("building actions: %w", err)
+	}
+
+	s := settingsTOML{
+		Kape: kapeTOML{
+			HandlerName:        handler.Name,
+			HandlerNamespace:   handler.Namespace,
+			ClusterName:        cfg.ClusterName,
+			DryRun:             handler.Spec.DryRun,
+			MaxIterations:      maxIterations,
+			SchemaName:         handler.Spec.SchemaRef,
+			ReplayOnStartup:    replayOnStartup,
+			MaxEventAgeSeconds: handler.Spec.Trigger.MaxEventAgeSeconds,
+		},
+		LLM: llmTOML{
+			Provider:     handler.Spec.LLM.Provider,
+			Model:        handler.Spec.LLM.Model,
+			SystemPrompt: handler.Spec.LLM.SystemPrompt,
+		},
+		NATS: natsTOML{
+			Subject:  handler.Spec.Trigger.Type,
+			Consumer: consumerName,
+			Stream:   "kape-events",
+		},
+		TaskService: taskServiceTOML{
+			Endpoint: taskServiceEndpoint,
+		},
+		OTEL: otelTOML{
+			Endpoint:    otelEndpoint,
+			ServiceName: "kape-handler",
+		},
+		Actions: actions,
+	}
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(s); err != nil {
+		return "", fmt.Errorf("encoding settings.toml: %w", err)
+	}
+	return buf.String(), nil
+}
+
+func buildActions(handler *v1alpha1.KapeHandler) ([]actionTOML, error) {
+	result := make([]actionTOML, 0, len(handler.Spec.Actions))
+	for _, a := range handler.Spec.Actions {
+		data, err := convertActionData(a)
+		if err != nil {
+			return nil, fmt.Errorf("action %q: %w", a.Name, err)
+		}
+		result = append(result, actionTOML{
+			Name:      a.Name,
+			Condition: a.Condition,
+			Type:      a.Type,
+			Data:      data,
+		})
+	}
+	return result, nil
+}
+
+// convertActionData converts the raw apiextensionsv1.JSON map to map[string]interface{}.
+func convertActionData(a v1alpha1.ActionSpec) (map[string]interface{}, error) {
+	if len(a.Data) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]interface{}, len(a.Data))
+	for k, v := range a.Data {
+		var val interface{}
+		if err := json.Unmarshal(v.Raw, &val); err != nil {
+			return nil, fmt.Errorf("field %q: %w", k, err)
+		}
+		result[k] = val
+	}
+	return result, nil
+}
+
+// ─── internal TOML struct tree ───────────────────────────────────────────────
+
+type settingsTOML struct {
+	Kape        kapeTOML        `toml:"kape"`
+	LLM         llmTOML         `toml:"llm"`
+	NATS        natsTOML        `toml:"nats"`
+	TaskService taskServiceTOML `toml:"task_service"`
+	OTEL        otelTOML        `toml:"otel"`
+	Actions     []actionTOML    `toml:"actions,omitempty"`
+}
+
+type kapeTOML struct {
+	HandlerName        string `toml:"handler_name"`
+	HandlerNamespace   string `toml:"handler_namespace"`
+	ClusterName        string `toml:"cluster_name"`
+	DryRun             bool   `toml:"dry_run"`
+	MaxIterations      int32  `toml:"max_iterations"`
+	SchemaName         string `toml:"schema_name"`
+	ReplayOnStartup    bool   `toml:"replay_on_startup"`
+	MaxEventAgeSeconds int64  `toml:"max_event_age_seconds"`
+}
+
+type llmTOML struct {
+	Provider     string `toml:"provider"`
+	Model        string `toml:"model"`
+	SystemPrompt string `toml:"system_prompt"`
+}
+
+type natsTOML struct {
+	Subject  string `toml:"subject"`
+	Consumer string `toml:"consumer"`
+	Stream   string `toml:"stream"`
+}
+
+type taskServiceTOML struct {
+	Endpoint string `toml:"endpoint"`
+}
+
+type otelTOML struct {
+	Endpoint    string `toml:"endpoint"`
+	ServiceName string `toml:"service_name"`
+}
+
+type actionTOML struct {
+	Name      string                 `toml:"name"`
+	Condition string                 `toml:"condition"`
+	Type      string                 `toml:"type"`
+	Data      map[string]interface{} `toml:"data,omitempty"`
+}

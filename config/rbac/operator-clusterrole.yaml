@@ -1,0 +1,84 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kape-operator
+rules:
+  # KAPE CRDs
+  - apiGroups: ["kape.io"]
+    resources: [kapehandlers, kapetools, kapeschemas]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: ["kape.io"]
+    resources:
+      - kapehandlers/status
+      - kapetools/status
+      - kapeschemas/status
+      - kapehandlers/finalizers
+      - kapeschemas/finalizers
+    verbs: [get, update, patch]
+
+  # ConfigMaps — write settings.toml, read kape-config
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+
+  # ServiceAccounts — per-handler SA
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete]
+
+  # Deployments — handler pods
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+
+  # Events
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kape-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kape-operator
+subjects:
+  - kind: ServiceAccount
+    name: kape-operator
+    namespace: kape-system
+---
+# Leader election role (namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kape-operator-leader-election
+  namespace: kape-system
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kape-operator-leader-election
+  namespace: kape-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kape-operator-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: kape-operator
+    namespace: kape-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kape-operator
+  namespace: kape-system

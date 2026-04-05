@@ -4,9 +4,6 @@ toolchain go1.24.10
 
 use (
 	./adapters
-	./operator/cmd
-	./operator/controller
-	./operator/domain
-	./operator/infra
+	./operator
 	./task-service
 )
