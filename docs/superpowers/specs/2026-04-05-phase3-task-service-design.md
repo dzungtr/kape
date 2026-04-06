@@ -284,21 +284,145 @@ Executed via embedded migrations. Key points from spec 0008:
 
 ```makefile
 generate:
-    openapi-generator-cli generate \
-        -i openapi/openapi.yaml \
-        -g go-chi-server \
-        -o internal/interfaces/http/gen \
-        --additional-properties=packageName=gen
+	openapi-generator-cli generate \
+		-i openapi/openapi.yaml \
+		-g go-chi-server \
+		-o internal/interfaces/http/gen \
+		--additional-properties=packageName=gen
 
 migrate:
-    go run ./cmd/task-service --migrate-only
+	go run ./cmd/task-service --migrate-only
+
+test:
+	go test ./...
+
+test/e2e:
+	go test ./test/e2e/... -tags e2e
 ```
 
 ---
 
-## Acceptance Criteria (from spec 0012 Phase 3)
+## Testing Strategy
 
-- `POST /tasks` creates a Task; `GET /tasks/{id}` returns it
-- `PATCH /tasks/{id}/status` transitions `Processing → Completed`; invalid transitions rejected (e.g. `Completed → Processing`)
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `testify/assert` + `testify/require` | Assertions across all test layers |
+| `mockery` | Generate mocks for `domain.Repository` and `domain.Stream` interfaces |
+| `testcontainers-go` | Spin up a real PostgreSQL container for repository and E2E tests |
+| `net/http/httptest` | Test HTTP handlers without a live server |
+
+### Test Layout
+
+```
+task-service/
+├── internal/
+│   ├── domain/task/
+│   │   └── task_test.go                  # unit: entity, state machine, value object marshalling
+│   ├── application/
+│   │   ├── command/
+│   │   │   ├── create_task_test.go       # unit: mock repo + stream
+│   │   │   ├── update_status_test.go     # unit: valid + invalid transitions
+│   │   │   ├── delete_task_test.go
+│   │   │   └── bulk_timeout_test.go
+│   │   └── query/
+│   │       ├── get_task_test.go
+│   │       ├── list_tasks_test.go
+│   │       ├── task_lineage_test.go
+│   │       └── handler_stats_test.go
+│   ├── infrastructure/
+│   │   ├── postgres/
+│   │   │   └── task_repository_test.go   # integration: real PG via testcontainers
+│   │   └── sse/
+│   │       └── hub_test.go               # unit: subscribe/publish/slow-client drop
+│   └── interfaces/http/
+│       └── server_test.go                # unit: httptest, mock application commands/queries
+└── test/
+    └── e2e/
+        └── tasks_test.go                 # e2e: full stack, real PG, real HTTP server
+```
+
+### Unit Tests
+
+**Domain (`domain/task/task_test.go`):**
+- `TaskStatus` exhaustiveness — all 9 statuses defined
+- JSONB value object round-trip: marshal `Actions`, `TaskError`, `SchemaOutput` → unmarshal → deep equal
+- Terminal state identification helper returns correct boolean for each status
+
+**Application commands (mock `Repository` + `Stream` via mockery):**
+- `CreateTask`: repo.Create called with correct fields; stream.Publish called with created task
+- `UpdateStatus` — valid transitions: `Processing → Completed`, `Processing → Failed`, `Processing → SchemaValidationFailed`, `Processing → ActionError`, `Processing → UnprocessableEvent`, `Processing → Timeout`
+- `UpdateStatus` — invalid transitions rejected with domain error: `Completed → Processing`, `Failed → Completed`, any terminal → any other
+- `DeleteTask`: repo.Delete called; stream not called (stale discard produces no event)
+- `BulkTimeout`: repo.BulkTimeout called; returns affected IDs; stream.Publish called for each
+
+**Application queries (mock `Repository`):**
+- `GetTask`: not found returns domain error; found returns task
+- `ListTasks`: filter fields forwarded to repo correctly; pagination cursor passed through
+- `TaskLineage`: returns ordered chain root → retries
+- `HandlerStats`: aggregate fields mapped correctly
+
+**SSE Hub (`infrastructure/sse/hub_test.go`):**
+- `Subscribe` returns a channel; `Publish` sends task to that channel
+- Multiple subscribers each receive the published task
+- Slow subscriber (full buffer): publish does not block; message dropped; other subscribers unaffected
+- `Unsubscribe` (returned func): channel removed from map; subsequent publish does not send to it
+
+**HTTP adapter (`interfaces/http/server_test.go`, using `httptest`):**
+- `POST /tasks` 201 on success; 400 on invalid body; 422 on domain validation error
+- `GET /tasks/{id}` 200 with correct JSON; 404 when not found
+- `PATCH /tasks/{id}/status` 200 on valid transition; 409 on invalid transition
+- `DELETE /tasks/{id}` 204 on success
+- `GET /tasks` returns paginated list; query params forwarded to query
+- `GET /handlers` returns aggregate JSON
+- `POST /tasks/{id}/retry` returns 501
+
+### Integration Tests
+
+**`infrastructure/postgres/task_repository_test.go`** — runs against a real PostgreSQL via `testcontainers-go`:
+- `Create` + `FindByID` round-trip: all fields preserved including JSONB columns
+- `UpdateStatus`: row updated; re-fetch confirms new status and `completed_at`
+- `Delete`: row removed; subsequent `FindByID` returns not found
+- `List` with handler filter: returns only matching handler tasks
+- `List` with status filter: returns only matching status
+- `List` with cursor: second page starts after cursor task
+- `Lineage`: recursive walk returns root + all retries in order
+- `HandlerStats`: correct event count and status breakdown for test fixture
+- `BulkTimeout`: only `Processing` tasks older than threshold are updated; newer ones untouched
+- `EnsurePartition`: partition created for given month; idempotent on second call
+
+### E2E Tests (`test/e2e/tasks_test.go`, build tag `e2e`)
+
+Starts the full HTTP server against a real PostgreSQL (testcontainers). Uses plain `net/http` client.
+
+- **Full lifecycle:** `POST /tasks` (status: Processing) → `GET /tasks/{id}` confirms → `PATCH /tasks/{id}/status` (Completed) → `GET /tasks/{id}` confirms terminal state
+- **Invalid transition rejected:** `POST /tasks` → `PATCH` to `Processing` again → 409
+- **List + filter:** create 3 tasks (2 for handler-a, 1 for handler-b) → `GET /tasks?handler=handler-a` returns 2
+- **Stale discard:** `POST /tasks` → `DELETE /tasks/{id}` → `GET /tasks/{id}` returns 404
+- **SSE stream:** connect `GET /tasks/stream`; in parallel `POST /tasks`; assert SSE event received within 2s
+- **Lineage:** create task → retry (POST creates second task with `retry_of` set) → `GET /tasks/{id}/lineage` returns both in order
+- **Handler aggregates:** seed tasks → `GET /handlers` returns correct counts per handler
+- **Bulk timeout:** create 3 `Processing` tasks → `PATCH /tasks/bulk/status` → all 3 confirmed `Timeout`
+
+---
+
+## Acceptance Criteria
+
+### Functional (from spec 0012 Phase 3)
+
+- `POST /tasks` creates a Task; `GET /tasks/{id}` returns it with all fields
+- `PATCH /tasks/{id}/status` transitions `Processing → Completed`; invalid transitions are rejected with 409
 - `GET /tasks/stream` delivers SSE events when tasks are created or updated
 - `GET /handlers` returns correct aggregates for test data
+
+### Test Coverage
+
+- All domain entity and value object behaviours covered by unit tests
+- All application commands and queries covered by unit tests with mocked interfaces
+- All `domain.Repository` methods covered by integration tests against a real PostgreSQL container
+- SSE hub behaviours (fan-out, slow-client drop, unsubscribe) covered by unit tests
+- All HTTP endpoints covered by `httptest`-based unit tests
+- Full lifecycle, SSE delivery, lineage, bulk timeout covered by E2E tests
+- `go test ./...` passes with no failures
+- `go test ./test/e2e/... -tags e2e` passes with no failures
