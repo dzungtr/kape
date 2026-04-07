@@ -25,3 +25,6 @@ dashboard/app/types/generated/*.ts
 
 # Git worktrees
 .worktrees/
+
+# Compiled binaries
+task-service/task-service
