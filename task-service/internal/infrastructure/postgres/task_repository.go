@@ -274,23 +274,25 @@ func (r *TaskRepository) HandlerStats(ctx context.Context, since time.Time) ([]t
 	return result, nil
 }
 
-func (r *TaskRepository) BulkTimeout(ctx context.Context, olderThanSeconds int) ([]string, error) {
-	threshold := time.Now().UTC().Add(-time.Duration(olderThanSeconds) * time.Second)
-	var ids []struct {
+func (r *TaskRepository) BulkUpdateStatus(ctx context.Context, ids []string, status task.TaskStatus) ([]string, error) {
+	if len(ids) == 0 {
+		return []string{}, nil
+	}
+	var rows []struct {
 		ID string `pg:"id"`
 	}
-	_, err := r.db.QueryContext(ctx, &ids, `
-		UPDATE tasks
-		SET status = 'Timeout', completed_at = NOW()
-		WHERE status = 'Processing'
-		  AND received_at < ?
-		RETURNING id
-	`, threshold)
+	var query string
+	if status.IsTerminal() {
+		query = `UPDATE tasks SET status = ?, completed_at = NOW() WHERE id IN (?) RETURNING id`
+	} else {
+		query = `UPDATE tasks SET status = ? WHERE id IN (?) RETURNING id`
+	}
+	_, err := r.db.QueryContext(ctx, &rows, query, status, pg.In(ids))
 	if err != nil {
 		return nil, err
 	}
-	result := make([]string, len(ids))
-	for i, row := range ids {
+	result := make([]string, len(rows))
+	for i, row := range rows {
 		result[i] = row.ID
 	}
 	return result, nil

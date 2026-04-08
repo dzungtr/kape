@@ -241,34 +241,60 @@ func TestTaskRepository_Lineage(t *testing.T) {
 	assert.Equal(t, "01RETRY1", chain[1].ID)
 }
 
-func TestTaskRepository_BulkTimeout(t *testing.T) {
+func TestTaskRepository_BulkUpdateStatus_UpdatesMatchingIDs(t *testing.T) {
 	db, cleanup := setupDB(t)
 	defer cleanup()
 
 	repo := postgres.NewTaskRepository(db)
 	ctx := context.Background()
 
-	// old processing task
-	old := fixedTask("01OLD")
-	old.ReceivedAt = time.Now().UTC().Add(-2 * time.Hour)
-	require.NoError(t, repo.Create(ctx, old))
+	t1 := fixedTask("01BU1")
+	t2 := fixedTask("01BU2")
+	t3 := fixedTask("01BU3")
+	require.NoError(t, repo.Create(ctx, t1))
+	require.NoError(t, repo.Create(ctx, t2))
+	require.NoError(t, repo.Create(ctx, t3))
 
-	// recent processing task — should NOT be timed out
-	recent := fixedTask("01RECENT")
-	recent.ReceivedAt = time.Now().UTC()
-	require.NoError(t, repo.Create(ctx, recent))
-
-	affected, err := repo.BulkTimeout(ctx, 3600) // 1 hour threshold
+	affected, err := repo.BulkUpdateStatus(ctx, []string{"01BU1", "01BU2"}, task.StatusTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"01OLD"}, affected)
+	assert.ElementsMatch(t, []string{"01BU1", "01BU2"}, affected)
 
-	found, err := repo.FindByID(ctx, "01OLD")
-	require.NoError(t, err)
-	assert.Equal(t, task.StatusTimeout, found.Status)
+	found1, _ := repo.FindByID(ctx, "01BU1")
+	assert.Equal(t, task.StatusTimeout, found1.Status)
+	assert.NotNil(t, found1.CompletedAt, "terminal status should set completed_at")
 
-	found2, err := repo.FindByID(ctx, "01RECENT")
+	found2, _ := repo.FindByID(ctx, "01BU2")
+	assert.Equal(t, task.StatusTimeout, found2.Status)
+
+	found3, _ := repo.FindByID(ctx, "01BU3")
+	assert.Equal(t, task.StatusProcessing, found3.Status, "t3 should be untouched")
+}
+
+func TestTaskRepository_BulkUpdateStatus_SkipsMissingIDs(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	t1 := fixedTask("01BU4")
+	require.NoError(t, repo.Create(ctx, t1))
+
+	affected, err := repo.BulkUpdateStatus(ctx, []string{"01BU4", "NOTEXIST"}, task.StatusTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, task.StatusProcessing, found2.Status)
+	assert.Equal(t, []string{"01BU4"}, affected)
+}
+
+func TestTaskRepository_BulkUpdateStatus_EmptyIDs_ReturnsEmpty(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	affected, err := repo.BulkUpdateStatus(ctx, []string{}, task.StatusTimeout)
+	require.NoError(t, err)
+	assert.Empty(t, affected)
 }
 
 func TestTaskRepository_EnsurePartition_Idempotent(t *testing.T) {
