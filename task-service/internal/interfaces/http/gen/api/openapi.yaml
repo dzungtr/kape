@@ -1,335 +1,298 @@
-openapi: 3.0.3
+openapi: "3.0.3"
 info:
-  description: Persists Task execution records and streams live updates.
   title: KAPE Task Service
-  version: 1.0.0
+  version: "1.0.0"
+  description: Persists Task execution records and streams live updates.
+
 servers:
-- url: http://localhost:8080
+  - url: http://localhost:8080
+
 tags:
-- name: tasks
-- name: handlers
+  - name: tasks
+  - name: handlers
+
 paths:
   /tasks:
-    get:
-      operationId: listTasks
-      parameters:
-      - explode: true
-        in: query
-        name: handler
-        required: false
-        schema:
-          type: string
-        style: form
-      - explode: true
-        in: query
-        name: status
-        required: false
-        schema:
-          $ref: "#/components/schemas/TaskStatus"
-        style: form
-      - explode: true
-        in: query
-        name: since
-        required: false
-        schema:
-          format: date-time
-          type: string
-        style: form
-      - explode: true
-        in: query
-        name: sort
-        required: false
-        schema:
-          default: received_at:desc
-          enum:
-          - received_at:asc
-          - received_at:desc
-          type: string
-        style: form
-      - explode: true
-        in: query
-        name: limit
-        required: false
-        schema:
-          default: 50
-          maximum: 200
-          minimum: 1
-          type: integer
-        style: form
-      - explode: true
-        in: query
-        name: cursor
-        required: false
-        schema:
-          type: string
-        style: form
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TaskList"
-          description: Task list
-      summary: List tasks with optional filters
-      tags:
-      - tasks
     post:
       operationId: createTask
+      tags: [tasks]
+      summary: Create a task record
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateTaskRequest"
-        required: true
+              $ref: '#/components/schemas/CreateTaskRequest'
       responses:
         "201":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
           description: Task created
-        "400":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/Task'
+        "400":
           description: Invalid request body
-      summary: Create a task record
-      tags:
-      - tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      summary: List tasks with optional filters
+      parameters:
+        - name: handler
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [received_at:asc, received_at:desc]
+            default: received_at:desc
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskList'
+
   /tasks/decisions:
     get:
       operationId: getDecisions
+      tags: [tasks]
+      summary: Decision distribution per handler
       parameters:
-      - explode: true
-        in: query
-        name: handler
-        required: false
-        schema:
-          type: string
-        style: form
-      - explode: true
-        in: query
-        name: since
-        required: true
-        schema:
-          format: date-time
-          type: string
-        style: form
+        - name: handler
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
+          description: Decision distribution
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DecisionDistribution"
-          description: Decision distribution
-      summary: Decision distribution per handler
-      tags:
-      - tasks
+                $ref: '#/components/schemas/DecisionDistribution'
+
   /tasks/bulk/status:
     patch:
       operationId: bulkUpdateStatus
+      tags: [tasks]
+      summary: Bulk update status for operator-selected tasks
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BulkTimeoutRequest"
-        required: true
+              $ref: '#/components/schemas/BulkTimeoutRequest'
       responses:
         "200":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BulkTimeoutResponse"
           description: Affected task IDs
-        "400":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/BulkTimeoutResponse'
+        "400":
           description: Invalid request
-      summary: Bulk mark Processing tasks as Timeout
-      tags:
-      - tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /tasks/{id}:
+    get:
+      operationId: getTask
+      tags: [tasks]
+      summary: Fetch a single task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     delete:
       operationId: deleteTask
+      tags: [tasks]
+      summary: Discard stale event — deletes the task record with no terminal state
       parameters:
-      - explode: false
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-        style: simple
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         "204":
           description: Deleted
         "404":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
           description: Not found
-      summary: Discard stale event — deletes the task record with no terminal state
-      tags:
-      - tasks
-    get:
-      operationId: getTask
-      parameters:
-      - explode: false
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-        style: simple
-      responses:
-        "200":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
-          description: Task
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-          description: Not found
-      summary: Fetch a single task
-      tags:
-      - tasks
+                $ref: '#/components/schemas/ErrorResponse'
+
   /tasks/{id}/status:
     patch:
       operationId: updateTaskStatus
+      tags: [tasks]
+      summary: Update task status
       parameters:
-      - explode: false
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-        style: simple
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UpdateStatusRequest"
-        required: true
+              $ref: '#/components/schemas/UpdateStatusRequest'
       responses:
         "200":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
           description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
         "404":
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
           description: Not found
-        "409":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
           description: Invalid status transition
-      summary: Update task status
-      tags:
-      - tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /tasks/{id}/retry:
     post:
       operationId: retryTask
+      tags: [tasks]
+      summary: Retry a task (Phase 7 — stub returns 501)
       parameters:
-      - explode: false
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-        style: simple
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         "501":
           description: Not implemented until Phase 7
-      summary: Retry a task (Phase 7 — stub returns 501)
-      tags:
-      - tasks
+
   /tasks/{id}/lineage:
     get:
       operationId: getTaskLineage
+      tags: [tasks]
+      summary: Full retry lineage chain for a task
       parameters:
-      - explode: false
-        in: path
-        name: id
-        required: true
-        schema:
-          type: string
-        style: simple
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         "200":
-          content:
-            application/json:
-              schema:
-                items:
-                  $ref: "#/components/schemas/Task"
-                type: array
           description: Lineage chain ordered root to latest
-        "404":
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+        "404":
           description: Not found
-      summary: Full retry lineage chain for a task
-      tags:
-      - tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /handlers:
     get:
       operationId: listHandlers
+      tags: [handlers]
+      summary: Per-handler aggregates
       parameters:
-      - explode: true
-        in: query
-        name: since
-        required: true
-        schema:
-          format: date-time
-          type: string
-        style: form
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
+          description: Handler stats
           content:
             application/json:
               schema:
-                items:
-                  $ref: "#/components/schemas/HandlerStat"
                 type: array
-          description: Handler stats
-      summary: Per-handler aggregates
-      tags:
-      - handlers
+                items:
+                  $ref: '#/components/schemas/HandlerStat'
+
 components:
   schemas:
     TaskStatus:
-      enum:
-      - Processing
-      - Completed
-      - Failed
-      - SchemaValidationFailed
-      - ActionError
-      - UnprocessableEvent
-      - PendingApproval
-      - Timeout
-      - Retried
       type: string
+      enum:
+        - Processing
+        - Completed
+        - Failed
+        - SchemaValidationFailed
+        - ActionError
+        - UnprocessableEvent
+        - PendingApproval
+        - Timeout
+        - Retried
+
     ActionResult:
-      example:
-        name: name
-        dry_run: true
-        type: type
-        error: error
-        status: status
+      type: object
+      required: [name, type, status, dry_run]
       properties:
         name:
           type: string
@@ -340,76 +303,41 @@ components:
         dry_run:
           type: boolean
         error:
-          nullable: true
           type: string
-      required:
-      - dry_run
-      - name
-      - status
-      - type
-      type: object
+          nullable: true
+
     TaskError:
-      example:
-        schema: schema
-        raw: raw
-        detail: detail
-        type: type
-        traceback: traceback
+      type: object
+      required: [type, detail]
       properties:
         type:
           type: string
         detail:
           type: string
         schema:
-          nullable: true
           type: string
+          nullable: true
         raw:
-          nullable: true
           type: string
+          nullable: true
         traceback:
-          nullable: true
           type: string
-      required:
-      - detail
-      - type
-      type: object
+          nullable: true
+
     Task:
-      example:
-        cluster: cluster
-        handler: handler
-        retry_of: retry_of
-        event_raw:
-          key: ""
-        otel_trace_id: otel_trace_id
-        event_source: event_source
-        error:
-          schema: schema
-          raw: raw
-          detail: detail
-          type: type
-          traceback: traceback
-        duration_ms: 0
-        completed_at: 2000-01-23T04:56:07.000+00:00
-        event_id: event_id
-        event_type: event_type
-        received_at: 2000-01-23T04:56:07.000+00:00
-        namespace: namespace
-        schema_output:
-          key: ""
-        dry_run: true
-        id: id
-        actions:
-        - name: name
-          dry_run: true
-          type: type
-          error: error
-          status: status
-        - name: name
-          dry_run: true
-          type: type
-          error: error
-          status: status
-        status: Processing
+      type: object
+      required:
+        - id
+        - cluster
+        - handler
+        - namespace
+        - event_id
+        - event_source
+        - event_type
+        - event_raw
+        - status
+        - dry_run
+        - received_at
       properties:
         id:
           type: string
@@ -426,68 +354,55 @@ components:
         event_type:
           type: string
         event_raw:
-          additionalProperties: true
           type: object
+          additionalProperties: true
         status:
-          $ref: "#/components/schemas/TaskStatus"
+          $ref: '#/components/schemas/TaskStatus'
         dry_run:
           type: boolean
         schema_output:
+          type: object
           additionalProperties: true
           nullable: true
-          type: object
         actions:
-          items:
-            $ref: "#/components/schemas/ActionResult"
-          nullable: true
           type: array
+          items:
+            $ref: '#/components/schemas/ActionResult'
+          nullable: true
         error:
-          $ref: "#/components/schemas/TaskError"
+          $ref: '#/components/schemas/TaskError'
+          nullable: true
         retry_of:
-          nullable: true
           type: string
+          nullable: true
         otel_trace_id:
-          nullable: true
           type: string
+          nullable: true
         received_at:
-          format: date-time
           type: string
+          format: date-time
         completed_at:
+          type: string
           format: date-time
           nullable: true
-          type: string
         duration_ms:
-          nullable: true
           type: integer
-      required:
-      - cluster
-      - dry_run
-      - event_id
-      - event_raw
-      - event_source
-      - event_type
-      - handler
-      - id
-      - namespace
-      - received_at
-      - status
-      type: object
+          nullable: true
+
     CreateTaskRequest:
-      example:
-        cluster: cluster
-        handler: handler
-        retry_of: retry_of
-        event_raw:
-          key: ""
-        otel_trace_id: otel_trace_id
-        event_source: event_source
-        event_id: event_id
-        event_type: event_type
-        received_at: 2000-01-23T04:56:07.000+00:00
-        namespace: namespace
-        dry_run: true
-        id: id
-        status: Processing
+      type: object
+      required:
+        - id
+        - cluster
+        - handler
+        - namespace
+        - event_id
+        - event_source
+        - event_type
+        - event_raw
+        - status
+        - dry_run
+        - received_at
       properties:
         id:
           type: string
@@ -504,249 +419,115 @@ components:
         event_type:
           type: string
         event_raw:
-          additionalProperties: true
           type: object
+          additionalProperties: true
         status:
-          $ref: "#/components/schemas/TaskStatus"
+          $ref: '#/components/schemas/TaskStatus'
         dry_run:
           type: boolean
         retry_of:
-          nullable: true
           type: string
+          nullable: true
         otel_trace_id:
+          type: string
           nullable: true
-          type: string
         received_at:
-          format: date-time
           type: string
-      required:
-      - cluster
-      - dry_run
-      - event_id
-      - event_raw
-      - event_source
-      - event_type
-      - handler
-      - id
-      - namespace
-      - received_at
-      - status
-      type: object
+          format: date-time
+
     UpdateStatusRequest:
-      example:
-        duration_ms: 0
-        completed_at: 2000-01-23T04:56:07.000+00:00
-        schema_output:
-          key: ""
-        error:
-          schema: schema
-          raw: raw
-          detail: detail
-          type: type
-          traceback: traceback
-        actions:
-        - name: name
-          dry_run: true
-          type: type
-          error: error
-          status: status
-        - name: name
-          dry_run: true
-          type: type
-          error: error
-          status: status
-        status: Processing
+      type: object
+      required: [status]
       properties:
         status:
-          $ref: "#/components/schemas/TaskStatus"
+          $ref: '#/components/schemas/TaskStatus'
         completed_at:
+          type: string
           format: date-time
           nullable: true
-          type: string
         schema_output:
+          type: object
           additionalProperties: true
           nullable: true
-          type: object
         actions:
-          items:
-            $ref: "#/components/schemas/ActionResult"
-          nullable: true
           type: array
-        error:
-          $ref: "#/components/schemas/TaskError"
-        duration_ms:
+          items:
+            $ref: '#/components/schemas/ActionResult'
           nullable: true
+        error:
+          $ref: '#/components/schemas/TaskError'
+          nullable: true
+        duration_ms:
           type: integer
-      required:
-      - status
-      type: object
+          nullable: true
+
     BulkTimeoutRequest:
-      example:
-        older_than_seconds: 1
-        status: Processing
-      properties:
-        status:
-          $ref: "#/components/schemas/TaskStatus"
-        older_than_seconds:
-          minimum: 1
-          type: integer
-      required:
-      - older_than_seconds
-      - status
       type: object
-    BulkTimeoutResponse:
-      example:
-        affected_ids:
-        - affected_ids
-        - affected_ids
+      required: [ids, status]
       properties:
-        affected_ids:
+        ids:
+          type: array
           items:
             type: string
-          type: array
-      required:
-      - affected_ids
+          minItems: 1
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+
+    BulkTimeoutResponse:
       type: object
+      required: [affected_ids]
+      properties:
+        affected_ids:
+          type: array
+          items:
+            type: string
+
     TaskList:
-      example:
-        total: 6
-        next_cursor: next_cursor
-        tasks:
-        - cluster: cluster
-          handler: handler
-          retry_of: retry_of
-          event_raw:
-            key: ""
-          otel_trace_id: otel_trace_id
-          event_source: event_source
-          error:
-            schema: schema
-            raw: raw
-            detail: detail
-            type: type
-            traceback: traceback
-          duration_ms: 0
-          completed_at: 2000-01-23T04:56:07.000+00:00
-          event_id: event_id
-          event_type: event_type
-          received_at: 2000-01-23T04:56:07.000+00:00
-          namespace: namespace
-          schema_output:
-            key: ""
-          dry_run: true
-          id: id
-          actions:
-          - name: name
-            dry_run: true
-            type: type
-            error: error
-            status: status
-          - name: name
-            dry_run: true
-            type: type
-            error: error
-            status: status
-          status: Processing
-        - cluster: cluster
-          handler: handler
-          retry_of: retry_of
-          event_raw:
-            key: ""
-          otel_trace_id: otel_trace_id
-          event_source: event_source
-          error:
-            schema: schema
-            raw: raw
-            detail: detail
-            type: type
-            traceback: traceback
-          duration_ms: 0
-          completed_at: 2000-01-23T04:56:07.000+00:00
-          event_id: event_id
-          event_type: event_type
-          received_at: 2000-01-23T04:56:07.000+00:00
-          namespace: namespace
-          schema_output:
-            key: ""
-          dry_run: true
-          id: id
-          actions:
-          - name: name
-            dry_run: true
-            type: type
-            error: error
-            status: status
-          - name: name
-            dry_run: true
-            type: type
-            error: error
-            status: status
-          status: Processing
+      type: object
+      required: [tasks, total]
       properties:
         tasks:
-          items:
-            $ref: "#/components/schemas/Task"
           type: array
+          items:
+            $ref: '#/components/schemas/Task'
         total:
           type: integer
         next_cursor:
-          nullable: true
           type: string
-      required:
-      - tasks
-      - total
-      type: object
+          nullable: true
+
     DecisionDistribution:
-      example:
-        handler: handler
-        distribution:
-          key: 0
-        since: 2000-01-23T04:56:07.000+00:00
+      type: object
+      required: [handler, since, distribution]
       properties:
         handler:
           type: string
         since:
-          format: date-time
           type: string
+          format: date-time
         distribution:
+          type: object
           additionalProperties:
             type: integer
-          type: object
-      required:
-      - distribution
-      - handler
-      - since
-      type: object
+
     HandlerStat:
-      example:
-        handler: handler
-        event_count: 0
-        status_breakdown:
-          key: 6
-        p99_latency_ms: 1
+      type: object
+      required: [handler, event_count, status_breakdown, p99_latency_ms]
       properties:
         handler:
           type: string
         event_count:
           type: integer
         status_breakdown:
+          type: object
           additionalProperties:
             type: integer
-          type: object
         p99_latency_ms:
           type: integer
-      required:
-      - event_count
-      - handler
-      - p99_latency_ms
-      - status_breakdown
-      type: object
+
     ErrorResponse:
-      example:
-        error: error
+      type: object
+      required: [error]
       properties:
         error:
           type: string
-      required:
-      - error
-      type: object
