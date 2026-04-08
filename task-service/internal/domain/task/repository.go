@@ -14,7 +14,7 @@ type Repository interface {
 	List(ctx context.Context, f ListFilter) ([]*Task, int, error)
 	Lineage(ctx context.Context, id string) ([]*Task, error)
 	HandlerStats(ctx context.Context, since time.Time) ([]HandlerStat, error)
-	BulkTimeout(ctx context.Context, olderThanSeconds int) ([]string, error)
+	BulkUpdateStatus(ctx context.Context, ids []string, status TaskStatus) ([]string, error)
 }
 
 // UpdateFields carries optional columns to update alongside status.
