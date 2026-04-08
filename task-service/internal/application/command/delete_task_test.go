@@ -13,7 +13,7 @@ import (
 )
 
 func TestDeleteTaskCommand_Execute_Delegates(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	repo.On("Delete", mock.Anything, "01DEL").Return(nil)
 
 	cmd := command.NewDeleteTaskCommand(repo)
@@ -21,7 +21,7 @@ func TestDeleteTaskCommand_Execute_Delegates(t *testing.T) {
 }
 
 func TestDeleteTaskCommand_Execute_NotFound(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	repo.On("Delete", mock.Anything, "GHOST").Return(task.ErrNotFound)
 
 	cmd := command.NewDeleteTaskCommand(repo)

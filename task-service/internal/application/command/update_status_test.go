@@ -17,8 +17,8 @@ func processingTask(id string) *task.Task {
 }
 
 func TestUpdateStatusCommand_ValidTransition_ProcessingToCompleted(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	stream := mocks.NewMockStream(t)
+	repo := mocks.NewRepository(t)
+	stream := mocks.NewStream(t)
 	updated := &task.Task{ID: "01T", Status: task.StatusCompleted}
 
 	repo.On("FindByID", mock.Anything, "01T").Return(processingTask("01T"), nil).Once()
@@ -33,8 +33,8 @@ func TestUpdateStatusCommand_ValidTransition_ProcessingToCompleted(t *testing.T)
 }
 
 func TestUpdateStatusCommand_InvalidTransition_CompletedToProcessing(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	stream := mocks.NewMockStream(t)
+	repo := mocks.NewRepository(t)
+	stream := mocks.NewStream(t)
 
 	repo.On("FindByID", mock.Anything, "01T").Return(&task.Task{ID: "01T", Status: task.StatusCompleted}, nil)
 
@@ -52,8 +52,8 @@ func TestUpdateStatusCommand_ValidTransitions_AllFromProcessing(t *testing.T) {
 	}
 	for _, target := range targets {
 		t.Run(string(target), func(t *testing.T) {
-			repo := mocks.NewMockRepository(t)
-			stream := mocks.NewMockStream(t)
+			repo := mocks.NewRepository(t)
+			stream := mocks.NewStream(t)
 			result := &task.Task{ID: "01T", Status: target}
 
 			repo.On("FindByID", mock.Anything, "01T").Return(processingTask("01T"), nil).Once()

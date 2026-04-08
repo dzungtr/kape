@@ -15,8 +15,8 @@ import (
 )
 
 func TestCreateTaskCommand_Execute_CreatesAndPublishes(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	stream := mocks.NewMockStream(t)
+	repo := mocks.NewRepository(t)
+	stream := mocks.NewStream(t)
 
 	repo.On("Create", mock.Anything, mock.MatchedBy(func(tsk *task.Task) bool {
 		return tsk.ID == "01TEST" && tsk.Status == task.StatusProcessing
@@ -43,8 +43,8 @@ func TestCreateTaskCommand_Execute_CreatesAndPublishes(t *testing.T) {
 }
 
 func TestCreateTaskCommand_Execute_RepoErrorDoesNotPublish(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	stream := mocks.NewMockStream(t)
+	repo := mocks.NewRepository(t)
+	stream := mocks.NewStream(t)
 
 	repo.On("Create", mock.Anything, mock.Anything).Return(fmt.Errorf("db error"))
 	// stream.Publish must NOT be called
