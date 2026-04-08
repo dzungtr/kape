@@ -19,16 +19,16 @@ import (
 
 type BulkTimeoutRequest struct {
 
-	Status TaskStatus `json:"status"`
+	Ids []string `json:"ids"`
 
-	OlderThanSeconds int32 `json:"older_than_seconds"`
+	Status TaskStatus `json:"status"`
 }
 
 // AssertBulkTimeoutRequestRequired checks if the required fields are not zero-ed
 func AssertBulkTimeoutRequestRequired(obj BulkTimeoutRequest) error {
 	elements := map[string]interface{}{
+		"ids": obj.Ids,
 		"status": obj.Status,
-		"older_than_seconds": obj.OlderThanSeconds,
 	}
 	for name, el := range elements {
 		if isZero := IsZeroValue(el); isZero {
@@ -41,8 +41,8 @@ func AssertBulkTimeoutRequestRequired(obj BulkTimeoutRequest) error {
 
 // AssertBulkTimeoutRequestConstraints checks if the values respects the defined constraints
 func AssertBulkTimeoutRequestConstraints(obj BulkTimeoutRequest) error {
-	if obj.OlderThanSeconds < 1 {
-		return &ParsingError{Param: "OlderThanSeconds", Err: errors.New(errMsgMinValueConstraint)}
+	if len(obj.Ids) < 1 {
+		return &ParsingError{Param: "Ids", Err: errors.New(errMsgMinValueConstraint)}
 	}
 	return nil
 }

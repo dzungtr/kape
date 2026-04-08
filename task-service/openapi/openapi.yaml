@@ -108,7 +108,7 @@ paths:
     patch:
       operationId: bulkUpdateStatus
       tags: [tasks]
-      summary: Bulk mark Processing tasks as Timeout
+      summary: Bulk update status for operator-selected tasks
       requestBody:
         required: true
         content:
@@ -463,13 +463,15 @@ components:
 
     BulkTimeoutRequest:
       type: object
-      required: [status, older_than_seconds]
+      required: [ids, status]
       properties:
+        ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
         status:
           $ref: '#/components/schemas/TaskStatus'
-        older_than_seconds:
-          type: integer
-          minimum: 1
 
     BulkTimeoutResponse:
       type: object
