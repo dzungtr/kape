@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kape-runtime = "kape_runtime.main:main"
+kape-runtime = "kape_runtime.main:entrypoint"
 
 [project.optional-dependencies]
 dev = [
