@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Edit(&)",
+      "Read(&)",
       "Bash(find:*)",
       "Bash(ls:*)",
       "Bash(grep:*)",
@@ -10,16 +12,10 @@
       "Bash(mkdir:*)",
       "Bash(cp:*)",
       "Bash(npx @changesets/cli:*)",
-      "Bash(yarn run:*)",
-      "Bash(yarn build:*)",
-      "Bash(yarn compile:*)",
-      "Bash(yarn lint)",
-      "Bash(yarn add:)",
-      "Bash(yarn why:)",
-      "Bash(yarn test)",
       "Bash(sed:*)",
       "Bash(go test:*)",
       "Bash(go build:*)",
+      "Bash(go get:*)",
       "Bash(go vet:*)",
       "Bash(go mod:*)",
       "Bash(go mod:*)",
@@ -35,13 +31,6 @@
       "Bash(git commit:*)",
       "Bash(git pull:*)"
     ],
-    "deny": [
-      "Bash(go install:*)",
-      "Bash(rm -rf /)"
-    ]
-  },
-  "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "frontend-design@claude-plugins-official": true
+    "deny": ["Bash(go install:*)", "Bash(rm -rf /)"]
   }
 }
