@@ -28,7 +28,6 @@ class TaskServiceClient:
         actions: list[dict[str, Any]] | None = None,
         error: dict[str, Any] | None = None,
         duration_ms: int | None = None,
-        otel_trace_id: str | None = None,
     ) -> dict[str, Any]:
         """PATCH /tasks/{id}/status — write final Task status after agent completes."""
         body: dict[str, Any] = {"status": status}

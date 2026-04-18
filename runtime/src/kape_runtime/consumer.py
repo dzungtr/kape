@@ -13,7 +13,6 @@ from ulid import ULID
 from kape_runtime.config import KapeConfig, NatsConfig
 from kape_runtime.models import CloudEvent, TaskStatus
 from kape_runtime.task_service import TaskServiceClient
-from kape_runtime.tracing import get_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +110,6 @@ class ConsumerLoop:
                 "status": task_status.value,
                 "completed_at": datetime.now(tz=timezone.utc).isoformat(),
                 "duration_ms": duration_ms,
-                "otel_trace_id": get_trace_id(),
             }
             if state.get("schema_output") is not None:
                 update_kwargs["schema_output"] = state["schema_output"]
