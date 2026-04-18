@@ -69,11 +69,10 @@ func startServer(t *testing.T) *testEnv {
 		command.NewCreateTaskCommand(repo, hub),
 		command.NewUpdateStatusCommand(repo, hub),
 		command.NewDeleteTaskCommand(repo),
-		command.NewBulkTimeoutCommand(repo, hub),
+		command.NewBulkUpdateStatusCommand(repo, hub),
 		query.NewGetTaskQuery(repo),
 		query.NewListTasksQuery(repo),
 		query.NewTaskLineageQuery(repo),
-		query.NewHandlerStatsQuery(repo),
 	)
 
 	r := chi.NewRouter()
@@ -277,13 +276,14 @@ func TestE2E_LineageChain(t *testing.T) {
 func TestE2E_BulkTimeout(t *testing.T) {
 	env := startServer(t)
 
-	for _, id := range []string{"01BT1", "01BT2", "01BT3"} {
+	ids := []string{"01BT1", "01BT2", "01BT3"}
+	for _, id := range ids {
 		env.post(t, "/tasks", createTaskBody(id))
 	}
 
 	resp := env.patch(t, "/tasks/bulk/status", map[string]interface{}{
-		"status":             "Timeout",
-		"older_than_seconds": 0, // all Processing tasks
+		"ids":    ids,
+		"status": "Timeout",
 	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var bulkResp map[string]interface{}
