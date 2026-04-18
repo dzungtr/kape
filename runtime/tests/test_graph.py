@@ -166,3 +166,78 @@ def test_respond_node_sets_schema_validation_failed_when_output_none():
     result = respond(state)
     assert result["task_status"] == TaskStatus.SchemaValidationFailed
     assert result["should_abort"] is True
+
+
+# --- graph assembly ---
+
+from kape_runtime.graph.graph import build_graph
+from kape_runtime.config import SchemaConfig
+
+
+@pytest.mark.asyncio
+async def test_build_graph_produces_runnable_graph():
+    kape_cfg = make_kape_config()
+    llm_cfg = make_llm_config()
+    schema_cfg = SchemaConfig(
+        name="test",
+        json_schema={"type": "object", "properties": {"decision": {"type": "string"}}},
+    )
+
+    expected_output = {"decision": "ignore", "confidence": 0.9, "reasoning": "OK"}
+    mock_ainvoke = AsyncMock(return_value=expected_output)
+    mock_base_llm = MagicMock()
+    mock_base_llm.with_structured_output.return_value = MagicMock(ainvoke=mock_ainvoke)
+
+    graph = build_graph(mock_base_llm, kape_cfg, llm_cfg, schema_cfg)
+
+    result = await graph.ainvoke(
+        AgentState(
+            event=sample_cloud_event(),
+            task_id="01JXYZ",
+            retry_task=None,
+            messages=[],
+            schema_output=None,
+            parse_error=None,
+            action_results=[],
+            task_status=None,
+            should_abort=False,
+            dry_run=False,
+        )
+    )
+
+    assert result["task_status"] == TaskStatus.Completed
+    assert result["schema_output"] == expected_output
+
+
+@pytest.mark.asyncio
+async def test_build_graph_schema_validation_failed_when_llm_raises():
+    kape_cfg = make_kape_config()
+    llm_cfg = make_llm_config()
+    schema_cfg = SchemaConfig(
+        name="test",
+        json_schema={"type": "object", "properties": {"decision": {"type": "string"}}},
+    )
+
+    mock_ainvoke = AsyncMock(side_effect=Exception("parse error"))
+    mock_base_llm = MagicMock()
+    mock_base_llm.with_structured_output.return_value = MagicMock(ainvoke=mock_ainvoke)
+
+    graph = build_graph(mock_base_llm, kape_cfg, llm_cfg, schema_cfg)
+
+    result = await graph.ainvoke(
+        AgentState(
+            event=sample_cloud_event(),
+            task_id="01JXYZ",
+            retry_task=None,
+            messages=[],
+            schema_output=None,
+            parse_error=None,
+            action_results=[],
+            task_status=None,
+            should_abort=False,
+            dry_run=False,
+        )
+    )
+
+    assert result["task_status"] == TaskStatus.SchemaValidationFailed
+    assert result["schema_output"] is None
