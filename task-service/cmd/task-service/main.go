@@ -56,12 +56,11 @@ func main() {
 	getTask := query.NewGetTaskQuery(repo)
 	listTasks := query.NewListTasksQuery(repo)
 	taskLineage := query.NewTaskLineageQuery(repo)
-	handlerStats := query.NewHandlerStatsQuery(repo)
 
 	// HTTP adapter
 	srv := httpAdapter.NewServer(
 		createTask, updateStatus, deleteTask, bulkTimeout,
-		getTask, listTasks, taskLineage, handlerStats,
+		getTask, listTasks, taskLineage,
 	)
 	sseHandler := httpAdapter.NewSSEHandler(hub)
 

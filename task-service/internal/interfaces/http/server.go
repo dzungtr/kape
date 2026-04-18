@@ -23,7 +23,6 @@ type Server struct {
 	getTask      *query.GetTaskQuery
 	listTasks    *query.ListTasksQuery
 	taskLineage  *query.TaskLineageQuery
-	handlerStats *query.HandlerStatsQuery
 }
 
 func NewServer(
@@ -34,13 +33,12 @@ func NewServer(
 	getTask *query.GetTaskQuery,
 	listTasks *query.ListTasksQuery,
 	taskLineage *query.TaskLineageQuery,
-	handlerStats *query.HandlerStatsQuery,
 ) *Server {
 	return &Server{
 		createTask: createTask, updateStatus: updateStatus,
 		deleteTask: deleteTask, bulkTimeout: bulkTimeout,
 		getTask: getTask, listTasks: listTasks,
-		taskLineage: taskLineage, handlerStats: handlerStats,
+		taskLineage: taskLineage,
 	}
 }
 
@@ -249,31 +247,9 @@ func (s *Server) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gen.BulkTimeoutResponse{AffectedIds: ids})
 }
 
-// ListHandlers handles GET /handlers
+// ListHandlers handles GET /handlers — stubbed until Prometheus integration (per 0008 spec, handler aggregates are owned by Prometheus)
 func (s *Server) ListHandlers(w http.ResponseWriter, r *http.Request) {
-	sinceStr := r.URL.Query().Get("since")
-	since, err := time.Parse(time.RFC3339, sinceStr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid since parameter")
-		return
-	}
-	stats, err := s.handlerStats.Execute(r.Context(), since)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	result := make([]gen.HandlerStat, len(stats))
-	for i, s := range stats {
-		breakdown := make(map[string]int32, len(s.StatusBreakdown))
-		for k, v := range s.StatusBreakdown {
-			breakdown[string(k)] = int32(v)
-		}
-		result[i] = gen.HandlerStat{
-			Handler: s.Handler, EventCount: int32(s.EventCount),
-			StatusBreakdown: breakdown,
-		}
-	}
-	writeJSON(w, http.StatusOK, result)
+	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // GetDecisions handles GET /tasks/decisions

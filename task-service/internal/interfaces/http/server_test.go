@@ -30,7 +30,6 @@ func buildServer(t *testing.T) (*httpAdapter.Server, *mocks.Repository, *mocks.S
 		query.NewGetTaskQuery(repo),
 		query.NewListTasksQuery(repo),
 		query.NewTaskLineageQuery(repo),
-		query.NewHandlerStatsQuery(repo),
 	)
 	return srv, repo, stream
 }

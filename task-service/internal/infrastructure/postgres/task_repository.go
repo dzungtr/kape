@@ -226,48 +226,6 @@ func (r *TaskRepository) findRoot(ctx context.Context, id string) (string, error
 	}
 }
 
-func (r *TaskRepository) HandlerStats(ctx context.Context, since time.Time) ([]task.HandlerStat, error) {
-	type row struct {
-		Handler string          `pg:"handler"`
-		Status  task.TaskStatus `pg:"status"`
-		Count   int             `pg:"count"`
-	}
-	var rows []row
-	_, err := r.db.QueryContext(ctx, &rows, `
-		SELECT
-			handler,
-			status,
-			COUNT(*) AS count
-		FROM tasks
-		WHERE received_at >= ?
-		GROUP BY handler, status
-		ORDER BY handler, status
-	`, since)
-	if err != nil {
-		return nil, err
-	}
-
-	statsMap := map[string]*task.HandlerStat{}
-	for _, row := range rows {
-		s, ok := statsMap[row.Handler]
-		if !ok {
-			s = &task.HandlerStat{
-				Handler:         row.Handler,
-				StatusBreakdown: map[task.TaskStatus]int{},
-			}
-			statsMap[row.Handler] = s
-		}
-		s.EventCount += row.Count
-		s.StatusBreakdown[row.Status] = row.Count
-	}
-
-	result := make([]task.HandlerStat, 0, len(statsMap))
-	for _, s := range statsMap {
-		result = append(result, *s)
-	}
-	return result, nil
-}
-
 func (r *TaskRepository) BulkUpdateStatus(ctx context.Context, ids []string, status task.TaskStatus) ([]string, error) {
 	if len(ids) == 0 {
 		return []string{}, nil

@@ -122,13 +122,6 @@ type ListFilter struct {
 	Cursor  string
 }
 
-// HandlerStat is a per-handler aggregate returned by Repository.HandlerStats.
-type HandlerStat struct {
-	Handler         string
-	EventCount      int
-	StatusBreakdown map[TaskStatus]int
-}
-
 // ErrNotFound is returned by Repository when a Task does not exist.
 var ErrNotFound = fmt.Errorf("task not found")
 

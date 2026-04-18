@@ -13,7 +13,6 @@ type Repository interface {
 	FindByID(ctx context.Context, id string) (*Task, error)
 	List(ctx context.Context, f ListFilter) ([]*Task, int, error)
 	Lineage(ctx context.Context, id string) ([]*Task, error)
-	HandlerStats(ctx context.Context, since time.Time) ([]HandlerStat, error)
 	BulkUpdateStatus(ctx context.Context, ids []string, status TaskStatus) ([]string, error)
 }
 
