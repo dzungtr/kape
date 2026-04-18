@@ -1,6 +1,6 @@
 # Phase 3 — Task-Service Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build `kape-task-service` — the Go REST API that persists Task records to PostgreSQL and streams live updates via SSE, serving as the exclusive mediator between handler pods and the dashboard.
 
@@ -76,7 +76,7 @@ test/e2e/
 - Create: `task-service/Makefile`
 - Create: `task-service/.openapi-generator-ignore`
 
-- [ ] **Step 1: Add all dependencies to go.mod**
+- [x] **Step 1: Add all dependencies to go.mod**
 
 Run from `task-service/`:
 ```bash
@@ -93,7 +93,7 @@ go get github.com/vektra/mockery/v2@v2.53.3
 go mod tidy
 ```
 
-- [ ] **Step 2: Create Makefile**
+- [x] **Step 2: Create Makefile**
 
 ```makefile
 .PHONY: generate mock test test-e2e migrate
@@ -130,7 +130,7 @@ migrate:
 	go run ./cmd/task-service --migrate-only
 ```
 
-- [ ] **Step 3: Create .openapi-generator-ignore to protect manual files**
+- [x] **Step 3: Create .openapi-generator-ignore to protect manual files**
 
 ```
 # Prevent generator from overwriting these if they already exist
@@ -139,7 +139,7 @@ go.mod
 go.sum
 ```
 
-- [ ] **Step 4: Verify go workspace includes task-service**
+- [x] **Step 4: Verify go workspace includes task-service**
 
 Check `go.work` at repo root — `task-service` must already be listed:
 ```
@@ -151,7 +151,7 @@ use (
 ```
 If missing, add `./task-service` to the `use` block.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add task-service/go.mod task-service/go.sum task-service/Makefile task-service/.openapi-generator-ignore
@@ -165,7 +165,7 @@ git commit -m "chore(task-service): add dependencies and Makefile"
 **Files:**
 - Create: `task-service/openapi/openapi.yaml`
 
-- [ ] **Step 1: Write the complete OpenAPI spec**
+- [x] **Step 1: Write the complete OpenAPI spec**
 
 ```yaml
 # task-service/openapi/openapi.yaml
@@ -702,14 +702,14 @@ components:
           type: string
 ```
 
-- [ ] **Step 2: Validate the spec**
+- [x] **Step 2: Validate the spec**
 
 ```bash
 openapi-generator-cli validate -i task-service/openapi/openapi.yaml
 ```
 Expected: `No validation errors detected.`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add task-service/openapi/openapi.yaml
@@ -725,7 +725,7 @@ git commit -m "feat(task-service): add OpenAPI specification"
 - Create: `task-service/migrations/002_create_tasks.sql`
 - Create: `task-service/migrations/003_create_indexes.sql`
 
-- [ ] **Step 1: Create enum migration**
+- [x] **Step 1: Create enum migration**
 
 ```sql
 -- task-service/migrations/001_create_enum.sql
@@ -746,7 +746,7 @@ CREATE TYPE task_status AS ENUM (
 DROP TYPE IF EXISTS task_status;
 ```
 
-- [ ] **Step 2: Create tasks table migration**
+- [x] **Step 2: Create tasks table migration**
 
 ```sql
 -- task-service/migrations/002_create_tasks.sql
@@ -785,7 +785,7 @@ DROP TABLE IF EXISTS tasks_2026_04;
 DROP TABLE IF EXISTS tasks;
 ```
 
-- [ ] **Step 3: Create indexes migration**
+- [x] **Step 3: Create indexes migration**
 
 ```sql
 -- task-service/migrations/003_create_indexes.sql
@@ -810,7 +810,7 @@ DROP INDEX IF EXISTS idx_tasks_handler;
 DROP INDEX IF EXISTS idx_tasks_received_at;
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add task-service/migrations/
@@ -824,26 +824,26 @@ git commit -m "feat(task-service): add database migrations"
 **Files:**
 - Create: `task-service/internal/interfaces/http/gen/` (generated)
 
-- [ ] **Step 1: Install openapi-generator-cli if not present**
+- [x] **Step 1: Install openapi-generator-cli if not present**
 
 ```bash
 npm install -g @openapitools/openapi-generator-cli
 ```
 
-- [ ] **Step 2: Run generation from repo root**
+- [x] **Step 2: Run generation from repo root**
 
 ```bash
 cd task-service && make generate
 ```
 
-- [ ] **Step 3: Verify generated files exist**
+- [x] **Step 3: Verify generated files exist**
 
 ```bash
 ls task-service/internal/interfaces/http/gen/
 ```
 Expected output includes: `api_tasks.go`, `api_handlers.go`, `model_task.go`, `model_task_status.go`, `routers.go` (exact names vary by generator version — confirm at least one `api_*.go` and `model_*.go` exist).
 
-- [ ] **Step 4: Add gen/ to .gitignore if desired, or commit generated files**
+- [x] **Step 4: Add gen/ to .gitignore if desired, or commit generated files**
 
 The team convention for generated files is to commit them so CI doesn't need the generator installed. Commit:
 ```bash
@@ -861,7 +861,7 @@ git commit -m "feat(task-service): generate Chi server stubs from OpenAPI spec"
 - Create: `task-service/internal/domain/task/stream.go`
 - Create: `task-service/internal/domain/task/task_test.go`
 
-- [ ] **Step 1: Write the failing tests first**
+- [x] **Step 1: Write the failing tests first**
 
 ```go
 // task-service/internal/domain/task/task_test.go
@@ -968,14 +968,14 @@ func TestNewTask_SetsDefaults(t *testing.T) {
 func ptr(s string) *string { return &s }
 ```
 
-- [ ] **Step 2: Run — confirm compile failure**
+- [x] **Step 2: Run — confirm compile failure**
 
 ```bash
 cd task-service && go test ./internal/domain/task/...
 ```
 Expected: compile error — `task` package does not exist yet.
 
-- [ ] **Step 3: Write task.go**
+- [x] **Step 3: Write task.go**
 
 ```go
 // task-service/internal/domain/task/task.go
@@ -1117,7 +1117,7 @@ var ErrInvalidTransition = fmt.Errorf("invalid status transition")
 
 Add `"fmt"` to the import block.
 
-- [ ] **Step 4: Write repository.go**
+- [x] **Step 4: Write repository.go**
 
 ```go
 // task-service/internal/domain/task/repository.go
@@ -1150,7 +1150,7 @@ type UpdateFields struct {
 }
 ```
 
-- [ ] **Step 5: Write stream.go**
+- [x] **Step 5: Write stream.go**
 
 ```go
 // task-service/internal/domain/task/stream.go
@@ -1163,14 +1163,14 @@ type Stream interface {
 }
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 cd task-service && go test ./internal/domain/task/...
 ```
 Expected: all tests pass. Fix any compile errors (e.g. missing `"fmt"` import in task.go).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add task-service/internal/domain/task/
@@ -1185,7 +1185,7 @@ git commit -m "feat(task-service): add domain Task entity, ports, and unit tests
 - Create: `task-service/internal/infrastructure/sse/hub.go`
 - Create: `task-service/internal/infrastructure/sse/hub_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```go
 // task-service/internal/infrastructure/sse/hub_test.go
@@ -1289,14 +1289,14 @@ func TestHub_UnsubscribeStopsDelivery(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests — confirm failure**
+- [x] **Step 2: Run tests — confirm failure**
 
 ```bash
 cd task-service && go test ./internal/infrastructure/sse/...
 ```
 Expected: compile error — `sse` package does not exist.
 
-- [ ] **Step 3: Write hub.go**
+- [x] **Step 3: Write hub.go**
 
 ```go
 // task-service/internal/infrastructure/sse/hub.go
@@ -1354,14 +1354,14 @@ func (h *Hub) Subscribe() (<-chan *task.Task, func()) {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cd task-service && go test ./internal/infrastructure/sse/...
 ```
 Expected: all 4 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add task-service/internal/infrastructure/sse/
@@ -1377,7 +1377,7 @@ git commit -m "feat(task-service): implement SSE hub with unit tests"
 - Create: `task-service/internal/infrastructure/postgres/migrate.go`
 - Create: `task-service/internal/infrastructure/postgres/task_repository_test.go`
 
-- [ ] **Step 1: Write task_repository.go**
+- [x] **Step 1: Write task_repository.go**
 
 ```go
 // task-service/internal/infrastructure/postgres/task_repository.go
@@ -1690,7 +1690,7 @@ func (r *TaskRepository) EnsurePartition(ctx context.Context, month time.Time) e
 }
 ```
 
-- [ ] **Step 2: Write migrate.go**
+- [x] **Step 2: Write migrate.go**
 
 ```go
 // task-service/internal/infrastructure/postgres/migrate.go
@@ -1725,7 +1725,7 @@ func RunMigrations(dsn string) error {
 }
 ```
 
-- [ ] **Step 3: Write integration tests**
+- [x] **Step 3: Write integration tests**
 
 ```go
 // task-service/internal/infrastructure/postgres/task_repository_test.go
@@ -2015,14 +2015,14 @@ func TestTaskRepository_EnsurePartition_Idempotent(t *testing.T) {
 func strPtr(s string) *string { return &s }
 ```
 
-- [ ] **Step 4: Run integration tests**
+- [x] **Step 4: Run integration tests**
 
 ```bash
 cd task-service && go test ./internal/infrastructure/postgres/... -v -timeout 120s
 ```
 Expected: all tests pass (testcontainers will pull the postgres image on first run — takes ~30s).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add task-service/internal/infrastructure/postgres/
@@ -2037,26 +2037,26 @@ git commit -m "feat(task-service): implement postgres TaskRepository with integr
 - Create: `task-service/internal/domain/task/mocks/mock_repository.go`
 - Create: `task-service/internal/domain/task/mocks/mock_stream.go`
 
-- [ ] **Step 1: Run mockery**
+- [x] **Step 1: Run mockery**
 
 ```bash
 cd task-service && make mock
 ```
 
-- [ ] **Step 2: Verify mock files exist**
+- [x] **Step 2: Verify mock files exist**
 
 ```bash
 ls task-service/internal/domain/task/mocks/
 ```
 Expected: `mock_repository.go`, `mock_stream.go`
 
-- [ ] **Step 3: Verify mocks compile**
+- [x] **Step 3: Verify mocks compile**
 
 ```bash
 cd task-service && go build ./internal/domain/task/mocks/...
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add task-service/internal/domain/task/mocks/
@@ -2073,7 +2073,7 @@ git commit -m "feat(task-service): generate mockery mocks for domain ports"
 - Create: `task-service/internal/application/command/delete_task.go` + `_test.go`
 - Create: `task-service/internal/application/command/bulk_timeout.go` + `_test.go`
 
-- [ ] **Step 1: Write CreateTask**
+- [x] **Step 1: Write CreateTask**
 
 ```go
 // task-service/internal/application/command/create_task.go
@@ -2171,7 +2171,7 @@ func TestCreateTaskCommand_Execute_RepoErrorDoesNotPublish(t *testing.T) {
 
 Add `"fmt"` to imports in the test file.
 
-- [ ] **Step 2: Write UpdateStatusCommand**
+- [x] **Step 2: Write UpdateStatusCommand**
 
 ```go
 // task-service/internal/application/command/update_status.go
@@ -2310,7 +2310,7 @@ func TestUpdateStatusCommand_ValidTransitions_AllFromProcessing(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Write DeleteTaskCommand**
+- [x] **Step 3: Write DeleteTaskCommand**
 
 ```go
 // task-service/internal/application/command/delete_task.go
@@ -2369,7 +2369,7 @@ func TestDeleteTaskCommand_Execute_NotFound(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Write BulkTimeoutCommand**
+- [x] **Step 4: Write BulkTimeoutCommand**
 
 ```go
 // task-service/internal/application/command/bulk_timeout.go
@@ -2452,14 +2452,14 @@ func TestBulkTimeoutCommand_NoneAffected_NoPublish(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run all command tests**
+- [x] **Step 5: Run all command tests**
 
 ```bash
 cd task-service && go test ./internal/application/command/... -v
 ```
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add task-service/internal/application/command/
@@ -2476,7 +2476,7 @@ git commit -m "feat(task-service): implement application commands with unit test
 - Create: `task-service/internal/application/query/task_lineage.go` + `_test.go`
 - Create: `task-service/internal/application/query/handler_stats.go` + `_test.go`
 
-- [ ] **Step 1: Write all queries**
+- [x] **Step 1: Write all queries**
 
 ```go
 // task-service/internal/application/query/get_task.go
@@ -2576,7 +2576,7 @@ func (q *HandlerStatsQuery) Execute(ctx context.Context, since time.Time) ([]tas
 }
 ```
 
-- [ ] **Step 2: Write query tests**
+- [x] **Step 2: Write query tests**
 
 ```go
 // task-service/internal/application/query/get_task_test.go
@@ -2715,14 +2715,14 @@ func TestHandlerStatsQuery_DelegatesToRepo(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run query tests**
+- [x] **Step 3: Run query tests**
 
 ```bash
 cd task-service && go test ./internal/application/query/... -v
 ```
 Expected: all tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add task-service/internal/application/query/
@@ -2743,14 +2743,14 @@ The generated router interface (`TasksApiServicer`) methods must be implemented 
 
 Note: `GET /tasks/stream` is NOT in the generated interface — it is registered manually in `sse_handler.go` and mounted onto the Chi router in `main.go`.
 
-- [ ] **Step 1: Inspect generated interface name**
+- [x] **Step 1: Inspect generated interface name**
 
 ```bash
 grep -n "interface" task-service/internal/interfaces/http/gen/api_tasks.go | head -5
 ```
 Note the exact interface name (e.g. `TasksApiServicer`) and use it in `server.go` below.
 
-- [ ] **Step 2: Write server.go**
+- [x] **Step 2: Write server.go**
 
 Replace `TasksApiServicer` below with the actual interface name found in Step 1.
 
@@ -3107,7 +3107,7 @@ func genActionsTosDomain(genActions *[]gen.ActionResult) task.Actions {
 
 Add `"fmt"` and `"github.com/go-chi/chi/v5"` to imports.
 
-- [ ] **Step 3: Write sse_handler.go**
+- [x] **Step 3: Write sse_handler.go**
 
 ```go
 // task-service/internal/interfaces/http/sse_handler.go
@@ -3166,7 +3166,7 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-- [ ] **Step 4: Write server_test.go**
+- [x] **Step 4: Write server_test.go**
 
 ```go
 // task-service/internal/interfaces/http/server_test.go
@@ -3310,7 +3310,7 @@ func TestServer_RetryTask_501(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Write sse_handler_test.go**
+- [x] **Step 5: Write sse_handler_test.go**
 
 ```go
 // task-service/internal/interfaces/http/sse_handler_test.go
@@ -3377,14 +3377,14 @@ func TestSSEHandler_DeliversPublishedTask(t *testing.T) {
 
 Add `"context"` import to sse_handler_test.go.
 
-- [ ] **Step 6: Run HTTP adapter tests**
+- [x] **Step 6: Run HTTP adapter tests**
 
 ```bash
 cd task-service && go test ./internal/interfaces/http/... -v
 ```
 Expected: all tests pass. Fix any field name mismatches between `gen.Task` struct and `domainToGenTask` — check generated field names against the OpenAPI spec.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add task-service/internal/interfaces/http/server.go \
@@ -3401,7 +3401,7 @@ git commit -m "feat(task-service): implement HTTP adapter with SSE and unit test
 **Files:**
 - Create: `task-service/cmd/task-service/main.go`
 
-- [ ] **Step 1: Write main.go**
+- [x] **Step 1: Write main.go**
 
 ```go
 // task-service/cmd/task-service/main.go
@@ -3504,14 +3504,14 @@ func envOrDefault(key, def string) string {
 }
 ```
 
-- [ ] **Step 2: Build to verify compilation**
+- [x] **Step 2: Build to verify compilation**
 
 ```bash
 cd task-service && go build ./cmd/task-service/...
 ```
 Expected: no errors. Fix any import or type mismatches.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add task-service/cmd/task-service/main.go
@@ -3525,7 +3525,7 @@ git commit -m "feat(task-service): add composition root and HTTP server entrypoi
 **Files:**
 - Create: `task-service/test/e2e/tasks_test.go`
 
-- [ ] **Step 1: Write E2E tests**
+- [x] **Step 1: Write E2E tests**
 
 ```go
 //go:build e2e
@@ -3832,21 +3832,21 @@ func TestE2E_BulkTimeout(t *testing.T) {
 
 Add `"net"` to imports.
 
-- [ ] **Step 2: Run E2E tests**
+- [x] **Step 2: Run E2E tests**
 
 ```bash
 cd task-service && go test ./test/e2e/... -tags e2e -v -timeout 120s
 ```
 Expected: all tests pass (first run pulls postgres image — allow ~60s).
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 ```bash
 cd task-service && go test ./... && go test ./test/e2e/... -tags e2e -timeout 120s
 ```
 Expected: all tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add task-service/test/

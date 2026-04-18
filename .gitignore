@@ -29,5 +29,7 @@ sbom/
 # Git worktrees
 .worktrees/
 
+# Compiled binaries
+task-service/task-service
 # ignore binary build
 cmd
