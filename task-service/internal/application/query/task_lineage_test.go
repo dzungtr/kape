@@ -13,7 +13,7 @@ import (
 )
 
 func TestTaskLineageQuery_ReturnsChain(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	chain := []*task.Task{{ID: "01ROOT"}, {ID: "01RETRY"}}
 	repo.On("Lineage", mock.Anything, "01RETRY").Return(chain, nil)
 

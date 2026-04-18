@@ -127,7 +127,6 @@ type HandlerStat struct {
 	Handler         string
 	EventCount      int
 	StatusBreakdown map[TaskStatus]int
-	P99LatencyMs    int
 }
 
 // ErrNotFound is returned by Repository when a Task does not exist.

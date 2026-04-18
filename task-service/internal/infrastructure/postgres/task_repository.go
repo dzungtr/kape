@@ -231,15 +231,13 @@ func (r *TaskRepository) HandlerStats(ctx context.Context, since time.Time) ([]t
 		Handler string          `pg:"handler"`
 		Status  task.TaskStatus `pg:"status"`
 		Count   int             `pg:"count"`
-		P99Ms   int             `pg:"p99_ms"`
 	}
 	var rows []row
 	_, err := r.db.QueryContext(ctx, &rows, `
 		SELECT
 			handler,
 			status,
-			COUNT(*) AS count,
-			PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99_ms
+			COUNT(*) AS count
 		FROM tasks
 		WHERE received_at >= ?
 		GROUP BY handler, status
@@ -249,7 +247,6 @@ func (r *TaskRepository) HandlerStats(ctx context.Context, since time.Time) ([]t
 		return nil, err
 	}
 
-	// Aggregate by handler
 	statsMap := map[string]*task.HandlerStat{}
 	for _, row := range rows {
 		s, ok := statsMap[row.Handler]
@@ -262,9 +259,6 @@ func (r *TaskRepository) HandlerStats(ctx context.Context, since time.Time) ([]t
 		}
 		s.EventCount += row.Count
 		s.StatusBreakdown[row.Status] = row.Count
-		if row.P99Ms > s.P99LatencyMs {
-			s.P99LatencyMs = row.P99Ms
-		}
 	}
 
 	result := make([]task.HandlerStat, 0, len(statsMap))

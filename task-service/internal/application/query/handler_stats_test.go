@@ -14,7 +14,7 @@ import (
 )
 
 func TestHandlerStatsQuery_DelegatesToRepo(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	since := time.Now().Add(-time.Hour)
 	expected := []task.HandlerStat{{Handler: "falco", EventCount: 10}}
 	repo.On("HandlerStats", mock.Anything, since).Return(expected, nil)

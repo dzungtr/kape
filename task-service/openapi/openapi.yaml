@@ -512,7 +512,7 @@ components:
 
     HandlerStat:
       type: object
-      required: [handler, event_count, status_breakdown, p99_latency_ms]
+      required: [handler, event_count, status_breakdown]
       properties:
         handler:
           type: string
@@ -522,8 +522,6 @@ components:
           type: object
           additionalProperties:
             type: integer
-        p99_latency_ms:
-          type: integer
 
     ErrorResponse:
       type: object

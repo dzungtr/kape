@@ -20,8 +20,6 @@ type HandlerStat struct {
 	EventCount int32 `json:"event_count"`
 
 	StatusBreakdown map[string]int32 `json:"status_breakdown"`
-
-	P99LatencyMs int32 `json:"p99_latency_ms"`
 }
 
 // AssertHandlerStatRequired checks if the required fields are not zero-ed
@@ -30,7 +28,6 @@ func AssertHandlerStatRequired(obj HandlerStat) error {
 		"handler": obj.Handler,
 		"event_count": obj.EventCount,
 		"status_breakdown": obj.StatusBreakdown,
-		"p99_latency_ms": obj.P99LatencyMs,
 	}
 	for name, el := range elements {
 		if isZero := IsZeroValue(el); isZero {

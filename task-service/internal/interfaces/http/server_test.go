@@ -19,14 +19,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func buildServer(t *testing.T) (*httpAdapter.Server, *mocks.MockRepository, *mocks.MockStream) {
-	repo := mocks.NewMockRepository(t)
-	stream := mocks.NewMockStream(t)
+func buildServer(t *testing.T) (*httpAdapter.Server, *mocks.Repository, *mocks.Stream) {
+	repo := mocks.NewRepository(t)
+	stream := mocks.NewStream(t)
 	srv := httpAdapter.NewServer(
 		command.NewCreateTaskCommand(repo, stream),
 		command.NewUpdateStatusCommand(repo, stream),
 		command.NewDeleteTaskCommand(repo),
-		command.NewBulkTimeoutCommand(repo, stream),
+		command.NewBulkUpdateStatusCommand(repo, stream),
 		query.NewGetTaskQuery(repo),
 		query.NewListTasksQuery(repo),
 		query.NewTaskLineageQuery(repo),

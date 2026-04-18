@@ -19,7 +19,7 @@ type Server struct {
 	createTask   *command.CreateTaskCommand
 	updateStatus *command.UpdateStatusCommand
 	deleteTask   *command.DeleteTaskCommand
-	bulkTimeout  *command.BulkTimeoutCommand
+	bulkTimeout  *command.BulkUpdateStatusCommand
 	getTask      *query.GetTaskQuery
 	listTasks    *query.ListTasksQuery
 	taskLineage  *query.TaskLineageQuery
@@ -30,7 +30,7 @@ func NewServer(
 	createTask *command.CreateTaskCommand,
 	updateStatus *command.UpdateStatusCommand,
 	deleteTask *command.DeleteTaskCommand,
-	bulkTimeout *command.BulkTimeoutCommand,
+	bulkTimeout *command.BulkUpdateStatusCommand,
 	getTask *query.GetTaskQuery,
 	listTasks *query.ListTasksQuery,
 	taskLineage *query.TaskLineageQuery,
@@ -42,6 +42,21 @@ func NewServer(
 		getTask: getTask, listTasks: listTasks,
 		taskLineage: taskLineage, handlerStats: handlerStats,
 	}
+}
+
+// Routes registers all task-service HTTP routes onto r.
+func (s *Server) Routes(r chi.Router, sseHandler *SSEHandler) {
+	r.Post("/tasks", s.CreateTask)
+	r.Get("/tasks", s.ListTasks)
+	r.Get("/tasks/stream", sseHandler.ServeHTTP)
+	r.Get("/tasks/decisions", s.GetDecisions)
+	r.Patch("/tasks/bulk/status", s.BulkUpdateStatus)
+	r.Get("/tasks/{id}", s.GetTask)
+	r.Patch("/tasks/{id}/status", s.UpdateTaskStatus)
+	r.Delete("/tasks/{id}", s.DeleteTask)
+	r.Post("/tasks/{id}/retry", s.RetryTask)
+	r.Get("/tasks/{id}/lineage", s.GetTaskLineage)
+	r.Get("/handlers", s.ListHandlers)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
@@ -223,8 +238,9 @@ func (s *Server) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ids, err := s.bulkTimeout.Execute(r.Context(), command.BulkTimeoutInput{
-		OlderThanSeconds: int(req.OlderThanSeconds),
+	ids, err := s.bulkTimeout.Execute(r.Context(), command.BulkUpdateStatusInput{
+		IDs:    req.Ids,
+		Status: task.TaskStatus(req.Status),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -254,7 +270,7 @@ func (s *Server) ListHandlers(w http.ResponseWriter, r *http.Request) {
 		}
 		result[i] = gen.HandlerStat{
 			Handler: s.Handler, EventCount: int32(s.EventCount),
-			StatusBreakdown: breakdown, P99LatencyMs: int32(s.P99LatencyMs),
+			StatusBreakdown: breakdown,
 		}
 	}
 	writeJSON(w, http.StatusOK, result)

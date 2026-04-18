@@ -13,7 +13,7 @@ import (
 )
 
 func TestGetTaskQuery_Found(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	expected := &task.Task{ID: "01GET"}
 	repo.On("FindByID", mock.Anything, "01GET").Return(expected, nil)
 
@@ -24,7 +24,7 @@ func TestGetTaskQuery_Found(t *testing.T) {
 }
 
 func TestGetTaskQuery_NotFound(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	repo.On("FindByID", mock.Anything, "GHOST").Return(nil, task.ErrNotFound)
 
 	q := query.NewGetTaskQuery(repo)

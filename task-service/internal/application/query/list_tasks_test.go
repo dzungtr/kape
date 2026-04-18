@@ -13,7 +13,7 @@ import (
 )
 
 func TestListTasksQuery_ReturnsCursor_WhenPageFull(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	tasks := []*task.Task{{ID: "01A"}, {ID: "01B"}}
 	repo.On("List", mock.Anything, task.ListFilter{Limit: 2}).Return(tasks, 5, nil)
 
@@ -26,7 +26,7 @@ func TestListTasksQuery_ReturnsCursor_WhenPageFull(t *testing.T) {
 }
 
 func TestListTasksQuery_NoCursor_WhenPagePartial(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
+	repo := mocks.NewRepository(t)
 	tasks := []*task.Task{{ID: "01A"}}
 	repo.On("List", mock.Anything, task.ListFilter{Limit: 10}).Return(tasks, 1, nil)
 

@@ -52,7 +52,7 @@ func main() {
 	createTask := command.NewCreateTaskCommand(repo, hub)
 	updateStatus := command.NewUpdateStatusCommand(repo, hub)
 	deleteTask := command.NewDeleteTaskCommand(repo)
-	bulkTimeout := command.NewBulkTimeoutCommand(repo, hub)
+	bulkTimeout := command.NewBulkUpdateStatusCommand(repo, hub)
 	getTask := query.NewGetTaskQuery(repo)
 	listTasks := query.NewListTasksQuery(repo)
 	taskLineage := query.NewTaskLineageQuery(repo)
@@ -69,18 +69,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-
-	r.Post("/tasks", srv.CreateTask)
-	r.Get("/tasks", srv.ListTasks)
-	r.Get("/tasks/stream", sseHandler.ServeHTTP)
-	r.Get("/tasks/decisions", srv.GetDecisions)
-	r.Patch("/tasks/bulk/status", srv.BulkUpdateStatus)
-	r.Get("/tasks/{id}", srv.GetTask)
-	r.Patch("/tasks/{id}/status", srv.UpdateTaskStatus)
-	r.Delete("/tasks/{id}", srv.DeleteTask)
-	r.Post("/tasks/{id}/retry", srv.RetryTask)
-	r.Get("/tasks/{id}/lineage", srv.GetTaskLineage)
-	r.Get("/handlers", srv.ListHandlers)
+	srv.Routes(r, sseHandler)
 
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
