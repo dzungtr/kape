@@ -18,6 +18,9 @@ crds/*.yaml
 !crds/kape-handler-webhook.yaml
 dashboard/app/types/generated/*.ts
 
+# SBOM (generated artifacts, not committed)
+sbom/
+
 # IDE
 .idea/
 .vscode/
@@ -28,3 +31,5 @@ dashboard/app/types/generated/*.ts
 
 # Compiled binaries
 task-service/task-service
+# ignore binary build
+cmd
