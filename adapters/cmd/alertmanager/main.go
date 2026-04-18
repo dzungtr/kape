@@ -36,7 +36,7 @@ func main() {
 	defer nc.Drain()
 	log.Info().Str("nats_url", natsURL).Msg("connected to NATS")
 
-	publisher, err := natspkg.NewPublisher(nc, publishTTL)
+	publisher, err := natspkg.NewPublisher(nc)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialise NATS publisher")
 	}

@@ -34,7 +34,7 @@ func TestPublisher_PublishAndConsume(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Drain()
 
-	publisher, err := natspkg.NewPublisher(nc, 10*time.Second)
+	publisher, err := natspkg.NewPublisher(nc)
 	require.NoError(t, err)
 
 	event := ce.NewEvent()
@@ -75,8 +75,8 @@ func TestPublisher_StreamAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Drain()
 
-	_, err = natspkg.NewPublisher(nc, 10*time.Second)
+	_, err = natspkg.NewPublisher(nc)
 	require.NoError(t, err)
-	_, err = natspkg.NewPublisher(nc, 10*time.Second)
+	_, err = natspkg.NewPublisher(nc)
 	require.NoError(t, err)
 }

@@ -16,13 +16,13 @@ const streamName = "KAPE_EVENTS"
 
 // Publisher publishes CloudEvents to NATS JetStream with retry/backoff.
 type Publisher struct {
-	js         jetstream.JetStream
-	publishTTL time.Duration
+	js jetstream.JetStream
 }
 
 // NewPublisher connects to JetStream, provisions the KAPE_EVENTS stream if it
 // does not exist, and returns a ready Publisher.
-func NewPublisher(nc *natsgo.Conn, publishTTL time.Duration) (*Publisher, error) {
+// The caller is responsible for managing context deadlines when calling Publish.
+func NewPublisher(nc *natsgo.Conn) (*Publisher, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("creating jetstream context: %w", err)
@@ -43,11 +43,12 @@ func NewPublisher(nc *natsgo.Conn, publishTTL time.Duration) (*Publisher, error)
 		return nil, fmt.Errorf("provisioning stream %s: %w", streamName, err)
 	}
 
-	return &Publisher{js: js, publishTTL: publishTTL}, nil
+	return &Publisher{js: js}, nil
 }
 
 // Publish serialises the CloudEvent and publishes it to the given NATS subject.
-// Retries with exponential backoff (max 30s interval) until publishTTL expires.
+// Retries with exponential backoff (max 30s interval) until ctx is cancelled or
+// its deadline fires. The caller owns the timeout on ctx.
 func (p *Publisher) Publish(ctx context.Context, subject string, event ce.Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -56,17 +57,14 @@ func (p *Publisher) Publish(ctx context.Context, subject string, event ce.Event)
 
 	bo := backoff.NewExponentialBackOff()
 	bo.MaxInterval = 30 * time.Second
-
-	deadline := time.Now().Add(p.publishTTL)
-	ttlCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
+	bo.MaxElapsedTime = 0 // context deadline is the sole termination condition
 
 	op := func() error {
-		_, pubErr := p.js.Publish(ttlCtx, subject, data)
+		_, pubErr := p.js.Publish(ctx, subject, data)
 		return pubErr
 	}
 
-	if err := backoff.Retry(op, backoff.WithContext(bo, ttlCtx)); err != nil {
+	if err := backoff.Retry(op, backoff.WithContext(bo, ctx)); err != nil {
 		return fmt.Errorf("publishing to %s: %w", subject, err)
 	}
 	return nil

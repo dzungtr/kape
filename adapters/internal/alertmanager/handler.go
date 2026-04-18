@@ -81,7 +81,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), h.publishTTL)
+		ctx, cancel := context.WithTimeout(context.Background(), h.publishTTL)
 		pubErr := h.publisher.Publish(ctx, event.Type(), event)
 		cancel()
 
