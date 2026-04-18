@@ -1,0 +1,52 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeHandler
+metadata:
+  name: karpenter-reconciliation-optimization
+  namespace: karpenter
+spec:
+  trigger:
+    source: karpenter
+    type: karpenter.event.reconciliation.optimize
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    systemPrompt: |
+      You are a Platform Engineering agent for Kubernetes autoscaling.
+
+      When a Karpenter reconciliation burst occurs, investigate using Grafana metrics
+      and logs, then recommend one of:
+        - "no-action": burst is expected and self-resolving
+        - "investigate": anomaly detected, describe what to look for
+        - "change-required": provide the exact NodePool config fix
+
+      Prioritize cluster stability. Be concise and evidence-based.
+  tools:
+    # KapeTool CRD
+    - ref: grafana-mcp
+    - ref: memory-karpenter
+  schemaRef: karpenter-reconcisonliation-decision
+  actions:
+    - name: "request-gitops-pr"
+      condition: "decision.decision == 'change-required'"
+      type: "event-emitter"
+      data:
+        subject: "kape.events.gitops.pr-requested"
+        payload:
+          nodepool: "{{ event.data.nodepool }}"
+          reasoning: "{{ decision.reasoning }}"
+          impact: "{{ decision.estimatedImpact }}"
+
+    - name: "notify-slack"
+      condition: "decision.decision == 'investigate' or decision.decision == 'change-required'"
+      type: "webhook"
+      data:
+        url: "{{ env.SLACK_WEBHOOK_URL }}"
+        method: "POST"
+        body:
+          text: "Karpenter alert on {{ event.data.nodepool }}: {{ decision.reasoning }}"
+  envs:
+    - name: SLACK_WEBHOOK_URL
+      valueFrom:
+        secretKeyRef:
+          name: slack-credentials
+          key: webhook_url
