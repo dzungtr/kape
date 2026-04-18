@@ -89,7 +89,8 @@ async def test_reason_node_renders_system_prompt_with_cluster_name():
     llm_cfg = make_llm_config(system_prompt="Agent for {{ cluster_name }}.")
 
     expected_output = {"decision": "ignore", "confidence": 0.9, "reasoning": "All good."}
-    mock_structured_llm = AsyncMock(return_value=expected_output)
+    mock_structured_llm = MagicMock()
+    mock_structured_llm.ainvoke = AsyncMock(return_value=expected_output)
 
     jinja_env = Environment()
     reason = make_reason_node(mock_structured_llm, kape_cfg, llm_cfg, jinja_env)
@@ -112,7 +113,8 @@ async def test_reason_node_wraps_event_in_context_tags():
     kape_cfg = make_kape_config()
     llm_cfg = make_llm_config(system_prompt="Agent.")
 
-    mock_structured_llm = AsyncMock(return_value={"decision": "ignore", "confidence": 0.8, "reasoning": "OK"})
+    mock_structured_llm = MagicMock()
+    mock_structured_llm.ainvoke = AsyncMock(return_value={"decision": "ignore", "confidence": 0.8, "reasoning": "OK"})
     jinja_env = Environment()
     reason = make_reason_node(mock_structured_llm, kape_cfg, llm_cfg, jinja_env)
 
@@ -131,7 +133,8 @@ async def test_reason_node_captures_exception_as_parse_error():
     kape_cfg = make_kape_config()
     llm_cfg = make_llm_config()
 
-    mock_structured_llm = AsyncMock(side_effect=Exception("LLM failure"))
+    mock_structured_llm = MagicMock()
+    mock_structured_llm.ainvoke = AsyncMock(side_effect=Exception("LLM failure"))
     jinja_env = Environment()
     reason = make_reason_node(mock_structured_llm, kape_cfg, llm_cfg, jinja_env)
 

@@ -48,7 +48,7 @@ def make_reason_node(
         ]
 
         try:
-            result = await structured_llm(messages)
+            result = await structured_llm.ainvoke(messages)
             return {"schema_output": result, "parse_error": None, "messages": messages}
         except Exception as exc:
             logger.warning("LLM structured output failed: %s", exc)
