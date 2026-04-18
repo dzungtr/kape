@@ -30,6 +30,7 @@ type HandlersAPIRouter interface {
 type TasksAPIRouter interface { 
 	ListTasks(http.ResponseWriter, *http.Request)
 	CreateTask(http.ResponseWriter, *http.Request)
+	StreamTasks(http.ResponseWriter, *http.Request)
 	GetDecisions(http.ResponseWriter, *http.Request)
 	BulkUpdateStatus(http.ResponseWriter, *http.Request)
 	GetTask(http.ResponseWriter, *http.Request)
@@ -45,7 +46,7 @@ type TasksAPIRouter interface {
 // while the service implementation can be ignored with the .openapi-generator-ignore file
 // and updated with the logic required for the API.
 type HandlersAPIServicer interface { 
-	ListHandlers(context.Context, time.Time) (ImplResponse, error)
+	ListHandlers(context.Context) (ImplResponse, error)
 }
 
 
@@ -56,8 +57,9 @@ type HandlersAPIServicer interface {
 type TasksAPIServicer interface { 
 	ListTasks(context.Context, string, TaskStatus, time.Time, string, int32, string) (ImplResponse, error)
 	CreateTask(context.Context, CreateTaskRequest) (ImplResponse, error)
+	StreamTasks(context.Context) (ImplResponse, error)
 	GetDecisions(context.Context, time.Time, string) (ImplResponse, error)
-	BulkUpdateStatus(context.Context, BulkTimeoutRequest) (ImplResponse, error)
+	BulkUpdateStatus(context.Context, BulkUpdateStatusRequest) (ImplResponse, error)
 	GetTask(context.Context, string) (ImplResponse, error)
 	DeleteTask(context.Context, string) (ImplResponse, error)
 	UpdateTaskStatus(context.Context, string, UpdateStatusRequest) (ImplResponse, error)

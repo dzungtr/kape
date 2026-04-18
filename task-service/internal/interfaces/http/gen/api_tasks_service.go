@@ -53,6 +53,17 @@ func (s *TasksAPIService) CreateTask(ctx context.Context, createTaskRequest Crea
 	return Response(http.StatusNotImplemented, nil), errors.New("CreateTask method not implemented")
 }
 
+// StreamTasks - SSE stream of live task updates
+func (s *TasksAPIService) StreamTasks(ctx context.Context) (ImplResponse, error) {
+	// TODO - update StreamTasks with the required logic for this service method.
+	// Add api_tasks_service.go to the .openapi-generator-ignore to avoid overwriting this service implementation when updating open api generation.
+
+	// TODO: Uncomment the next line to return response Response(200, string{}) or use other options such as http.Ok ...
+	// return Response(200, string{}), nil
+
+	return Response(http.StatusNotImplemented, nil), errors.New("StreamTasks method not implemented")
+}
+
 // GetDecisions - Decision distribution per handler
 func (s *TasksAPIService) GetDecisions(ctx context.Context, since time.Time, handler string) (ImplResponse, error) {
 	// TODO - update GetDecisions with the required logic for this service method.
@@ -64,13 +75,13 @@ func (s *TasksAPIService) GetDecisions(ctx context.Context, since time.Time, han
 	return Response(http.StatusNotImplemented, nil), errors.New("GetDecisions method not implemented")
 }
 
-// BulkUpdateStatus - Bulk mark Processing tasks as Timeout
-func (s *TasksAPIService) BulkUpdateStatus(ctx context.Context, bulkTimeoutRequest BulkTimeoutRequest) (ImplResponse, error) {
+// BulkUpdateStatus - Bulk update status for operator-selected tasks
+func (s *TasksAPIService) BulkUpdateStatus(ctx context.Context, bulkUpdateStatusRequest BulkUpdateStatusRequest) (ImplResponse, error) {
 	// TODO - update BulkUpdateStatus with the required logic for this service method.
 	// Add api_tasks_service.go to the .openapi-generator-ignore to avoid overwriting this service implementation when updating open api generation.
 
-	// TODO: Uncomment the next line to return response Response(200, BulkTimeoutResponse{}) or use other options such as http.Ok ...
-	// return Response(200, BulkTimeoutResponse{}), nil
+	// TODO: Uncomment the next line to return response Response(200, BulkUpdateStatusResponse{}) or use other options such as http.Ok ...
+	// return Response(200, BulkUpdateStatusResponse{}), nil
 
 	// TODO: Uncomment the next line to return response Response(400, ErrorResponse{}) or use other options such as http.Ok ...
 	// return Response(400, ErrorResponse{}), nil

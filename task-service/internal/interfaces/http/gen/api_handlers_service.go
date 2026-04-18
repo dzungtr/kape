@@ -14,7 +14,6 @@ import (
 	"context"
 	"net/http"
 	"errors"
-	"time"
 )
 
 // HandlersAPIService is a service that implements the logic for the HandlersAPIServicer
@@ -28,13 +27,13 @@ func NewHandlersAPIService() *HandlersAPIService {
 	return &HandlersAPIService{}
 }
 
-// ListHandlers - Per-handler aggregates
-func (s *HandlersAPIService) ListHandlers(ctx context.Context, since time.Time) (ImplResponse, error) {
+// ListHandlers - Per-handler aggregates (stub — Prometheus integration pending per 0008 spec)
+func (s *HandlersAPIService) ListHandlers(ctx context.Context) (ImplResponse, error) {
 	// TODO - update ListHandlers with the required logic for this service method.
 	// Add api_handlers_service.go to the .openapi-generator-ignore to avoid overwriting this service implementation when updating open api generation.
 
-	// TODO: Uncomment the next line to return response Response(200, []HandlerStat{}) or use other options such as http.Ok ...
-	// return Response(200, []HandlerStat{}), nil
+	// TODO: Uncomment the next line to return response Response(501, {}) or use other options such as http.Ok ...
+	// return Response(501, nil),nil
 
 	return Response(http.StatusNotImplemented, nil), errors.New("ListHandlers method not implemented")
 }

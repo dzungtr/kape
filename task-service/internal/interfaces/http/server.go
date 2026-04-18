@@ -231,7 +231,7 @@ func (s *Server) GetTaskLineage(w http.ResponseWriter, r *http.Request) {
 
 // BulkUpdateStatus handles PATCH /tasks/bulk/status
 func (s *Server) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
-	var req gen.BulkTimeoutRequest
+	var req gen.BulkUpdateStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -244,7 +244,7 @@ func (s *Server) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, gen.BulkTimeoutResponse{AffectedIds: ids})
+	writeJSON(w, http.StatusOK, gen.BulkUpdateStatusResponse{AffectedIds: ids})
 }
 
 // ListHandlers handles GET /handlers — stubbed until Prometheus integration (per 0008 spec, handler aggregates are owned by Prometheus)

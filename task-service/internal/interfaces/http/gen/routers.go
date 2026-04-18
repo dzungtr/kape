@@ -12,7 +12,7 @@ package gen
 
 import (
 	"net/http"
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 )
 
 // A Route defines the parameters for an api endpoint
@@ -33,18 +33,13 @@ type Router interface {
 }
 
 // NewRouter creates a new router for any number of api routers
-func NewRouter(routers ...Router) *mux.Router {
-	router := mux.NewRouter().StrictSlash(true)
+func NewRouter(routers ...Router) chi.Router {
+	router := chi.NewRouter()
+	router.Use(Logger)
 	for _, api := range routers {
 		for _, route := range api.OrderedRoutes() {
 			var handler http.Handler = route.HandlerFunc
-			handler = Logger(handler, route.Name)
-
-			router.
-				Methods(route.Method).
-				Path(route.Pattern).
-				Name(route.Name).
-				Handler(handler)
+			router.Method(route.Method, route.Pattern, handler)
 		}
 	}
 

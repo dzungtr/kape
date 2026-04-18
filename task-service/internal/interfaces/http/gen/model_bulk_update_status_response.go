@@ -13,13 +13,13 @@ package gen
 
 
 
-type BulkTimeoutResponse struct {
+type BulkUpdateStatusResponse struct {
 
 	AffectedIds []string `json:"affected_ids"`
 }
 
-// AssertBulkTimeoutResponseRequired checks if the required fields are not zero-ed
-func AssertBulkTimeoutResponseRequired(obj BulkTimeoutResponse) error {
+// AssertBulkUpdateStatusResponseRequired checks if the required fields are not zero-ed
+func AssertBulkUpdateStatusResponseRequired(obj BulkUpdateStatusResponse) error {
 	elements := map[string]interface{}{
 		"affected_ids": obj.AffectedIds,
 	}
@@ -32,7 +32,7 @@ func AssertBulkTimeoutResponseRequired(obj BulkTimeoutResponse) error {
 	return nil
 }
 
-// AssertBulkTimeoutResponseConstraints checks if the values respects the defined constraints
-func AssertBulkTimeoutResponseConstraints(obj BulkTimeoutResponse) error {
+// AssertBulkUpdateStatusResponseConstraints checks if the values respects the defined constraints
+func AssertBulkUpdateStatusResponseConstraints(obj BulkUpdateStatusResponse) error {
 	return nil
 }

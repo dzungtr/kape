@@ -3,10 +3,10 @@
 generate:
 	openapi-generator-cli generate \
 		-i openapi/openapi.yaml \
-		-g go-chi-server \
+		-g go-server \
 		-o internal/interfaces/http/gen \
 		--package-name gen \
-		--additional-properties=packageName=gen,sourceFolder=.
+		--additional-properties=packageName=gen,sourceFolder=.,router=chi
 
 mock:
 	go run github.com/vektra/mockery/v2 \

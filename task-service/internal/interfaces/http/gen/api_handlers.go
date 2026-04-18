@@ -13,7 +13,6 @@ package gen
 import (
 	"net/http"
 	"strings"
-	"time"
 )
 
 // HandlersAPIController binds http requests to an api service and writes the service results to the http response
@@ -72,27 +71,9 @@ func (c *HandlersAPIController) OrderedRoutes() []Route {
 
 
 
-// ListHandlers - Per-handler aggregates
+// ListHandlers - Per-handler aggregates (stub — Prometheus integration pending per 0008 spec)
 func (c *HandlersAPIController) ListHandlers(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQuery(r.URL.RawQuery)
-	if err != nil {
-		c.errorHandler(w, r, &ParsingError{Err: err}, nil)
-		return
-	}
-	var sinceParam time.Time
-	if query.Has("since"){
-		param, err := parseTime(query.Get("since"))
-		if err != nil {
-			c.errorHandler(w, r, &ParsingError{Param: "since", Err: err}, nil)
-			return
-		}
-
-		sinceParam = param
-	} else {
-		c.errorHandler(w, r, &RequiredError{"since"}, nil)
-		return
-	}
-	result, err := c.service.ListHandlers(r.Context(), sinceParam)
+	result, err := c.service.ListHandlers(r.Context())
 	// If an error occurred, encode the error with the status code
 	if err != nil {
 		c.errorHandler(w, r, err, &result)

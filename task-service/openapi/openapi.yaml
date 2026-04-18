@@ -80,6 +80,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/TaskList'
 
+  /tasks/stream:
+    get:
+      operationId: streamTasks
+      tags: [tasks]
+      summary: SSE stream of live task updates
+      responses:
+        "200":
+          description: Server-Sent Events stream; each event is a Task JSON object
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
   /tasks/decisions:
     get:
       operationId: getDecisions
@@ -114,14 +127,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BulkTimeoutRequest'
+              $ref: '#/components/schemas/BulkUpdateStatusRequest'
       responses:
         "200":
           description: Affected task IDs
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BulkTimeoutResponse'
+                $ref: '#/components/schemas/BulkUpdateStatusResponse'
         "400":
           description: Invalid request
           content:
@@ -257,23 +270,10 @@ paths:
     get:
       operationId: listHandlers
       tags: [handlers]
-      summary: Per-handler aggregates
-      parameters:
-        - name: since
-          in: query
-          required: true
-          schema:
-            type: string
-            format: date-time
+      summary: Per-handler aggregates (stub — Prometheus integration pending per 0008 spec)
       responses:
-        "200":
-          description: Handler stats
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/HandlerStat'
+        "501":
+          description: Not implemented — handler aggregates are owned by Prometheus
 
 components:
   schemas:
@@ -461,7 +461,7 @@ components:
           type: integer
           nullable: true
 
-    BulkTimeoutRequest:
+    BulkUpdateStatusRequest:
       type: object
       required: [ids, status]
       properties:
@@ -473,7 +473,7 @@ components:
         status:
           $ref: '#/components/schemas/TaskStatus'
 
-    BulkTimeoutResponse:
+    BulkUpdateStatusResponse:
       type: object
       required: [affected_ids]
       properties:
@@ -506,19 +506,6 @@ components:
           type: string
           format: date-time
         distribution:
-          type: object
-          additionalProperties:
-            type: integer
-
-    HandlerStat:
-      type: object
-      required: [handler, event_count, status_breakdown]
-      properties:
-        handler:
-          type: string
-        event_count:
-          type: integer
-        status_breakdown:
           type: object
           additionalProperties:
             type: integer

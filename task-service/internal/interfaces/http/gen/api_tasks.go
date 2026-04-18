@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 )
 
 // TasksAPIController binds http requests to an api service and writes the service results to the http response
@@ -63,6 +63,12 @@ func (c *TasksAPIController) Routes() Routes {
 			strings.ToUpper("Post"),
 			"/tasks",
 			c.CreateTask,
+		},
+		"StreamTasks": Route{
+			"StreamTasks",
+			strings.ToUpper("Get"),
+			"/tasks/stream",
+			c.StreamTasks,
 		},
 		"GetDecisions": Route{
 			"GetDecisions",
@@ -123,6 +129,12 @@ func (c *TasksAPIController) OrderedRoutes() []Route {
 			strings.ToUpper("Post"),
 			"/tasks",
 			c.CreateTask,
+		},
+		Route{
+			"StreamTasks",
+			strings.ToUpper("Get"),
+			"/tasks/stream",
+			c.StreamTasks,
 		},
 		Route{
 			"GetDecisions",
@@ -274,6 +286,18 @@ func (c *TasksAPIController) CreateTask(w http.ResponseWriter, r *http.Request) 
 	_ = EncodeJSONResponse(result.Body, &result.Code, w)
 }
 
+// StreamTasks - SSE stream of live task updates
+func (c *TasksAPIController) StreamTasks(w http.ResponseWriter, r *http.Request) {
+	result, err := c.service.StreamTasks(r.Context())
+	// If an error occurred, encode the error with the status code
+	if err != nil {
+		c.errorHandler(w, r, err, &result)
+		return
+	}
+	// If no error, encode the body and the result code
+	_ = EncodeJSONResponse(result.Body, &result.Code, w)
+}
+
 // GetDecisions - Decision distribution per handler
 func (c *TasksAPIController) GetDecisions(w http.ResponseWriter, r *http.Request) {
 	query, err := parseQuery(r.URL.RawQuery)
@@ -311,24 +335,24 @@ func (c *TasksAPIController) GetDecisions(w http.ResponseWriter, r *http.Request
 	_ = EncodeJSONResponse(result.Body, &result.Code, w)
 }
 
-// BulkUpdateStatus - Bulk mark Processing tasks as Timeout
+// BulkUpdateStatus - Bulk update status for operator-selected tasks
 func (c *TasksAPIController) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
-	var bulkTimeoutRequestParam BulkTimeoutRequest
+	var bulkUpdateStatusRequestParam BulkUpdateStatusRequest
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	if err := d.Decode(&bulkTimeoutRequestParam); err != nil {
+	if err := d.Decode(&bulkUpdateStatusRequestParam); err != nil {
 		c.errorHandler(w, r, &ParsingError{Err: err}, nil)
 		return
 	}
-	if err := AssertBulkTimeoutRequestRequired(bulkTimeoutRequestParam); err != nil {
+	if err := AssertBulkUpdateStatusRequestRequired(bulkUpdateStatusRequestParam); err != nil {
 		c.errorHandler(w, r, err, nil)
 		return
 	}
-	if err := AssertBulkTimeoutRequestConstraints(bulkTimeoutRequestParam); err != nil {
+	if err := AssertBulkUpdateStatusRequestConstraints(bulkUpdateStatusRequestParam); err != nil {
 		c.errorHandler(w, r, err, nil)
 		return
 	}
-	result, err := c.service.BulkUpdateStatus(r.Context(), bulkTimeoutRequestParam)
+	result, err := c.service.BulkUpdateStatus(r.Context(), bulkUpdateStatusRequestParam)
 	// If an error occurred, encode the error with the status code
 	if err != nil {
 		c.errorHandler(w, r, err, &result)
@@ -340,8 +364,7 @@ func (c *TasksAPIController) BulkUpdateStatus(w http.ResponseWriter, r *http.Req
 
 // GetTask - Fetch a single task
 func (c *TasksAPIController) GetTask(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	idParam := params["id"]
+	idParam := chi.URLParam(r, "id")
 	if idParam == "" {
 		c.errorHandler(w, r, &RequiredError{"id"}, nil)
 		return
@@ -358,8 +381,7 @@ func (c *TasksAPIController) GetTask(w http.ResponseWriter, r *http.Request) {
 
 // DeleteTask - Discard stale event — deletes the task record with no terminal state
 func (c *TasksAPIController) DeleteTask(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	idParam := params["id"]
+	idParam := chi.URLParam(r, "id")
 	if idParam == "" {
 		c.errorHandler(w, r, &RequiredError{"id"}, nil)
 		return
@@ -376,8 +398,7 @@ func (c *TasksAPIController) DeleteTask(w http.ResponseWriter, r *http.Request) 
 
 // UpdateTaskStatus - Update task status
 func (c *TasksAPIController) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	idParam := params["id"]
+	idParam := chi.URLParam(r, "id")
 	if idParam == "" {
 		c.errorHandler(w, r, &RequiredError{"id"}, nil)
 		return
@@ -409,8 +430,7 @@ func (c *TasksAPIController) UpdateTaskStatus(w http.ResponseWriter, r *http.Req
 
 // RetryTask - Retry a task (Phase 7 — stub returns 501)
 func (c *TasksAPIController) RetryTask(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	idParam := params["id"]
+	idParam := chi.URLParam(r, "id")
 	if idParam == "" {
 		c.errorHandler(w, r, &RequiredError{"id"}, nil)
 		return
@@ -427,8 +447,7 @@ func (c *TasksAPIController) RetryTask(w http.ResponseWriter, r *http.Request) {
 
 // GetTaskLineage - Full retry lineage chain for a task
 func (c *TasksAPIController) GetTaskLineage(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	idParam := params["id"]
+	idParam := chi.URLParam(r, "id")
 	if idParam == "" {
 		c.errorHandler(w, r, &RequiredError{"id"}, nil)
 		return

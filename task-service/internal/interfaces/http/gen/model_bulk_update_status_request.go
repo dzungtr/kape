@@ -11,21 +11,17 @@
 package gen
 
 
-import (
-	"errors"
-)
 
 
-
-type BulkTimeoutRequest struct {
+type BulkUpdateStatusRequest struct {
 
 	Ids []string `json:"ids"`
 
 	Status TaskStatus `json:"status"`
 }
 
-// AssertBulkTimeoutRequestRequired checks if the required fields are not zero-ed
-func AssertBulkTimeoutRequestRequired(obj BulkTimeoutRequest) error {
+// AssertBulkUpdateStatusRequestRequired checks if the required fields are not zero-ed
+func AssertBulkUpdateStatusRequestRequired(obj BulkUpdateStatusRequest) error {
 	elements := map[string]interface{}{
 		"ids": obj.Ids,
 		"status": obj.Status,
@@ -39,10 +35,7 @@ func AssertBulkTimeoutRequestRequired(obj BulkTimeoutRequest) error {
 	return nil
 }
 
-// AssertBulkTimeoutRequestConstraints checks if the values respects the defined constraints
-func AssertBulkTimeoutRequestConstraints(obj BulkTimeoutRequest) error {
-	if len(obj.Ids) < 1 {
-		return &ParsingError{Param: "Ids", Err: errors.New(errMsgMinValueConstraint)}
-	}
+// AssertBulkUpdateStatusRequestConstraints checks if the values respects the defined constraints
+func AssertBulkUpdateStatusRequestConstraints(obj BulkUpdateStatusRequest) error {
 	return nil
 }
