@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -124,4 +125,35 @@ func TestHandler_InvalidJSON(t *testing.T) {
 	h.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
+}
+
+type failingPublisher struct{}
+
+func (f *failingPublisher) Publish(_ context.Context, _ string, _ ce.Event) error {
+	return fmt.Errorf("nats unavailable")
+}
+
+func TestHandler_PublishFailure(t *testing.T) {
+	pub := &failingPublisher{}
+	logger := zerolog.Nop()
+	h := alertmanager.NewHandler(pub, logger, 60*time.Second)
+
+	alerts := []alertmanager.Alert{
+		{
+			Labels: map[string]string{
+				"alertname":    "CiliumDrop",
+				"kape_subject": "kape.events.security.cilium",
+			},
+			StartsAt: time.Now(),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(makePayload(alerts)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	// Still returns 200 — publish failure is logged but not surfaced to caller
+	assert.Equal(t, http.StatusOK, rr.Code)
 }

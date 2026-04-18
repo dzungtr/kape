@@ -7,27 +7,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kape-io/kape/adapters/internal/alertmanager"
 	cebuilder "github.com/kape-io/kape/adapters/internal/cloudevents"
 )
 
 func TestBuild_ValidAlert(t *testing.T) {
 	startsAt := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
-	alert := alertmanager.Alert{
+	in := cebuilder.AlertInput{
+		Subject:   "kape.events.security.cilium",
+		Job:       "cilium",
+		Alertname: "CiliumNetworkPolicyDrop",
 		Labels: map[string]string{
 			"alertname":    "CiliumNetworkPolicyDrop",
 			"severity":     "warning",
 			"kape_subject": "kape.events.security.cilium",
 			"job":          "cilium",
 		},
-		Annotations: map[string]string{
-			"summary": "High rate of Cilium network policy drops",
-		},
+		Annotations:  map[string]string{"summary": "High rate of Cilium network policy drops"},
 		StartsAt:     startsAt,
 		GeneratorURL: "http://prometheus/graph",
 	}
 
-	event, err := cebuilder.Build(alert)
+	event, err := cebuilder.Build(in)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1.0", event.SpecVersion())
@@ -46,35 +46,33 @@ func TestBuild_ValidAlert(t *testing.T) {
 	assert.Equal(t, "kape.events.security.cilium", labels["kape_subject"])
 }
 
-func TestBuild_MissingKapeSubject(t *testing.T) {
-	alert := alertmanager.Alert{
-		Labels:   map[string]string{"alertname": "SomeAlert"},
-		StartsAt: time.Now(),
+func TestBuild_MissingSubject(t *testing.T) {
+	in := cebuilder.AlertInput{
+		Alertname: "SomeAlert",
+		StartsAt:  time.Now(),
 	}
-
-	_, err := cebuilder.Build(alert)
+	_, err := cebuilder.Build(in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing kape_subject")
 }
 
-func TestBuild_EmptyKapeSubject(t *testing.T) {
-	alert := alertmanager.Alert{
-		Labels:   map[string]string{"alertname": "SomeAlert", "kape_subject": ""},
-		StartsAt: time.Now(),
+func TestBuild_EmptySubject(t *testing.T) {
+	in := cebuilder.AlertInput{
+		Subject:   "",
+		Alertname: "SomeAlert",
+		StartsAt:  time.Now(),
 	}
-
-	_, err := cebuilder.Build(alert)
+	_, err := cebuilder.Build(in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing kape_subject")
 }
 
-func TestBuild_MissingJobLabel(t *testing.T) {
-	alert := alertmanager.Alert{
-		Labels:   map[string]string{"kape_subject": "kape.events.security.cilium"},
+func TestBuild_MissingJob(t *testing.T) {
+	in := cebuilder.AlertInput{
+		Subject:  "kape.events.security.cilium",
 		StartsAt: time.Now(),
 	}
-
-	event, err := cebuilder.Build(alert)
+	event, err := cebuilder.Build(in)
 	require.NoError(t, err)
 	assert.Equal(t, "alertmanager/", event.Source())
 }

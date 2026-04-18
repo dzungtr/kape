@@ -3,14 +3,14 @@ package alertmanager
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
 	ce "github.com/cloudevents/sdk-go/v2"
-	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+
+	cebuilder "github.com/kape-io/kape/adapters/internal/cloudevents"
 )
 
 // Publisher is the interface the Handler uses to emit CloudEvents.
@@ -65,7 +65,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, alert := range payload.Alerts {
 		h.eventsReceived.Inc()
 
-		event, err := buildEvent(alert)
+		event, err := cebuilder.Build(cebuilder.AlertInput{
+			Subject:      alert.Labels["kape_subject"],
+			Job:          alert.Labels["job"],
+			Alertname:    alert.Labels["alertname"],
+			Labels:       alert.Labels,
+			Annotations:  alert.Annotations,
+			StartsAt:     alert.StartsAt,
+			GeneratorURL: alert.GeneratorURL,
+		})
 		if err != nil {
 			h.logger.Warn().Err(err).
 				Str("alertname", alert.Labels["alertname"]).
@@ -96,38 +104,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-}
-
-// buildEvent constructs a CloudEvents 1.0 event from an Alert.
-// Returns an error if the alert has no kape_subject label.
-// This mirrors cebuilder.Build but lives here to avoid an import cycle
-// (package alertmanager ← package cloudevents ← package alertmanager).
-func buildEvent(alert Alert) (ce.Event, error) {
-	subject := alert.Labels["kape_subject"]
-	if subject == "" {
-		return ce.Event{}, fmt.Errorf("missing kape_subject label on alert %q", alert.Labels["alertname"])
-	}
-
-	event := ce.NewEvent()
-	event.SetSpecVersion("1.0")
-	event.SetType(subject)
-	event.SetSource(fmt.Sprintf("alertmanager/%s", alert.Labels["job"]))
-	event.SetID(uuid.New().String())
-	event.SetTime(alert.StartsAt)
-	event.SetDataContentType("application/json")
-
-	data := map[string]any{
-		"alertname":    alert.Labels["alertname"],
-		"labels":       alert.Labels,
-		"annotations":  alert.Annotations,
-		"startsAt":     alert.StartsAt,
-		"generatorURL": alert.GeneratorURL,
-	}
-	if err := event.SetData("application/json", data); err != nil {
-		return ce.Event{}, fmt.Errorf("setting event data: %w", err)
-	}
-
-	return event, nil
 }
 
 // mustOrExisting registers c and returns it; if already registered, returns the existing collector.
