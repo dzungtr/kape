@@ -51,7 +51,6 @@ Claude calls `snyk_sbom_scan` MCP tool three times, once per module:
 After generating all three SBOMs, Claude posts a single PR comment via `gh pr comment` containing a markdown summary with:
 - Module name
 - Total component count
-- Top-level direct dependencies (package names)
 - Any components flagged by Snyk during generation
 
 ### Output Persistence

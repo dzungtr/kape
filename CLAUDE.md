@@ -4,7 +4,7 @@
 
 Before creating any PR, run SBOM generation for all Go modules and post a summary comment:
 
-1. Run `snyk_sbom_scan` MCP tool on each Go module:
+1. Run `snyk_sbom_scan` MCP tool on each Go module with format `cyclonedx1.4+json`:
    - Path: `./adapters`
    - Path: `./operator`
    - Path: `./task-service`
