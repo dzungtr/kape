@@ -18,6 +18,9 @@ crds/*.yaml
 !crds/kape-handler-webhook.yaml
 dashboard/app/types/generated/*.ts
 
+# SBOM (generated artifacts, not committed)
+sbom/
+
 # IDE
 .idea/
 .vscode/
