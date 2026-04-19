@@ -73,7 +73,8 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 	}
 
 	// 4. Render settings.toml
-	tomlContent, err := r.tomlRenderer.Render(handler, cfg)
+	// TODO(phase6): pass resolved schema and tools once ToolRepository is wired.
+	tomlContent, err := r.tomlRenderer.Render(handler, nil, nil, cfg)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("rendering settings.toml: %w", err)
 	}
@@ -90,7 +91,8 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 	}
 
 	// 7. Ensure Deployment
-	if err := r.deployments.Ensure(ctx, handler, cfg, rolloutHash); err != nil {
+	// TODO(phase6): pass resolved tools once ToolRepository is wired.
+	if err := r.deployments.Ensure(ctx, handler, cfg, rolloutHash, nil); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 	log.V(1).Info("Deployment reconciled", "rolloutHash", rolloutHash)
