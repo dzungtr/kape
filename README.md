@@ -1,78 +1,55 @@
 # KAPE — Kubernetes Agentic Platform Execution
 
-KAPE is a Kubernetes-native, event-driven AI agent platform that enables autonomous cluster monitoring, decision-making, and remediation.
+> Autonomous cluster monitoring, reasoning, and remediation — declared entirely in Kubernetes CRDs.
 
-Engineers declare agent behaviour entirely through Kubernetes Custom Resources — no code changes required to extend the system.
+![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+![Go](https://img.shields.io/badge/go-1.23-00ADD8)
+![Python](https://img.shields.io/badge/python-3.12-3776AB)
 
-## Overview
+## Why KAPE?
 
-Modern Kubernetes clusters generate enormous volumes of signals: security violations, resource pressure, policy breaches, cost anomalies, and runtime anomalies. Existing tooling either acts without reasoning (autoscalers, Kyverno) or reasons without acting (K8sGPT). KAPE bridges the gap by combining:
+Kubernetes clusters generate constant signal — security violations, resource pressure, policy breaches, cost anomalies.
+Existing tools either **act without reasoning** (autoscalers, Kyverno) or **reason without acting** (K8sGPT).
+KAPE does both.
 
-- **Event-driven signal collection** from Cilium, Kyverno, Falco, Karpenter, K8s Audit
-- **LLM-powered contextual reasoning** via LangGraph ReAct agents
-- **Declarative CRD-based configuration** under `kape.io/v1alpha1`
-- **Extensible tool execution** via MCP servers consumed through `KapeTool` CRDs
+- **Event-driven** — ingests signals from Falco, Cilium, Kyverno, Karpenter, and K8s Audit via CloudEvents
+- **LLM-powered reasoning** — LangGraph ReAct agents analyse context and produce structured decisions
+- **Declarative config** — define agent behaviour entirely through `KapeHandler`, `KapeTool`, and `KapeSchema` CRDs — no code changes required
+- **Scales to zero** — KEDA drives handler pods from NATS consumer lag; idle agents cost nothing
 
-## How It Works
+## Quick Start
 
-1. **Event producers** (Falco, Kyverno, Cilium, Karpenter, K8s Audit) emit CloudEvents to NATS JetStream via CloudEvents adapters.
-2. The **Kape Operator** watches `KapeHandler` CRDs and provisions handler Deployments + KEDA ScaledObjects.
-3. Each **handler pod** runs a LangGraph ReAct agent that:
-   - Consumes the event from NATS
-   - Self-enriches context by calling MCP tools during its reasoning loop
-   - Produces a structured decision conforming to a declared `KapeSchema`
-   - Executes deterministic post-decision actions (emit downstream events, persist audit record)
-4. Handler pods **scale independently** via KEDA on NATS consumer lag.
-5. All decisions are persisted as **Task records** via `kape-task-service`, powering the management dashboard.
+```bash
+helm install kape ./helm/kape --namespace kape-system --create-namespace
+```
 
-## CRDs
+Then declare your first agent:
 
-| CRD | Responsibility |
-|-----|---------------|
-| `KapeHandler` | One complete agent pipeline — LLM config, tools, schema ref, scaling, retry policy |
-| `KapeTool` | Tool capability registration (`mcp`, `memory`, `event-publish`) |
-| `KapeSchema` | Structured output contract for LLM decisions |
-| `KapePolicy` | (v2) Cross-handler guardrails |
+```yaml
+apiVersion: kape.io/v1alpha1
+kind: KapeHandler
+metadata:
+  name: falco-responder
+spec:
+  source: falco
+  llm:
+    model: gpt-4o
+  tools:
+    - name: kubectl-readonly
+  schemaRef: incident-triage-v1
+```
 
-## Implementation Stack
+→ [Full getting-started guide](docs/)
 
-| Layer | Technology |
-|-------|-----------|
-| API group | `kape.io/v1alpha1` |
-| Namespace | `kape-system` |
-| Handler runtime | Python + LangGraph |
-| LLM SDK | LangChain (`bind_tools`, `with_structured_output`) |
-| MCP adapter | `langchain-mcp-adapters` (MCPToolkit) |
-| Memory backend | Qdrant (primary) |
-| Event broker | NATS JetStream |
-| Scaling | KEDA (NatsJetStream scaler) |
-| Observability | OTEL → Arize OpenInference, Prometheus |
-| Operator | Go + controller-runtime |
+## Documentation
 
-## Design Specs
-
-| Document | Description |
-|----------|-------------|
-| [`specs/0001-rfc`](specs/0001-rfc/README.md) | Master RFC — full platform design |
-| [`specs/0002-crds-design`](specs/0002-crds-design/README.md) | CRD schema reference |
-| [`specs/0003-q&a`](specs/0003-q&a/README.md) | Open questions resolution |
-| [`specs/0004-kape-handler`](specs/0004-kape-handler/README.md) | Handler pod technical design |
-| [`specs/0005-kape-operator`](specs/0005-kape-operator/README.md) | Kape Operator technical design |
-| [`specs/0006-events-broker-design`](specs/0006-events-broker-design/README.md) | Event broker and adapter design |
-| [`specs/0007-security-layer`](specs/0007-security-layer/README.md) | Security hardening specifications |
-| [`specs/plan.md`](specs/plan.md) | Session-by-session discussion plan |
-
-## Security Model
-
-KAPE enforces security at every layer:
-- MCP RBAC templates per tool type
-- `KapeTool` allow/deny filtering — LLM never sees filtered tools
-- Prompt injection defence via system prompt templates and input escaping
-- Cilium NetworkPolicy restricting handler pod egress
-- CEL validation on all CRD fields
-- ESO-managed secrets for LLM API keys and MCP credentials
-- Append-only audit log
+| | |
+|---|---|
+| [Architecture](docs/architecture.md) | How the platform fits together |
+| [CRD Reference](docs/crds.md) | KapeHandler, KapeTool, KapeSchema fields |
+| [Design Specs](specs/) | RFCs and detailed technical decisions |
+| [Contributing](CONTRIBUTING.md) | Development setup and workflow |
 
 ## Status
 
-This repository contains design specifications. Implementation is in planning (see [`specs/plan.md`](specs/plan.md) for the session index and progress).
+Early development — core operator, runtime, and adapters are functional. Dashboard and task-service in progress.
