@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-webhook-receiver
+  namespace: kape-examples
+  labels:
+    app: mock-webhook-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-webhook-receiver
+  template:
+    metadata:
+      labels:
+        app: mock-webhook-receiver
+    spec:
+      containers:
+        - name: mock-webhook-receiver
+          image: ghcr.io/kape-io/kape-mock-webhook:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9000
+          env:
+            - name: PORT
+              value: "9000"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
