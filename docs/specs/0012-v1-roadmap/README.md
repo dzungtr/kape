@@ -1,3 +1,9 @@
+> **Archived baseline.** This document is the original v1 roadmap as written in session 12.
+> The live build sequence is maintained in [`docs/roadmap/`](../roadmap/phases.md).
+> Refer there for current phase status, work items, and spec references.
+
+---
+
 # KAPE — v1 Implementation Roadmap
 
 **Status:** Draft
@@ -36,7 +42,7 @@ This document is the concrete build plan for KAPE v1. All design decisions are s
 | 2     | Minimal operator             | KapeHandler → Deployment + ConfigMap    | —         |
 | 3     | Task-service                 | Audit DB API + SSE stream               | —         |
 | 4     | Minimal runtime              | NATS consumer → LangGraph → task write  | —         |
-| 5     | AlertManager adapter         | First real event producer               | -         |
+| 5     | AlertManager adapter         | First real event producer               | **M1**    |
 | 6     | Full operator                | KapeTool, KapeSchema, KEDA              | **M2**    |
 | 7     | Full runtime                 | MCP tools, memory, event-publish, DLQ   | **M3**    |
 | 8     | K8s Audit adapter + security | Second producer + hardening             | **M4**    |
