@@ -1,0 +1,29 @@
+# Apply with:
+#   kubectl -n platform patch configmap signoz-alertmanager \
+#     --patch-file alertmanager-receiver-patch.yaml
+#
+# This adds the kape-alertmanager-adapter as a webhook receiver.
+# Adjust 'signoz-alertmanager' to match the actual ConfigMap name
+# in your SigNoz installation (check: kubectl get cm -n platform | grep alertmanager).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-alertmanager
+  namespace: platform
+data:
+  config.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: ['alertname', 'kape_subject']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      receiver: kape-adapter
+
+    receivers:
+      - name: kape-adapter
+        webhook_configs:
+          - url: 'http://kape-adapter-alertmanager.kape-system.svc.cluster.local:8080/webhook'
+            send_resolved: false
