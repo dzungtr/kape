@@ -91,7 +91,23 @@ func main() {
 	cfgLoader       := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
 	renderer        := tomlrenderer.NewRenderer()
 
-	// Domain reconciler
+	statefulSetAdapt := k8sadapters.NewStatefulSetAdapter(k8sClient)
+
+	// KapeToolReconciler
+	toolRec := reconcilehandler.NewToolReconciler(toolRepo, statefulSetAdapt, cfgLoader)
+	if err := kapecontroller.SetupToolReconciler(mgr, toolRec, cfg.MaxConcurrentReconciles); err != nil {
+		log.Error(err, "setting up KapeTool controller")
+		os.Exit(1)
+	}
+
+	// KapeSchemaReconciler
+	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo)
+	if err := kapecontroller.SetupSchemaReconciler(mgr, schemaRec, cfg.MaxConcurrentReconciles); err != nil {
+		log.Error(err, "setting up KapeSchema controller")
+		os.Exit(1)
+	}
+
+	// KapeHandlerReconciler
 	handlerRec := reconcilehandler.NewHandlerReconciler(
 		handlerRepo,
 		schemaRepo,
