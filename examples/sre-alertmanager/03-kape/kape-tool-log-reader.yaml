@@ -1,0 +1,14 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeTool
+metadata:
+  name: k8s-log-reader
+  namespace: kape-examples
+spec:
+  description: "Read-only access to Kubernetes pod logs in kape-examples namespace"
+  mcp:
+    upstream:
+      url: "http://k8s-mcp-svc.kape-system:8080"
+      transport: sse
+    allowedTools:
+      - list_pods
+      - get_pod_logs

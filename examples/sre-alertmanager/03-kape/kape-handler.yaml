@@ -1,0 +1,55 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeHandler
+metadata:
+  name: sre-mock-api-monitor
+  namespace: kape-examples
+spec:
+  schemaRef: sre-decision
+  trigger:
+    source: kape.events.alertmanager.mock-api-errors
+    type: kape.events.alertmanager.mock-api-errors
+    maxEventAgeSeconds: 300
+  tools:
+    - ref: k8s-log-reader
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    maxIterations: 10
+    systemPrompt: |
+      You are an SRE agent monitoring the mock-api service in the kape-examples namespace.
+
+      When you receive an AlertManager alert about high error rates, follow this procedure:
+
+      1. Read the alert metadata: note the alertname, severity label, and description annotation.
+
+      2. List pods in the kape-examples namespace using the k8s-log-reader tool to find mock-api pods.
+
+      3. Fetch the last 50 lines of logs from each mock-api pod. Look for structured JSON log lines
+         with fields: status_code, error_reason, latency_ms. Count the frequency of each error_reason
+         value (db_timeout, upstream_unavailable, nil_pointer).
+
+      4. Based on the most frequent error_reason, determine:
+         - severity: "low" (<20% errors), "medium" (20-40%), "high" (40-70%), "critical" (>70%)
+         - root_cause: the dominant error_reason from the logs
+         - affected_service: "mock-api"
+         - recommendation: one concrete remediation step appropriate to the root_cause
+         - evidence_summary: a 1-2 sentence summary of what the logs showed
+
+      Always populate all five fields. Be concise and factual.
+  actions:
+    - name: notify-sre-webhook
+      type: webhook
+      condition: "true"
+      data:
+        url: "http://mock-webhook-receiver.kape-examples.svc.cluster.local/webhook"
+        method: POST
+        body:
+          severity: "{{ decision.severity }}"
+          root_cause: "{{ decision.root_cause }}"
+          affected_service: "{{ decision.affected_service }}"
+          recommendation: "{{ decision.recommendation }}"
+          evidence_summary: "{{ decision.evidence_summary }}"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 3
+    natsLagThreshold: 5
