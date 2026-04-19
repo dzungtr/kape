@@ -1,3 +1,25 @@
+# README Redesign Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace the verbose reference README with a concise, vision-first README in SigNoz style.
+
+**Architecture:** Single file replacement — `README.md` at repo root. No other files touched.
+
+**Tech Stack:** Markdown only.
+
+---
+
+### Task 1: Replace README.md
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1: Overwrite README.md with the new content**
+
+Replace the entire contents of `/home/tony/projects/kape-io/README.md` with:
+
+```markdown
 # KAPE — Kubernetes Agentic Platform Execution
 
 > Autonomous cluster monitoring, reasoning, and remediation — declared entirely in Kubernetes CRDs.
@@ -47,9 +69,48 @@ spec:
 |---|---|
 | [Architecture](docs/architecture.md) | How the platform fits together |
 | [CRD Reference](docs/crds.md) | KapeHandler, KapeTool, KapeSchema fields |
-| [Design Specs](docs/specs/) | RFCs and detailed technical decisions |
+| [Design Specs](specs/) | RFCs and detailed technical decisions |
 | [Contributing](CONTRIBUTING.md) | Development setup and workflow |
 
 ## Status
 
 Early development — core operator, runtime, and adapters are functional. Dashboard and task-service in progress.
+```
+
+- [ ] **Step 2: Verify the file looks correct**
+
+```bash
+cat README.md
+```
+
+Expected: clean markdown, ~60 lines, no old content remaining.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "doc: rewrite README — concise vision-first format"
+```
+
+- [ ] **Step 4: Push branch and open PR**
+
+```bash
+git push -u origin HEAD
+gh pr create --title "doc: rewrite README — concise vision-first format" --body "$(cat <<'EOF'
+## Summary
+
+- Replaces verbose reference README with a concise SigNoz-style README
+- Leads with a differentiator pitch (vs autoscalers / K8sGPT)
+- Adds quick-start helm + KapeHandler YAML snippet
+- Adds docs navigation table
+- Honest one-line status at the bottom
+
+## Test plan
+
+- [ ] Render README on GitHub and verify formatting
+- [ ] Check all section headings are present: Why KAPE, Quick Start, Documentation, Status
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
