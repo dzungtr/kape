@@ -167,6 +167,28 @@ func TestAPIHandler_AlwaysFail(t *testing.T) {
 	}
 }
 
+func TestAPIHandler_FailLogHasMessage(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	h := newAPIHandler(1.0, reg)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	// Capture stdout to verify message field is non-empty
+	// (handler writes JSON log to os.Stdout; we verify via scenario table directly)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 got %d", rec.Code)
+	}
+	// All scenarios must have non-empty message and latencyMs > 0
+	for _, sc := range scenarios {
+		if sc.message == "" {
+			t.Errorf("scenario %q has empty message", sc.reason)
+		}
+		if sc.latencyMs <= 0 {
+			t.Errorf("scenario %q has non-positive latencyMs", sc.reason)
+		}
+	}
+}
+
 func TestAPIHandler_PartialFailure(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	h := newAPIHandler(0.5, reg)
@@ -233,20 +255,47 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var errorReasons = []string{"db_timeout", "upstream_unavailable", "nil_pointer"}
+// scenario describes a failure scenario with realistic log context.
+type scenario struct {
+	reason    string
+	message   string
+	latencyMs int64 // simulated latency for this failure type
+}
+
+// scenarios maps each error reason to a realistic description and latency.
+// The message field becomes the "message" in the structured log, giving the
+// KapeHandler agent concrete evidence to reason over.
+var scenarios = []scenario{
+	{
+		reason:    "db_timeout",
+		message:   "Database connection pool exhausted after 3 retries. Query timed out waiting for available connection.",
+		latencyMs: 5000,
+	},
+	{
+		reason:    "upstream_unavailable",
+		message:   "Upstream payment service returned HTTP 503. Circuit breaker is OPEN. Last successful call was 42s ago.",
+		latencyMs: 1200,
+	},
+	{
+		reason:    "nil_pointer",
+		message:   "Unhandled nil pointer dereference in order processing pipeline at step validate_inventory. Order ID was not pre-loaded.",
+		latencyMs: 3,
+	},
+}
 
 type requestLog struct {
 	RequestID   string `json:"request_id"`
 	StatusCode  int    `json:"status_code"`
 	LatencyMs   int64  `json:"latency_ms"`
 	ErrorReason string `json:"error_reason,omitempty"`
+	Message     string `json:"message"`
 	Timestamp   string `json:"timestamp"`
 }
 
 type apiHandler struct {
-	failureRate    float64
-	requestsTotal  *prometheus.CounterVec
-	latencyHist    prometheus.Histogram
+	failureRate   float64
+	requestsTotal *prometheus.CounterVec
+	latencyHist   prometheus.Histogram
 }
 
 func newAPIHandler(failureRate float64, reg prometheus.Registerer) *apiHandler {
@@ -269,36 +318,36 @@ func (h *apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := fmt.Sprintf("%d", start.UnixNano())
 
-	log := requestLog{
+	entry := requestLog{
 		RequestID: reqID,
 		Timestamp: start.UTC().Format(time.RFC3339),
 	}
 
 	if rand.Float64() < h.failureRate {
-		reason := errorReasons[rand.Intn(len(errorReasons))]
-		log.StatusCode = http.StatusInternalServerError
-		log.ErrorReason = reason
-		log.LatencyMs = time.Since(start).Milliseconds()
+		sc := scenarios[rand.Intn(len(scenarios))]
+		entry.StatusCode = http.StatusInternalServerError
+		entry.ErrorReason = sc.reason
+		entry.Message = sc.message
+		entry.LatencyMs = sc.latencyMs
 
 		h.requestsTotal.WithLabelValues("error").Inc()
+		h.latencyHist.Observe(float64(sc.latencyMs) / 1000.0)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": reason})
+		json.NewEncoder(w).Encode(map[string]string{"error": sc.reason})
 	} else {
-		log.StatusCode = http.StatusOK
-		log.LatencyMs = time.Since(start).Milliseconds()
+		entry.StatusCode = http.StatusOK
+		entry.LatencyMs = time.Since(start).Milliseconds()
+		entry.Message = "Request processed successfully."
 
 		h.requestsTotal.WithLabelValues("success").Inc()
+		h.latencyHist.Observe(float64(entry.LatencyMs) / 1000.0)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 
-	h.latencyHist.Observe(float64(log.LatencyMs) / 1000.0)
-	enc := json.NewEncoder(w)
-	_ = enc
-	// Write structured log to stdout for kubectl logs evidence
-	logLine, _ := json.Marshal(log)
+	logLine, _ := json.Marshal(entry)
 	fmt.Println(string(logLine))
 }
 
@@ -685,9 +734,15 @@ import (
 	"testing"
 )
 
-func TestReceiver_PostJSON(t *testing.T) {
+func TestReceiver_PostKapeDecision(t *testing.T) {
 	rec := httptest.NewRecorder()
-	body := `{"severity":"high","root_cause":"db_timeout"}`
+	body := `{
+		"severity":"high",
+		"root_cause":"db_timeout",
+		"affected_service":"mock-api",
+		"recommendation":"Check database connection pool settings.",
+		"evidence_summary":"23 of 50 log lines showed db_timeout in the past minute."
+	}`
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -698,8 +753,11 @@ func TestReceiver_PostJSON(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 got %d", rec.Code)
 	}
-	if !strings.Contains(buf.String(), "db_timeout") {
-		t.Errorf("expected log to contain 'db_timeout', got: %s", buf.String())
+	out := buf.String()
+	for _, want := range []string{"severity", "high", "root_cause", "db_timeout", "mock-api", "recommendation", "evidence_summary"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected log to contain %q, got:\n%s", want, out)
+		}
 	}
 }
 
@@ -773,6 +831,15 @@ func newReceiver(out io.Writer) *receiver {
 	return &receiver{out: out}
 }
 
+// kapeDecision holds the expected fields from KapeHandler's structured output.
+type kapeDecision struct {
+	Severity        string `json:"severity"`
+	RootCause       string `json:"root_cause"`
+	AffectedService string `json:"affected_service"`
+	Recommendation  string `json:"recommendation"`
+	EvidenceSummary string `json:"evidence_summary"`
+}
+
 func (rec *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -787,12 +854,26 @@ func (rec *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ts := time.Now().UTC().Format(time.RFC3339)
 
-	var pretty interface{}
-	if err := json.Unmarshal(body, &pretty); err == nil {
-		out, _ := json.MarshalIndent(pretty, "", "  ")
-		fmt.Fprintf(rec.out, "[%s] KAPE decision received:\n%s\n---\n", ts, out)
+	var d kapeDecision
+	if err := json.Unmarshal(body, &d); err == nil && d.Severity != "" {
+		fmt.Fprintf(rec.out, "\n========================================\n")
+		fmt.Fprintf(rec.out, "  KAPE SRE DECISION  [%s]\n", ts)
+		fmt.Fprintf(rec.out, "========================================\n")
+		fmt.Fprintf(rec.out, "  severity         : %s\n", d.Severity)
+		fmt.Fprintf(rec.out, "  affected_service : %s\n", d.AffectedService)
+		fmt.Fprintf(rec.out, "  root_cause       : %s\n", d.RootCause)
+		fmt.Fprintf(rec.out, "  recommendation   : %s\n", d.Recommendation)
+		fmt.Fprintf(rec.out, "  evidence_summary : %s\n", d.EvidenceSummary)
+		fmt.Fprintf(rec.out, "========================================\n\n")
 	} else {
-		fmt.Fprintf(rec.out, "[%s] KAPE payload (raw): %s\n---\n", ts, body)
+		// Fallback: pretty-print unknown payload
+		var pretty interface{}
+		if json.Unmarshal(body, &pretty) == nil {
+			out, _ := json.MarshalIndent(pretty, "", "  ")
+			fmt.Fprintf(rec.out, "[%s] KAPE payload (unknown shape):\n%s\n---\n", ts, out)
+		} else {
+			fmt.Fprintf(rec.out, "[%s] KAPE payload (raw): %s\n---\n", ts, body)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -1391,8 +1472,9 @@ kubectl get pods -n kape-examples
 
 ```bash
 kubectl logs -l app=mock-api -n kape-examples -f
-# {"request_id":"...","status_code":500,"latency_ms":1,"error_reason":"db_timeout","timestamp":"..."}
-# {"request_id":"...","status_code":200,"latency_ms":0,"timestamp":"..."}
+# {"request_id":"...","status_code":500,"latency_ms":5000,"error_reason":"db_timeout","message":"Database connection pool exhausted after 3 retries. Query timed out waiting for available connection.","timestamp":"..."}
+# {"request_id":"...","status_code":500,"latency_ms":1200,"error_reason":"upstream_unavailable","message":"Upstream payment service returned HTTP 503. Circuit breaker is OPEN. Last successful call was 42s ago.","timestamp":"..."}
+# {"request_id":"...","status_code":200,"latency_ms":1,"message":"Request processed successfully.","timestamp":"..."}
 ```
 
 ### Step 6 — Wait for the alert to fire (~2 minutes)
@@ -1417,14 +1499,15 @@ kubectl logs -l app.kubernetes.io/name=kapehandler,kape.io/handler=sre-mock-api-
 
 ```bash
 kubectl logs -l app=mock-webhook-receiver -n kape-examples -f
-# [2026-04-19T...] KAPE decision received:
-# {
-#   "severity": "high",
-#   "root_cause": "db_timeout",
-#   "affected_service": "mock-api",
-#   "recommendation": "Check database connection pool settings and downstream DB latency.",
-#   "evidence_summary": "23 of 50 log lines showed error_reason=db_timeout in the past minute."
-# }
+# ========================================
+#   KAPE SRE DECISION  [2026-04-19T10:32:01Z]
+# ========================================
+#   severity         : high
+#   affected_service : mock-api
+#   root_cause       : db_timeout
+#   recommendation   : Check database connection pool settings and downstream DB latency.
+#   evidence_summary : 23 of 50 log lines showed error_reason=db_timeout in the past minute.
+# ========================================
 ```
 
 ## Cleanup
