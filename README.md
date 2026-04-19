@@ -47,7 +47,7 @@ spec:
 |---|---|
 | [Architecture](docs/architecture.md) | How the platform fits together |
 | [CRD Reference](docs/crds.md) | KapeHandler, KapeTool, KapeSchema fields |
-| [Design Specs](specs/) | RFCs and detailed technical decisions |
+| [Design Specs](docs/specs/) | RFCs and detailed technical decisions |
 | [Contributing](CONTRIBUTING.md) | Development setup and workflow |
 
 ## Status
