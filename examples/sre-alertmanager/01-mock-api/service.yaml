@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-api
+  namespace: kape-examples
+  labels:
+    app: mock-api
+spec:
+  selector:
+    app: mock-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
