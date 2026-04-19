@@ -1,7 +1,7 @@
 .PHONY: generate build test lint docker-build
 
 generate:
-	controller-gen rbac:roleName=kape-operator crd webhook \
+	controller-gen rbac:roleName=kape-operator crd:allowDangerousTypes=true webhook \
 		paths=./operator/infra/... \
 		output:crd:artifacts:config=./crds
 	npx openapi-typescript task-service/openapi/openapi.yaml \

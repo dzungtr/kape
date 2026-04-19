@@ -159,6 +159,11 @@ spec:
                   - type
                   type: object
                 type: array
+              schemaHash:
+                description: |-
+                  SchemaHash is a sha256 of spec.version + spec.jsonSchema.
+                  Changes to this field trigger a Deployment rollout of all referencing KapeHandlers.
+                type: string
             type: object
         type: object
     served: true
