@@ -1,3 +1,9 @@
+> **Archived baseline.** This document is the original v1 roadmap as written in session 12.
+> The live build sequence is maintained in [`docs/roadmap/`](../roadmap/phases.md).
+> Refer there for current phase status, work items, and spec references.
+
+---
+
 # KAPE — v1 Implementation Roadmap
 
 **Status:** Draft
