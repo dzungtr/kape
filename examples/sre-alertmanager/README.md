@@ -44,6 +44,8 @@ kubectl create secret generic kape-anthropic \
   -n kape-examples
 ```
 
+> **Note:** All commands in this guide must be run from the **repository root** (the directory containing `go.work`), unless otherwise stated.
+
 ## Quick Start
 
 ### Step 1 — Install SigNoz and configure AlertManager
@@ -140,6 +142,6 @@ kubectl apply -k examples/sre-alertmanager/01-mock-api/
 ## Running Go tests
 
 ```bash
-cd src/mock-api && GOWORK=off go test ./... -v
-cd src/mock-webhook && GOWORK=off go test ./... -v
+cd examples/sre-alertmanager/src/mock-api && GOWORK=off go test ./... -v
+cd examples/sre-alertmanager/src/mock-webhook && GOWORK=off go test ./... -v
 ```

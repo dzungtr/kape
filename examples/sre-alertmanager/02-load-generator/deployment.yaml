@@ -28,7 +28,7 @@ spec:
               while true; do
                 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET" 2>/dev/null)
                 echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"status_code\":$STATUS}"
-                sleep $(echo "scale=3; $INTERVAL_MS/1000" | bc)
+                sleep $(awk "BEGIN{printf \"%.1f\", $INTERVAL_MS/1000}")
               done
           env:
             - name: TARGET_URL

@@ -18,6 +18,8 @@ spec:
               /
               rate(mock_api_requests_total[1m])
             ) > 0.1
+            and
+            rate(mock_api_requests_total[1m]) > 0
           for: 1m
           labels:
             severity: warning
