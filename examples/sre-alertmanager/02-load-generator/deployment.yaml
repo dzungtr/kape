@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: kape-examples
+  labels:
+    app: load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+        - name: load-generator
+          image: curlimages/curl:8.7.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              TARGET=${TARGET_URL:-http://mock-api.kape-examples.svc.cluster.local:8080/api/status}
+              INTERVAL_MS=${POLL_INTERVAL_MS:-500}
+              echo "{\"msg\":\"load-generator starting\",\"target\":\"$TARGET\",\"interval_ms\":$INTERVAL_MS}"
+              while true; do
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET" 2>/dev/null)
+                echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"status_code\":$STATUS}"
+                sleep $(echo "scale=3; $INTERVAL_MS/1000" | bc)
+              done
+          env:
+            - name: TARGET_URL
+              value: "http://mock-api.kape-examples.svc.cluster.local:8080/api/status"
+            - name: POLL_INTERVAL_MS
+              value: "500"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
