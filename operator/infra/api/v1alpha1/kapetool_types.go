@@ -117,6 +117,11 @@ type KapeToolStatus struct {
 	// Conditions represent the latest available observations of the tool's state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// QdrantEndpoint is the Qdrant HTTP endpoint for memory-type tools.
+	// Written after the StatefulSet reaches ReadyReplicas >= 1.
+	// +optional
+	QdrantEndpoint string `json:"qdrantEndpoint,omitempty"`
 }
 
 // KapeTool registers a tool capability — either an MCP server sidecar, a vector memory backend,
