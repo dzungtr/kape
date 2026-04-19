@@ -7,6 +7,7 @@ toolchain go1.24.10
 require (
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/peterbourgon/ff/v3 v3.4.0
+	github.com/stretchr/testify v1.10.0
 	k8s.io/api v0.32.0
 	k8s.io/apiextensions-apiserver v0.32.0
 	k8s.io/apimachinery v0.32.0

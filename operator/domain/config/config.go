@@ -19,6 +19,10 @@ type KapeConfig struct {
 	// NATS monitoring endpoint for KEDA ScaledObject
 	NATSMonitoringEndpoint string
 
+	// Qdrant vector database
+	QdrantVersion      string
+	QdrantStorageClass string
+
 	// Default max iterations for the ReAct loop (overridable per KapeHandler)
 	DefaultMaxIterations int32
 }
@@ -68,6 +72,12 @@ func (c KapeConfig) WithDefaults() KapeConfig {
 	}
 	if c.NATSMonitoringEndpoint == "" {
 		c.NATSMonitoringEndpoint = "http://nats.kape-system:8222"
+	}
+	if c.QdrantVersion == "" {
+		c.QdrantVersion = "v1.14.0"
+	}
+	if c.QdrantStorageClass == "" {
+		c.QdrantStorageClass = "standard"
 	}
 	if c.DefaultMaxIterations == 0 {
 		c.DefaultMaxIterations = 50

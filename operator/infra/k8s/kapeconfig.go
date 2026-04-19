@@ -41,6 +41,8 @@ func (l *KapeConfigLoader) Load(ctx context.Context) (domainconfig.KapeConfig, e
 		KapetoolImageVersion:   cm.Data["kapetool.version"],
 		NATSMonitoringEndpoint: cm.Data["nats.monitoringEndpoint"],
 		ClusterName:            cm.Data["cluster.name"],
+		QdrantVersion:          cm.Data["qdrant.version"],
+		QdrantStorageClass:     cm.Data["qdrant.storageClass"],
 	}
 
 	if raw := cm.Data["handler.maxIterations"]; raw != "" {
