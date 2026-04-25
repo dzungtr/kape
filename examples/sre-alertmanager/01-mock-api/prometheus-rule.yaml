@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mock-api-rules
+  namespace: kape-examples
+  labels:
+    app: mock-api
+    release: signoz
+spec:
+  groups:
+    - name: mock-api.rules
+      interval: 30s
+      rules:
+        - alert: MockApiHighErrorRate
+          expr: |
+            (
+              rate(mock_api_requests_total{status="error"}[1m])
+              /
+              rate(mock_api_requests_total[1m])
+            ) > 0.1
+            and
+            rate(mock_api_requests_total[1m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+            kape_subject: kape.events.alertmanager.mock-api-errors
+          annotations:
+            summary: "High error rate on mock-api"
+            description: "mock-api error rate is {{ $value | humanizePercentage }} over the last 1m"

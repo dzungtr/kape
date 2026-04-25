@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mock-api
+  namespace: kape-examples
+  labels:
+    app: mock-api
+    release: signoz
+spec:
+  selector:
+    matchLabels:
+      app: mock-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

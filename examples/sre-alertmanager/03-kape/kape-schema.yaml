@@ -1,0 +1,37 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeSchema
+metadata:
+  name: sre-decision
+  namespace: kape-examples
+spec:
+  version: v1
+  jsonSchema:
+    type: object
+    additionalProperties: false
+    required:
+      - severity
+      - root_cause
+      - affected_service
+      - recommendation
+      - evidence_summary
+    properties:
+      severity:
+        type: string
+        enum:
+          - low
+          - medium
+          - high
+          - critical
+        description: "Assessed severity of the incident"
+      root_cause:
+        type: string
+        description: "Identified root cause based on log evidence"
+      affected_service:
+        type: string
+        description: "Name of the affected service"
+      recommendation:
+        type: string
+        description: "Recommended remediation action"
+      evidence_summary:
+        type: string
+        description: "Summary of evidence found in pod logs"

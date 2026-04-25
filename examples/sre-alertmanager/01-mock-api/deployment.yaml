@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-api
+  namespace: kape-examples
+  labels:
+    app: mock-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-api
+  template:
+    metadata:
+      labels:
+        app: mock-api
+    spec:
+      containers:
+        - name: mock-api
+          image: ghcr.io/kape-io/kape-mock-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FAILURE_RATE
+              value: "0.4"
+            - name: PORT
+              value: "8080"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

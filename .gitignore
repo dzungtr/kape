@@ -33,3 +33,5 @@ sbom/
 task-service/task-service
 # ignore binary build
 cmd
+examples/sre-alertmanager/src/mock-api/mock-api
+examples/sre-alertmanager/src/mock-webhook/mock-webhook
