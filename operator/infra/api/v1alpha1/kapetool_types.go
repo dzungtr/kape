@@ -60,6 +60,13 @@ type MCPSpec struct {
 	// Audit defines audit logging configuration.
 	// +optional
 	Audit *AuditSpec `json:"audit,omitempty"`
+
+	// SkipProbe disables the operator's HTTP health probe against the upstream MCP server.
+	// MCP does not require servers to expose a /health endpoint, so set this to true when the
+	// upstream lacks one — without it the tool stays Ready=False / MCPEndpointUnreachable forever.
+	// When skipped, Ready is set True with Reason=ProbeSkipped.
+	// +optional
+	SkipProbe bool `json:"skipProbe,omitempty"`
 }
 
 // MemorySpec defines the configuration for a vector memory backend tool.
@@ -117,6 +124,11 @@ type KapeToolStatus struct {
 	// Conditions represent the latest available observations of the tool's state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// QdrantEndpoint is the Qdrant HTTP endpoint for memory-type tools.
+	// Written after the StatefulSet reaches ReadyReplicas >= 1.
+	// +optional
+	QdrantEndpoint string `json:"qdrantEndpoint,omitempty"`
 }
 
 // KapeTool registers a tool capability — either an MCP server sidecar, a vector memory backend,

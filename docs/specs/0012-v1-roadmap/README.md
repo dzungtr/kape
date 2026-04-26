@@ -533,3 +533,13 @@ This document is the concrete build plan for KAPE v1. All design decisions are s
 **Dashboard:** `npm run dev` (React Router dev server with HMR)
 
 **Progression:** Phases 1–5 can be developed entirely with docker-compose + kind. Phase 6 onwards requires a running cluster (KEDA, Qdrant StatefulSet, cert-manager).
+
+---
+
+## Technical Backlog
+
+Deferred implementation decisions that did not block their originating phase.
+
+| Item | Deferred from | Target |
+| ---- | ------------- | ------ |
+| Add `storage` field to `KapeToolSpec.MemorySpec` so operators can configure Qdrant PVC size per memory tool. Phase 6 hardcodes 10Gi. | Phase 6 | Phase 6 follow-up PR |

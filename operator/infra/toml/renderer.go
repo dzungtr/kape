@@ -1,4 +1,3 @@
-// Package toml renders the settings.toml ConfigMap consumed by the handler runtime.
 package toml
 
 import (
@@ -7,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
+	gotoml "github.com/pelletier/go-toml/v2"
 
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
@@ -19,15 +18,20 @@ type Renderer struct{}
 // NewRenderer returns a new Renderer.
 func NewRenderer() *Renderer { return &Renderer{} }
 
-// Render serialises a KapeHandler spec and platform config into a settings.toml string.
-func (r *Renderer) Render(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig) (string, error) {
+// Render serialises a KapeHandler, its resolved KapeSchema, resolved KapeTools,
+// and platform config into a settings.toml string.
+func (r *Renderer) Render(
+	handler *v1alpha1.KapeHandler,
+	schema *v1alpha1.KapeSchema,
+	tools []v1alpha1.KapeTool,
+	cfg domainconfig.KapeConfig,
+) (string, error) {
 	cfg = cfg.WithDefaults()
 
 	replayOnStartup := true
 	if handler.Spec.Trigger.ReplayOnStartup != nil {
 		replayOnStartup = *handler.Spec.Trigger.ReplayOnStartup
 	}
-
 	maxIterations := handler.Spec.LLM.MaxIterations
 	if maxIterations == 0 {
 		maxIterations = cfg.DefaultMaxIterations
@@ -35,11 +39,17 @@ func (r *Renderer) Render(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeCo
 
 	consumerName := strings.ReplaceAll(handler.Spec.Trigger.Type, ".", "-")
 	taskServiceEndpoint := fmt.Sprintf("http://kape-task-service.%s:8080", handler.Namespace)
-	otelEndpoint := "http://otel-collector.kape-system:4318"
 
 	actions, err := buildActions(handler)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
+	}
+
+	toolSections := buildToolSections(handler, tools)
+
+	schemaSection, err := buildSchemaSection(schema)
+	if err != nil {
+		return "", fmt.Errorf("building schema section: %w", err)
 	}
 
 	s := settingsTOML{
@@ -63,21 +73,56 @@ func (r *Renderer) Render(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeCo
 			Consumer: consumerName,
 			Stream:   "kape-events",
 		},
-		TaskService: taskServiceTOML{
-			Endpoint: taskServiceEndpoint,
-		},
-		OTEL: otelTOML{
-			Endpoint:    otelEndpoint,
-			ServiceName: "kape-handler",
-		},
-		Actions: actions,
+		TaskService: taskServiceTOML{Endpoint: taskServiceEndpoint},
+		OTEL:        otelTOML{Endpoint: "http://otel-collector.kape-system:4318", ServiceName: "kape-handler"},
+		Tools:       toolSections,
+		Schema:      schemaSection,
+		Actions:     actions,
 	}
 
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(s); err != nil {
+	if err := gotoml.NewEncoder(&buf).Encode(s); err != nil {
 		return "", fmt.Errorf("encoding settings.toml: %w", err)
 	}
 	return buf.String(), nil
+}
+
+func buildToolSections(handler *v1alpha1.KapeHandler, tools []v1alpha1.KapeTool) map[string]toolTOML {
+	toolMap := make(map[string]v1alpha1.KapeTool, len(tools))
+	for _, t := range tools {
+		toolMap[t.Name] = t
+	}
+	result := make(map[string]toolTOML, len(handler.Spec.Tools))
+	mcpPort := 8080
+	for _, ref := range handler.Spec.Tools {
+		t, ok := toolMap[ref.Ref]
+		if !ok {
+			continue
+		}
+		switch t.Spec.Type {
+		case "mcp":
+			result[ref.Ref] = toolTOML{
+				Type:        "mcp",
+				SidecarPort: mcpPort,
+				Transport:   t.Spec.MCP.Upstream.Transport,
+			}
+			mcpPort++
+		case "memory":
+			result[ref.Ref] = toolTOML{
+				Type:           "memory",
+				QdrantEndpoint: t.Status.QdrantEndpoint,
+			}
+		}
+	}
+	return result
+}
+
+func buildSchemaSection(schema *v1alpha1.KapeSchema) (schemaTOML, error) {
+	b, err := json.Marshal(schema.Spec.JSONSchema)
+	if err != nil {
+		return schemaTOML{}, fmt.Errorf("marshalling schema: %w", err)
+	}
+	return schemaTOML{JSON: string(b)}, nil
 }
 
 func buildActions(handler *v1alpha1.KapeHandler) ([]actionTOML, error) {
@@ -97,7 +142,6 @@ func buildActions(handler *v1alpha1.KapeHandler) ([]actionTOML, error) {
 	return result, nil
 }
 
-// convertActionData converts the raw apiextensionsv1.JSON map to map[string]interface{}.
 func convertActionData(a v1alpha1.ActionSpec) (map[string]interface{}, error) {
 	if len(a.Data) == 0 {
 		return nil, nil
@@ -113,15 +157,17 @@ func convertActionData(a v1alpha1.ActionSpec) (map[string]interface{}, error) {
 	return result, nil
 }
 
-// ─── internal TOML struct tree ───────────────────────────────────────────────
+// ─── internal TOML struct tree ─────────────────────────────────────────────────
 
 type settingsTOML struct {
-	Kape        kapeTOML        `toml:"kape"`
-	LLM         llmTOML         `toml:"llm"`
-	NATS        natsTOML        `toml:"nats"`
-	TaskService taskServiceTOML `toml:"task_service"`
-	OTEL        otelTOML        `toml:"otel"`
-	Actions     []actionTOML    `toml:"actions,omitempty"`
+	Kape        kapeTOML            `toml:"kape"`
+	LLM         llmTOML             `toml:"llm"`
+	NATS        natsTOML            `toml:"nats"`
+	TaskService taskServiceTOML     `toml:"task_service"`
+	OTEL        otelTOML            `toml:"otel"`
+	Tools       map[string]toolTOML `toml:"tools,omitempty"`
+	Schema      schemaTOML          `toml:"schema"`
+	Actions     []actionTOML        `toml:"actions,omitempty"`
 }
 
 type kapeTOML struct {
@@ -154,6 +200,17 @@ type taskServiceTOML struct {
 type otelTOML struct {
 	Endpoint    string `toml:"endpoint"`
 	ServiceName string `toml:"service_name"`
+}
+
+type toolTOML struct {
+	Type           string `toml:"type"`
+	SidecarPort    int    `toml:"sidecar_port,omitempty"`
+	Transport      string `toml:"transport,omitempty"`
+	QdrantEndpoint string `toml:"qdrant_endpoint,omitempty"`
+}
+
+type schemaTOML struct {
+	JSON string `toml:"json"`
 }
 
 type actionTOML struct {

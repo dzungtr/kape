@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
@@ -30,9 +31,8 @@ func (r *KapeHandlerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return r.inner.Reconcile(ctx, req.NamespacedName)
 }
 
-// SetupHandlerReconciler registers the KapeHandler reconciler with the controller manager.
-// It watches owned Deployments, ConfigMaps, and ServiceAccounts so that changes to them
-// re-enqueue the owning KapeHandler.
+// SetupHandlerReconciler registers the KapeHandler reconciler with secondary watches for
+// KapeTool and KapeSchema changes.
 func SetupHandlerReconciler(mgr manager.Manager, inner *reconcilehandler.HandlerReconciler, maxConcurrent int) error {
 	r := NewKapeHandlerReconciler(inner)
 	return ctrl.NewControllerManagedBy(mgr).
@@ -40,8 +40,8 @@ func SetupHandlerReconciler(mgr manager.Manager, inner *reconcilehandler.Handler
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
-		WithOptions(controller.Options{
-			MaxConcurrentReconciles: maxConcurrent,
-		}).
+		Watches(&v1alpha1.KapeTool{}, handler.EnqueueRequestsFromMapFunc(MapToolToHandlers(mgr.GetClient()))).
+		Watches(&v1alpha1.KapeSchema{}, handler.EnqueueRequestsFromMapFunc(MapSchemaToHandlers(mgr.GetClient()))).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }

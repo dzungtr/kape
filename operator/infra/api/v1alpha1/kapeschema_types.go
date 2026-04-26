@@ -41,6 +41,11 @@ type KapeSchemaStatus struct {
 	// conditions holds the conditions for the KapeSchema.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// SchemaHash is a sha256 of spec.version + spec.jsonSchema.
+	// Changes to this field trigger a Deployment rollout of all referencing KapeHandlers.
+	// +optional
+	SchemaHash string `json:"schemaHash,omitempty"`
 }
 
 // +kubebuilder:object:root=true

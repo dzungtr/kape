@@ -673,6 +673,16 @@ CRD, and the KapeConfig CRD. Work through each interactively.
 
 ---
 
+## Technical Backlog
+
+Deferred decisions and TODOs tracked here. Pick these up in the relevant future PR.
+
+| Item | Deferred from | Target PR |
+| ---- | ------------- | --------- |
+| Add `storage` field to `KapeToolSpec.MemorySpec` to allow configurable Qdrant PVC size per memory tool (Phase 6 hardcodes 10Gi) | Phase 6 operator implementation | Phase 6 follow-up |
+
+---
+
 ## Document Registry
 
 Keep this table updated as sessions complete:
