@@ -60,6 +60,13 @@ type MCPSpec struct {
 	// Audit defines audit logging configuration.
 	// +optional
 	Audit *AuditSpec `json:"audit,omitempty"`
+
+	// SkipProbe disables the operator's HTTP health probe against the upstream MCP server.
+	// MCP does not require servers to expose a /health endpoint, so set this to true when the
+	// upstream lacks one — without it the tool stays Ready=False / MCPEndpointUnreachable forever.
+	// When skipped, Ready is set True with Reason=ProbeSkipped.
+	// +optional
+	SkipProbe bool `json:"skipProbe,omitempty"`
 }
 
 // MemorySpec defines the configuration for a vector memory backend tool.

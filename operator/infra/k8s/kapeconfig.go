@@ -40,6 +40,7 @@ func (l *KapeConfigLoader) Load(ctx context.Context) (domainconfig.KapeConfig, e
 		KapetoolImage:          cm.Data["kapetool.image"],
 		KapetoolImageVersion:   cm.Data["kapetool.version"],
 		NATSMonitoringEndpoint: cm.Data["nats.monitoringEndpoint"],
+		NATSStreamName:         cm.Data["nats.streamName"],
 		ClusterName:            cm.Data["cluster.name"],
 		QdrantVersion:          cm.Data["qdrant.version"],
 		QdrantStorageClass:     cm.Data["qdrant.storageClass"],

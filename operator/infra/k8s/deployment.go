@@ -87,19 +87,10 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	envVars = append(envVars, handler.Spec.Envs...)
 
 	handlerContainer := corev1.Container{
-		Name:  "handler",
-		Image: cfg.HandlerImageRef(),
-		Env:   envVars,
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("128Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-			},
-		},
+		Name:      "handler",
+		Image:     cfg.HandlerImageRef(),
+		Env:       envVars,
+		Resources: resolveHandlerResources(handler.Spec.Resources),
 		VolumeMounts: []corev1.VolumeMount{{
 			Name:      "settings",
 			MountPath: "/etc/kape",
@@ -151,6 +142,22 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	}
 	setOwnerRef(handler, &dep.ObjectMeta)
 	return dep
+}
+
+func resolveHandlerResources(override *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	if override != nil {
+		return *override
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
 }
 
 func buildSidecars(handler *v1alpha1.KapeHandler, tools []v1alpha1.KapeTool, cfg domainconfig.KapeConfig) []corev1.Container {

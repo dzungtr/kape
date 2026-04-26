@@ -98,6 +98,19 @@ func (r *ToolReconciler) reconcileMemory(ctx context.Context, tool *v1alpha1.Kap
 }
 
 func (r *ToolReconciler) reconcileMCP(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	if tool.Spec.MCP.SkipProbe {
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionTrue,
+			Reason:  "ProbeSkipped",
+			Message: "MCP health probe disabled via spec.mcp.skipProbe",
+		})
+		if err := r.tools.UpdateStatus(ctx, tool); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	err := probeMCPEndpoint(tool.Spec.MCP.Upstream.URL)
 	if err != nil {
 		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{

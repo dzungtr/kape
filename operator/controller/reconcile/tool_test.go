@@ -112,6 +112,35 @@ func TestToolReconciler_MCPType_EndpointUnreachable_SetsNotReady(t *testing.T) {
 	assert.Equal(t, "MCPEndpointUnreachable", readyCond.Reason)
 }
 
+func TestToolReconciler_MCPType_SkipProbe_SetsReadyWithoutHTTPCall(t *testing.T) {
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{Name: "mcp-skip", Namespace: "kape-system"},
+		Spec: v1alpha1.KapeToolSpec{
+			Type: "mcp",
+			MCP: &v1alpha1.MCPSpec{
+				// Use an unreachable URL to prove the probe is not called when SkipProbe=true.
+				Upstream:  v1alpha1.MCPUpstreamSpec{Transport: "sse", URL: "http://127.0.0.1:19999"},
+				SkipProbe: true,
+			},
+		},
+	}
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
+
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), k8sadapters.NewStatefulSetAdapter(c), &fakeConfigLoader{})
+	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mcp-skip", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(30), int64(result.RequeueAfter.Seconds()))
+
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mcp-skip", Namespace: "kape-system"})
+	require.NotNil(t, got)
+	readyCond := findCondition(got.Status.Conditions, "Ready")
+	require.NotNil(t, readyCond)
+	assert.Equal(t, metav1.ConditionTrue, readyCond.Status)
+	assert.Equal(t, "ProbeSkipped", readyCond.Reason)
+}
+
 func TestToolReconciler_EventPublish_ValidType_SetsReady(t *testing.T) {
 	tool := &v1alpha1.KapeTool{
 		ObjectMeta: metav1.ObjectMeta{Name: "ep-tool", Namespace: "kape-system"},

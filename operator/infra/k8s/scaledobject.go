@@ -35,8 +35,8 @@ func NewScaledObjectAdapter(c client.Client) *ScaledObjectAdapter {
 // Ensure creates or patches the KEDA ScaledObject for the handler.
 func (a *ScaledObjectAdapter) Ensure(ctx context.Context, handler *v1alpha1.KapeHandler, consumerName string, cfg domainconfig.KapeConfig) error {
 	cfg = cfg.WithDefaults()
-	desired := buildScaledObject(handler, consumerName, cfg.NATSMonitoringEndpoint)
-	key := types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}
+	desired := buildScaledObject(handler, consumerName, cfg.NATSMonitoringEndpoint, cfg.NATSStreamName)
+	key := client.ObjectKeyFromObject(desired)
 
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(scaledObjectGVK)
@@ -86,7 +86,7 @@ func (a *ScaledObjectAdapter) Delete(ctx context.Context, key types.NamespacedNa
 	return nil
 }
 
-func buildScaledObject(handler *v1alpha1.KapeHandler, consumerName, natsEndpoint string) *unstructured.Unstructured {
+func buildScaledObject(handler *v1alpha1.KapeHandler, consumerName, natsEndpoint, streamName string) *unstructured.Unstructured {
 	scaling := resolveScaling(handler.Spec.Scaling)
 	minReplicas := int64(scaling.MinReplicas)
 	if scaling.ScaleToZero {
@@ -111,7 +111,7 @@ func buildScaledObject(handler *v1alpha1.KapeHandler, consumerName, natsEndpoint
 						"type": "nats-jetstream",
 						"metadata": map[string]interface{}{
 							"natsServerMonitoringEndpoint": natsEndpoint,
-							"streamName":                   "kape-events",
+							"streamName":                   streamName,
 							"consumer":                     consumerName,
 							"lagThreshold":                 fmt.Sprintf("%d", scaling.NatsLagThreshold),
 						},

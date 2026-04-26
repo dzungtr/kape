@@ -176,6 +176,11 @@ type KapeHandlerSpec struct {
 	// Scaling defines the autoscaling configuration for the handler.
 	// +optional
 	Scaling *ScalingSpec `json:"scaling,omitempty"`
+
+	// Resources overrides the default CPU and memory requests/limits for the handler container.
+	// When unset, defaults are: requests cpu=100m memory=128Mi, limits cpu=500m memory=512Mi.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // KapeHandlerStatus defines the observed state of a KapeHandler.

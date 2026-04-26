@@ -30,6 +30,14 @@ type HandlerReconciler struct {
 	kapeConfig      ports.KapeConfigLoader
 }
 
+func handlerDeploymentName(handler *v1alpha1.KapeHandler) string {
+	return "kape-handler-" + handler.Name
+}
+
+func handlerScaledObjectName(handler *v1alpha1.KapeHandler) string {
+	return "kape-handler-" + handler.Name
+}
+
 // NewHandlerReconciler creates a HandlerReconciler with all required dependencies.
 func NewHandlerReconciler(
 	handlers ports.HandlerRepository,
@@ -139,7 +147,7 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 	log.V(1).Info("Deployment reconciled", "rolloutHash", rolloutHash)
 
 	// Step 8: Ensure KEDA ScaledObject
-	soKey := types.NamespacedName{Name: "kape-handler-" + handler.Name, Namespace: handler.Namespace}
+	soKey := types.NamespacedName{Name: handlerScaledObjectName(handler), Namespace: handler.Namespace}
 	existingConsumer, soFound, err := r.scaledObjects.GetConsumerName(ctx, soKey)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reading ScaledObject: %w", err)
@@ -170,7 +178,7 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 	}
 
 	// Step 11: Read Deployment status → build conditions
-	depKey := types.NamespacedName{Name: "kape-handler-" + handler.Name, Namespace: handler.Namespace}
+	depKey := types.NamespacedName{Name: handlerDeploymentName(handler), Namespace: handler.Namespace}
 	depStatus, depFound, err := r.deployments.GetStatus(ctx, depKey)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reading Deployment status: %w", err)

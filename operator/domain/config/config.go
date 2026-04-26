@@ -19,6 +19,9 @@ type KapeConfig struct {
 	// NATS monitoring endpoint for KEDA ScaledObject
 	NATSMonitoringEndpoint string
 
+	// NATSStreamName is the JetStream stream KEDA scales the handler against.
+	NATSStreamName string
+
 	// Qdrant vector database
 	QdrantVersion      string
 	QdrantStorageClass string
@@ -72,6 +75,9 @@ func (c KapeConfig) WithDefaults() KapeConfig {
 	}
 	if c.NATSMonitoringEndpoint == "" {
 		c.NATSMonitoringEndpoint = "http://nats.kape-system:8222"
+	}
+	if c.NATSStreamName == "" {
+		c.NATSStreamName = "kape-events"
 	}
 	if c.QdrantVersion == "" {
 		c.QdrantVersion = "v1.14.0"
