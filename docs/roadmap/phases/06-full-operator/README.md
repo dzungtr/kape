@@ -1,6 +1,6 @@
 # Phase 6 — Full Operator
 
-**Status:** pending
+**Status:** in_progress
 **Milestone:** M2
 **Specs:** 0002, 0005, 0013
 **Modified by:** 0012 (created), 0013 (KapeSkillReconciler, KapeProxyReconciler, kapeproxy sidecar model added)
@@ -16,6 +16,9 @@ The operator manages the full resource lifecycle — KapeTool (memory + mcp type
 - `0013-kape-skill-crd` — KapeSkillReconciler, KapeHandlerReconciler changes, kapeproxy sidecar model, kapeproxy-config rendering
 
 ## Work
+
+> **Shipped (cc72771 / PR #7):** KapeToolReconciler, KapeSchemaReconciler, KapeHandlerReconciler (12-step), Qdrant StatefulSet provisioning, KEDA ScaledObject, per-tool sidecar injection.
+> **Still pending:** KapeSkillReconciler, KapeProxyReconciler, kapeproxy binary (`cmd/kapeproxy/`), webhook admission, `operator/infra/qdrant/` collection management, kapeproxy sidecar model.
 
 ### KapeTool reconciler — memory type
 - Provision Qdrant StatefulSet + Service in `kape-system`
