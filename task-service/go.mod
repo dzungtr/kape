@@ -6,7 +6,7 @@ toolchain go1.25.9
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1
-	github.com/go-pg/pg/v10 v10.13.0
+	github.com/go-pg/pg/v10 v10.15.0
 	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/stretchr/testify v1.11.1
@@ -64,7 +64,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/tmthrgd/go-hex v0.0.0-20190904060850-447a3041c3bc // indirect
 	github.com/vmihailenco/bufpool v0.1.11 // indirect
-	github.com/vmihailenco/msgpack/v5 v5.3.4 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
