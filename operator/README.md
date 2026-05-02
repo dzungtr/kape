@@ -20,13 +20,13 @@ In a few more sentences:
 - The operator also reads cluster-wide defaults from a `kape-config` `ConfigMap` in `kape-system` (image refs, NATS endpoint, default max iterations) so a fresh cluster works without per-handler boilerplate.
 - The operator's `KapeHandler.status` reflects Deployment readiness via `Ready` and `DeploymentAvailable` conditions, plus a `replicas` count.
 
-What it currently does **not** do (scaffolded but not implemented — see *Empty scaffolds* below): no `KapeTool` reconciler, no `KapeSchema` reconciler, no admission webhook, no liveness/readiness probe builders for the handler pod, no Qdrant provisioning, no operator-side metrics beyond what controller-runtime publishes by default.
+What it currently does **not** do (scaffolded but not implemented — see *Empty scaffolds* below): no admission webhook, no liveness/readiness probe builders for the handler pod, no operator-side metrics beyond what controller-runtime publishes by default.
 
 The CRDs the operator owns are defined in `operator/infra/api/v1alpha1/`:
 
-- `KapeHandler` — `operator/infra/api/v1alpha1/kapehandler_types.go:217` — primary CRD; one handler = one agent pipeline.
-- `KapeTool` — `operator/infra/api/v1alpha1/kapetool_types.go:131` — declares an MCP, memory, or event-publish tool capability.
-- `KapeSchema` — `operator/infra/api/v1alpha1/kapeschema_types.go:53` — the JSON Schema contract for the LLM's structured output.
+- `KapeHandler` — `operator/infra/api/v1alpha1/kapehandler_types.go:222` — primary CRD; one handler = one agent pipeline.
+- `KapeTool` — `operator/infra/api/v1alpha1/kapetool_types.go:143` — declares an MCP, memory, or event-publish tool capability.
+- `KapeSchema` — `operator/infra/api/v1alpha1/kapeschema_types.go:58` — the JSON Schema contract for the LLM's structured output.
 
 ---
 
@@ -72,11 +72,16 @@ operator/
 │   └── config/             #   KapeConfig value object + defaults
 ├── controller/             # controller-runtime adapters (thin)
 │   ├── handler.go          #   KapeHandlerReconciler + SetupHandlerReconciler
+│   ├── schema.go           #   KapeSchemaReconciler + SetupSchemaReconciler
+│   ├── tool.go             #   KapeToolReconciler + SetupToolReconciler
+│   ├── watches.go          #   MapToolToHandlers / MapSchemaToHandlers (cross-watch)
 │   └── reconcile/
-│       └── handler.go      #   the actual reconcile algorithm (depends on ports)
+│       ├── handler.go      #   12-step KapeHandler reconcile algorithm
+│       ├── schema.go       #   KapeSchema reconcile algorithm (validate + finalizer)
+│       └── tool.go         #   KapeTool reconcile algorithm (memory/mcp/event-publish)
 └── infra/                  # everything that touches Kubernetes or external systems
     ├── api/v1alpha1/       #   CRD Go types + zz_generated.deepcopy.go
-    ├── ports/              #   outbound interfaces the reconciler depends on
+    ├── ports/              #   outbound interfaces the reconcilers depend on
     ├── k8s/                #   adapters that satisfy ports using sigs.k8s.io/client
     └── toml/               #   adapter that renders settings.toml
 ```
@@ -86,7 +91,7 @@ operator/
 | `cmd/`                   | Parse flags, build manager, wire deps. | Everything below.                       |
 | `domain/`                | Plain values and rules. No k8s.        | Nothing in this module.                 |
 | `controller/`            | controller-runtime glue.               | `controller/reconcile`, `infra/api`.    |
-| `controller/reconcile/`  | The reconcile algorithm.               | `infra/ports`, `infra/api`, `domain`.   |
+| `controller/reconcile/`  | Reconcile algorithms (all three CRDs). | `infra/ports`, `infra/api`, `domain`.   |
 | `infra/api/v1alpha1/`    | CRD Go types (kubebuilder tags).       | k8s apimachinery.                       |
 | `infra/ports/`           | Outbound interfaces.                   | `domain`, `infra/api` (data shapes).    |
 | `infra/k8s/`             | Adapters using `client.Client`.        | k8s client, `infra/api`, `domain`.      |
@@ -115,7 +120,7 @@ These directories exist (with `.gitkeep`) for upcoming phases but are **not yet 
 | `domain/tool/`                | Pure-domain tool types.                                     |
 | `infra/metrics/`              | Operator-specific Prometheus metrics.                       |
 | `infra/probe/`                | Liveness/readiness probe builders for handler pods.         |
-| `infra/qdrant/`               | Qdrant collection provisioning for `KapeTool` of type memory.|
+| `infra/qdrant/`               | Future: Qdrant collection/user management (currently Qdrant StatefulSet provisioning lives in `infra/k8s/statefulset.go`).|
 
 If you contribute one of these, place it in the directory above and read the *Extending the operator* section for the wiring pattern.
 
@@ -123,60 +128,63 @@ If you contribute one of these, place it in the directory above and read the *Ex
 
 ## Reconciliation flow
 
-There is currently one reconciler: `HandlerReconciler` for `KapeHandler`. Here is one full pass.
+The operator runs three reconcilers:
+
+- **`HandlerReconciler`** (`controller/reconcile/handler.go`) — 12-step KapeHandler reconcile: validates dependencies, renders settings.toml, ensures Deployment, ensures KEDA ScaledObject, syncs labels, updates status.
+- **`ToolReconciler`** (`controller/reconcile/tool.go`) — KapeTool reconcile: dispatches on `spec.type` (`memory` → Qdrant StatefulSet; `mcp` → health probe; `event-publish` → type validation). Sets `Ready` status.
+- **`SchemaReconciler`** (`controller/reconcile/schema.go`) — KapeSchema reconcile: validates JSON schema, manages a deletion-protection finalizer (`kape.io/schema-protection`), computes `schemaHash`, sets `Ready` status.
+
+Below is one full pass of the `HandlerReconciler`:
 
 ```
                         ┌────────────────────────────────────────┐
        watch event ───▶ │ controller-runtime Manager             │
-       (KapeHandler,    │  └─ KapeHandlerReconciler.Reconcile()   │  controller/handler.go:29
-        owned Dep,      │       └─ inner.Reconcile(ctx, key)      │  controller/reconcile/handler.go:51
-        owned CM, SA)   └────────────────────────────────────────┘
+       (KapeHandler,    │  └─ KapeHandlerReconciler.Reconcile()   │  controller/handler.go:30
+        owned Dep/CM/SA,│       └─ inner.Reconcile(ctx, key)      │  controller/reconcile/handler.go:67
+        KapeTool watch, └────────────────────────────────────────┘
+        KapeSchema watch)
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ HandlerRepository    │  Get(ctx, key)
-                          └──────────────────────┘
+                          Step 1: HandlerRepository.Get(ctx, key)
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ KapeConfigLoader     │  Load(ctx) → kape-config defaults
-                          └──────────────────────┘
+                          Step 2: validateDependencies()     ◀── fetch KapeSchema + KapeTools,
+                                      │                          gate on Ready=True
+                                      ▼
+                          Step 3: validate scaling config
+                          (scaleToZero + minReplicas≥1 → terminal error)
                                       │
                                       ▼
-                          computeRolloutHash(spec)        ◀── sha256 of marshalled spec
+                          Step 4: computeRolloutHash(handler, schema, tools)
+                          ◀── sha256 over handler.Spec + schema.Spec + each tool.Spec
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ TOMLRenderer         │  Render(handler, cfg) → settings.toml
-                          └──────────────────────┘
+                          Step 5: KapeConfigLoader.Load + TOMLRenderer.Render
+                                + ConfigMapPort.Ensure
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ ConfigMapPort.Ensure │  create or patch settings.toml CM
-                          └──────────────────────┘
+                          Step 6: ServiceAccountPort.Ensure  (idempotent)
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ ServiceAccountPort   │  create-if-absent (idempotent)
-                          │      .Ensure         │
-                          └──────────────────────┘
+                          Step 7: DeploymentPort.Ensure      (rolloutHash annotation + sidecar injection)
                                       │
                                       ▼
-                          ┌──────────────────────┐
-                          │ DeploymentPort.Ensure│  create or patch with rollout-hash annotation
-                          └──────────────────────┘
+                          Step 8: ScaledObjectPort.Ensure    ◀── KEDA ScaledObject (NATS JetStream trigger)
+                          (delete + recreate if trigger.type changed)
                                       │
                                       ▼
-                          HandlerRepository.SyncLabels      ◀── label kape.io/schema-ref, tool-ref-*
+                          Step 9: HandlerRepository.SyncLabels
+                          ◀── labels: kape.io/schema-ref, kape.io/tool-ref-*
                                       │
                                       ▼
-                          DeploymentPort.GetStatus
+                          Step 10: HandlerRepository.Get (refresh after label patch)
                                       │
                                       ▼
-                          buildConditions(...) → handler.Status.Conditions
+                          Step 11: DeploymentPort.GetStatus → buildHandlerConditions(...)
                                       │
                                       ▼
-                          HandlerRepository.UpdateStatus    ◀── status sub-resource, RetryOnConflict
+                          Step 12: HandlerRepository.UpdateStatus
+                          ◀── status sub-resource, RetryOnConflict
                                       │
                                       ▼
                           return Result{RequeueAfter: 60s}, nil
@@ -184,11 +192,14 @@ There is currently one reconciler: `HandlerReconciler` for `KapeHandler`. Here i
 
 A few subtleties worth pointing out:
 
-- **Owner references** are set by `setOwnerRef` in `infra/k8s/configmap.go:81` and reused for the SA and Deployment. That is what makes child deletion automatic when the `KapeHandler` is deleted — *no finalizer is needed for cleanup*.
-- **The rollout hash** (`controller/reconcile/handler.go:139`) is a sha256 of the marshalled spec, written as a pod-template annotation. Changing it forces a rolling pod restart; identical specs do nothing. This is the standard "stable hash → annotation" trick to bind config changes to pod rollouts.
+- **Owner references** are set by `setOwnerRef` in `infra/k8s/configmap.go:81` and reused for the SA and Deployment. That is what makes child deletion automatic when the `KapeHandler` is deleted — *no finalizer is needed for handler cleanup*. Similarly, `setToolOwnerRef` (`infra/k8s/statefulset.go:159`) garbage-collects the Qdrant StatefulSet and Service when a `KapeTool` is deleted.
+- **The rollout hash** (`controller/reconcile/handler.go:245`) covers the full handler spec *plus* the resolved KapeSchema and KapeTool specs. Changing any of the three triggers a pod restart without manual action.
+- **Dependency gating** (Step 2) means a `KapeHandler` stays `DependenciesReady=False` until all referenced `KapeTool` and `KapeSchema` resources exist and have `Ready=True`. The handler requeues every 30 s while waiting.
+- **Cross-resource watches** (`controller/watches.go`) re-enqueue referencing `KapeHandler` objects when a `KapeTool` or `KapeSchema` changes. This is how a schema update propagates to all handlers that reference it.
 - **Status updates** use `RetryOnConflict` (`infra/k8s/handler_repo.go:41`) and re-fetch the latest object inside the retry loop. This is the safe pattern for sub-resource updates and avoids stale-version conflict errors.
 - **`SyncLabels` patches the spec object** so cross-resource watches can use label selectors. Failure here is non-fatal — status still updates.
 - **A fresh cluster works without `kape-config`** — `KapeConfigLoader.Load` returns defaults on `NotFound` (`infra/k8s/kapeconfig.go:32`).
+- **`KapeSchema` uses a finalizer** (`kape.io/schema-protection`) that blocks deletion while any `KapeHandler` still references the schema. The finalizer is removed once no handlers reference it.
 
 ---
 
@@ -196,23 +207,27 @@ A few subtleties worth pointing out:
 
 ### CRDs (data)
 
-- `KapeHandler` / `KapeHandlerSpec` / `KapeHandlerStatus` — `operator/infra/api/v1alpha1/kapehandler_types.go:150`
-- `KapeTool` / `KapeToolSpec` — `operator/infra/api/v1alpha1/kapetool_types.go:93` (CRD types only; no reconciler yet)
-- `KapeSchema` / `KapeSchemaSpec` — `operator/infra/api/v1alpha1/kapeschema_types.go:30` (CRD types only)
+- `KapeHandler` / `KapeHandlerSpec` / `KapeHandlerStatus` — `operator/infra/api/v1alpha1/kapehandler_types.go:150` (`KapeHandlerSpec` at :150, `KapeHandler` at :222)
+- `KapeTool` / `KapeToolSpec` — `operator/infra/api/v1alpha1/kapetool_types.go:100` (`KapeToolSpec` at :100, `KapeTool` at :143)
+- `KapeSchema` / `KapeSchemaSpec` — `operator/infra/api/v1alpha1/kapeschema_types.go:30` (`KapeSchemaSpec` at :30, `KapeSchema` at :58)
 - `zz_generated.deepcopy.go` — generated by `controller-gen`; do not edit by hand.
 
-### Ports (interfaces the reconciler depends on)
+### Ports (interfaces the reconcilers depend on)
 
-All defined in `operator/infra/ports/handler.go`:
+Defined across `operator/infra/ports/`:
 
-| Interface             | Purpose                                                         |
-|-----------------------|-----------------------------------------------------------------|
-| `HandlerRepository`   | Get / UpdateStatus / SyncLabels for `KapeHandler`.              |
-| `ConfigMapPort`       | Ensure the `settings.toml` ConfigMap.                           |
-| `ServiceAccountPort`  | Ensure the per-handler ServiceAccount (idempotent create).      |
-| `DeploymentPort`      | Ensure the handler Deployment + read its status.                |
-| `KapeConfigLoader`    | Load cluster-wide defaults from the `kape-config` ConfigMap.    |
-| `TOMLRenderer`        | Render `settings.toml` from a handler spec + cluster config.    |
+| Interface             | File              | Purpose                                                         |
+|-----------------------|-------------------|-----------------------------------------------------------------|
+| `HandlerRepository`   | `ports/handler.go`| Get / UpdateStatus / SyncLabels for `KapeHandler`.              |
+| `ConfigMapPort`       | `ports/handler.go`| Ensure the `settings.toml` ConfigMap.                           |
+| `ServiceAccountPort`  | `ports/handler.go`| Ensure the per-handler ServiceAccount (idempotent create).      |
+| `DeploymentPort`      | `ports/handler.go`| Ensure the handler Deployment + read its status.                |
+| `KapeConfigLoader`    | `ports/handler.go`| Load cluster-wide defaults from the `kape-config` ConfigMap.    |
+| `TOMLRenderer`        | `ports/handler.go`| Render `settings.toml` from a handler spec + cluster config.    |
+| `SchemaRepository`    | `ports/schema.go` | Get / UpdateStatus / AddFinalizer / RemoveFinalizer / ListHandlersBySchemaRef. |
+| `ToolRepository`      | `ports/tool.go`   | Get / UpdateStatus / ListHandlersByToolRef for `KapeTool`.      |
+| `StatefulSetPort`     | `ports/tool.go`   | EnsureQdrant (StatefulSet + headless Service) + GetQdrantReadyReplicas. |
+| `ScaledObjectPort`    | `ports/tool.go`   | Ensure / GetConsumerName / Delete for KEDA ScaledObjects.        |
 
 ### Adapters (concrete implementations)
 
@@ -224,6 +239,10 @@ All defined in `operator/infra/ports/handler.go`:
 | `DeploymentAdapter`      | `operator/infra/k8s/deployment.go:20`      | `ports.DeploymentPort` |
 | `KapeConfigLoader`       | `operator/infra/k8s/kapeconfig.go:17`      | `ports.KapeConfigLoader`|
 | `Renderer`               | `operator/infra/toml/renderer.go:17`       | `ports.TOMLRenderer`   |
+| `SchemaRepository`       | `operator/infra/k8s/schema_repo.go`        | `ports.SchemaRepository` |
+| `ToolRepository`         | `operator/infra/k8s/tool_repo.go`          | `ports.ToolRepository` |
+| `StatefulSetAdapter`     | `operator/infra/k8s/statefulset.go:20`     | `ports.StatefulSetPort` |
+| `ScaledObjectAdapter`    | `operator/infra/k8s/scaledobject.go:26`    | `ports.ScaledObjectPort` |
 
 ### Domain values
 
@@ -235,7 +254,7 @@ All defined in `operator/infra/ports/handler.go`:
 
 ### Prerequisites
 
-- Go 1.24 (matches `operator/go.mod:3`)
+- Go 1.25 (matches `operator/go.mod:3`)
 - A Kubernetes cluster you can `kubectl` into. `kind` or `minikube` is fine for dev.
 - The kape CRDs installed (`make generate` writes them to `crds/`; apply with `kubectl apply -f crds/`).
 
@@ -310,25 +329,27 @@ Three common changes and where they go.
 2. Run `make generate` to refresh `zz_generated.deepcopy.go` and the CRD YAML in `crds/`.
 3. Decide what consumes the field:
    - If it changes the rendered `settings.toml`: edit `operator/infra/toml/renderer.go` and add the field to the relevant TOML struct.
-   - If it changes the Deployment shape: edit `buildDeployment` in `operator/infra/k8s/deployment.go:81`.
-   - If it changes status: extend `buildConditions` in `operator/controller/reconcile/handler.go:148`.
+   - If it changes the Deployment shape: edit `buildDeployment` in `operator/infra/k8s/deployment.go:71`.
+   - If it changes status: extend `buildHandlerConditions` in `operator/controller/reconcile/handler.go:264`.
 4. The rollout hash in `computeRolloutHash` already covers any new spec field (it hashes the whole `KapeHandlerSpec`), so pods will roll automatically on change. No action needed unless you intentionally want a field excluded from rollout — in which case factor it out of the hash explicitly.
 
 ### Add a new owned resource (e.g. a Service)
 
 1. Add a new port to `operator/infra/ports/handler.go` (e.g. `ServicePort`).
 2. Implement an adapter under `operator/infra/k8s/` that satisfies it. Use `setOwnerRef` (from `configmap.go:81`) so the resource is GC'd with its `KapeHandler`.
-3. Inject the new port into `HandlerReconciler` — extend the constructor in `controller/reconcile/handler.go:32` and add a step to `Reconcile`.
-4. Add the type to the controller's watch list — `Owns(&corev1.Service{})` in `SetupHandlerReconciler` (`controller/handler.go:36`) so changes to the Service re-enqueue the parent.
+3. Inject the new port into `HandlerReconciler` — extend the constructor in `controller/reconcile/handler.go:42` and add a step to `Reconcile`.
+4. Add the type to the controller's watch list — `Owns(&corev1.Service{})` in `SetupHandlerReconciler` (`controller/handler.go:38`) so changes to the Service re-enqueue the parent.
 5. Wire the adapter in `cmd/main.go` and pass it to `reconcilehandler.New(...)`.
 
-### Add a new controller (e.g. for `KapeTool`)
+### Add a new controller (e.g. for a `KapeSkill` CRD)
 
-1. Create the reconcile algorithm in a new package, e.g. `operator/controller/reconcile/tool/handler.go`. Depend only on ports.
-2. Define the ports it needs in `operator/infra/ports/`.
+This is the same pattern used to ship `KapeToolReconciler` and `KapeSchemaReconciler`. Both are live examples you can follow:
+
+1. Create the reconcile algorithm in a new file, e.g. `operator/controller/reconcile/skill.go`. Depend only on ports.
+2. Define the ports it needs in a new file under `operator/infra/ports/`.
 3. Implement adapters under `operator/infra/k8s/` (and elsewhere as needed).
-4. Add a thin `controller-runtime` adapter alongside `controller/handler.go` — a struct with `Reconcile(ctx, req)` that delegates, plus a `SetupToolReconciler(mgr, ...)` function that calls `ctrl.NewControllerManagedBy(mgr).For(...).Owns(...).Complete(r)`.
-5. In `cmd/main.go`, build the dependencies and call `SetupToolReconciler(mgr, ...)` before `mgr.Start`.
+4. Add a thin `controller-runtime` adapter alongside `controller/handler.go` — a struct with `Reconcile(ctx, req)` that delegates, plus a `SetupSkillReconciler(mgr, ...)` function that calls `ctrl.NewControllerManagedBy(mgr).For(...).Owns(...).Complete(r)`.
+5. In `cmd/main.go`, build the dependencies and call `SetupSkillReconciler(mgr, ...)` before `mgr.Start`.
 
 The pattern is: **algorithm → ports → adapters → controller adapter → wiring in main**. Keep each layer small and dependency-free in the upward direction.
 
@@ -338,21 +359,32 @@ The pattern is: **algorithm → ports → adapters → controller adapter → wi
 
 | File | Lines (approx) | What's in it |
 |---|---|---|
-| `cmd/main.go` | 122 | Flag parsing, manager construction, dependency wiring, `Start`. |
-| `controller/handler.go` | 47 | `KapeHandlerReconciler` (thin) + `SetupHandlerReconciler` (watches). |
-| `controller/reconcile/handler.go` | 198 | Full reconcile algorithm + `computeRolloutHash` + `buildConditions`. |
-| `domain/config/config.go` | 76 | `KapeConfig` value type + defaults + image-ref helpers. |
-| `infra/api/v1alpha1/kapehandler_types.go` | 237 | CRD types for `KapeHandler` (the only one with a reconciler today). |
-| `infra/api/v1alpha1/kapetool_types.go` | 151 | CRD types for `KapeTool`. |
-| `infra/api/v1alpha1/kapeschema_types.go` | 72 | CRD types for `KapeSchema`. |
-| `infra/api/v1alpha1/zz_generated.deepcopy.go` | 647 | Generated; do not edit. |
-| `infra/ports/handler.go` | 55 | Port interfaces consumed by the reconciler. |
+| `cmd/main.go` | 144 | Flag parsing, manager construction, dependency wiring, all three `Setup*` calls. |
+| `controller/handler.go` | 47 | `KapeHandlerReconciler` (thin) + `SetupHandlerReconciler` (watches + cross-watches). |
+| `controller/schema.go` | 36 | `KapeSchemaReconciler` (thin) + `SetupSchemaReconciler`. |
+| `controller/tool.go` | 40 | `KapeToolReconciler` (thin) + `SetupToolReconciler` (owns StatefulSet + Service). |
+| `controller/watches.go` | 60 | `MapToolToHandlers` / `MapSchemaToHandlers` (cross-resource watch mappers). |
+| `controller/reconcile/handler.go` | 303 | 12-step reconcile algorithm + dependency gate + `computeRolloutHash` + `buildHandlerConditions`. |
+| `controller/reconcile/schema.go` | 126 | KapeSchema reconcile: JSON validation + finalizer management + `schemaHash`. |
+| `controller/reconcile/tool.go` | 196 | KapeTool reconcile: memory/mcp/event-publish dispatch + `probeMCPEndpoint`. |
+| `domain/config/config.go` | 92 | `KapeConfig` value type + defaults + image-ref helpers. |
+| `infra/api/v1alpha1/kapehandler_types.go` | 242 | CRD types for `KapeHandler`. |
+| `infra/api/v1alpha1/kapetool_types.go` | 163 | CRD types for `KapeTool`. |
+| `infra/api/v1alpha1/kapeschema_types.go` | 77 | CRD types for `KapeSchema`. |
+| `infra/api/v1alpha1/zz_generated.deepcopy.go` | 649 | Generated; do not edit. |
+| `infra/ports/handler.go` | 52 | Port interfaces for handler reconciler. |
+| `infra/ports/schema.go` | 27 | `SchemaRepository` interface. |
+| `infra/ports/tool.go` | 44 | `ToolRepository`, `StatefulSetPort`, `ScaledObjectPort` interfaces. |
 | `infra/k8s/handler_repo.go` | 75 | `HandlerRepository` adapter (Get / UpdateStatus / SyncLabels). |
+| `infra/k8s/schema_repo.go` | 88 | `SchemaRepository` adapter (Get / UpdateStatus / finalizer / ListHandlersBySchemaRef). |
+| `infra/k8s/tool_repo.go` | 61 | `ToolRepository` adapter (Get / UpdateStatus / ListHandlersByToolRef). |
 | `infra/k8s/configmap.go` | 94 | `ConfigMapAdapter` + shared `setOwnerRef` helper. |
 | `infra/k8s/serviceaccount.go` | 66 | `ServiceAccountAdapter`. |
-| `infra/k8s/deployment.go` | 175 | `DeploymentAdapter` + `buildDeployment`. |
-| `infra/k8s/kapeconfig.go` | 55 | `KapeConfigLoader` (reads `kape-system/kape-config`). |
-| `infra/toml/renderer.go` | 164 | `Renderer` + private TOML struct tree. |
+| `infra/k8s/deployment.go` | 224 | `DeploymentAdapter` + `buildDeployment` (with MCP sidecar injection). |
+| `infra/k8s/statefulset.go` | 170 | `StatefulSetAdapter` — Qdrant StatefulSet + headless Service for memory tools. |
+| `infra/k8s/scaledobject.go` | 159 | `ScaledObjectAdapter` — KEDA ScaledObject via unstructured client. |
+| `infra/k8s/kapeconfig.go` | 58 | `KapeConfigLoader` (reads `kape-system/kape-config`). |
+| `infra/toml/renderer.go` | 221 | `Renderer` + private TOML struct tree. |
 
 ---
 
