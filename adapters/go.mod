@@ -1,6 +1,8 @@
 module github.com/kape-io/kape/adapters
 
-go 1.23
+go 1.25.0
+
+toolchain go1.25.9
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
