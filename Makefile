@@ -50,7 +50,7 @@ playground-down:
 	podman compose -f playground/docker-compose.playground.yml down -v
 
 playground-operator:
-	go run ./playground/operator/...
+	go run ./operator/cmd/playground/...
 
 playground-logs:
 	podman compose -f playground/docker-compose.playground.yml logs -f
