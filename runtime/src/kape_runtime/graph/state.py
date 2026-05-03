@@ -1,9 +1,10 @@
 # runtime/src/kape_runtime/graph/state.py
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from kape_runtime.models import ActionResult, TaskStatus
@@ -16,7 +17,7 @@ class AgentState(TypedDict):
     retry_task: dict | None
 
     # Reasoning
-    messages: list[BaseMessage]
+    messages: Annotated[list[BaseMessage], add_messages]
 
     # Output
     schema_output: dict[str, Any] | None
