@@ -80,3 +80,57 @@ func TestPublisher_StreamAlreadyExists(t *testing.T) {
 	_, err = natspkg.NewPublisher(nc)
 	require.NoError(t, err)
 }
+
+// TestPublisher_DuplicatePublishDeduplicatedByJetStream verifies that
+// Publisher sets the Nats-Msg-Id header from event.ID(), so JetStream's
+// publisher-side deduplication discards the second publish of the same
+// event id within the stream's Duplicates window.
+//
+// The Duplicates window is set out-of-band on the stream after NewPublisher,
+// because this test guards #27 (header) — the stream-side window is owned
+// by infra (#26) once that lands. Until then this test sets the field
+// directly so the assertion works.
+func TestPublisher_DuplicatePublishDeduplicatedByJetStream(t *testing.T) {
+	url, cleanup := startNATS(t)
+	defer cleanup()
+
+	nc, err := natsgo.Connect(url)
+	require.NoError(t, err)
+	defer nc.Drain()
+
+	publisher, err := natspkg.NewPublisher(nc)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	_, err = js.UpdateStream(ctx, jetstream.StreamConfig{
+		Name:       "KAPE_EVENTS",
+		Subjects:   []string{"kape.events.>"},
+		MaxAge:     24 * time.Hour,
+		Storage:    jetstream.FileStorage,
+		Replicas:   1,
+		Discard:    jetstream.DiscardOld,
+		Duplicates: 60 * time.Second,
+	})
+	require.NoError(t, err)
+
+	event := ce.NewEvent()
+	event.SetSpecVersion("1.0")
+	event.SetType("kape.events.security.cilium")
+	event.SetSource("alertmanager/cilium")
+	event.SetID("dup-test-001")
+	event.SetTime(time.Now())
+	event.SetDataContentType("application/json")
+	require.NoError(t, event.SetData("application/json", map[string]string{"alertname": "DupTest"}))
+
+	require.NoError(t, publisher.Publish(ctx, "kape.events.security.cilium", event))
+	require.NoError(t, publisher.Publish(ctx, "kape.events.security.cilium", event))
+
+	stream, err := js.Stream(ctx, "KAPE_EVENTS")
+	require.NoError(t, err)
+	info, err := stream.Info(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), info.State.Msgs, "duplicate publish should not advance stream sequence")
+}
