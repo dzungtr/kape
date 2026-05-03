@@ -35,3 +35,8 @@ task-service/task-service
 cmd
 examples/sre-alertmanager/src/mock-api/mock-api
 examples/sre-alertmanager/src/mock-webhook/mock-webhook
+
+# Playground
+kubeconfig.playground
+playground/.env
+playground/runtime/settings.toml
