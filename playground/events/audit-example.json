@@ -1,0 +1,24 @@
+{
+  "specversion": "1.0",
+  "type": "k8s.audit.event",
+  "source": "kape-audit-adapter",
+  "id": "playground-003",
+  "time": "2026-05-03T10:02:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "kind": "Event",
+    "apiVersion": "audit.k8s.io/v1",
+    "level": "Request",
+    "auditID": "audit-playground-001",
+    "stage": "ResponseComplete",
+    "requestURI": "/api/v1/namespaces/kape-system/secrets",
+    "verb": "list",
+    "user": {
+      "username": "suspicious-sa",
+      "groups": ["system:serviceaccounts"]
+    },
+    "responseStatus": {
+      "code": 200
+    }
+  }
+}

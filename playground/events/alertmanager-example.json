@@ -1,0 +1,30 @@
+{
+  "specversion": "1.0",
+  "type": "alertmanager.alert.firing",
+  "source": "kape-alertmanager-adapter",
+  "id": "playground-001",
+  "time": "2026-05-03T10:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "receiver": "kape-webhook",
+    "status": "firing",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "MockApiHighErrorRate",
+          "namespace": "kape-examples",
+          "severity": "critical"
+        },
+        "annotations": {
+          "summary": "Mock API error rate above 10%",
+          "description": "Error rate is 42% over the last 5 minutes."
+        },
+        "startsAt": "2026-05-03T09:59:00Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "http://signoz/alerts",
+        "fingerprint": "abc123"
+      }
+    ]
+  }
+}
