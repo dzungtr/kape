@@ -12,7 +12,6 @@ from ulid import ULID
 
 from kape_runtime.config import KapeConfig, NatsConfig
 from kape_runtime.metrics import (
-    kape_decisions_total,
     kape_events_total,
     kape_llm_latency_seconds,
 )
@@ -128,15 +127,6 @@ class ConsumerLoop:
             schema_output = state.get("schema_output")
             if schema_output is not None:
                 update_kwargs["schema_output"] = schema_output
-                decision = (
-                    schema_output.get("decision")
-                    if isinstance(schema_output, dict)
-                    else None
-                )
-                if decision:
-                    kape_decisions_total.labels(
-                        handler=kape_cfg.handler_name, decision=str(decision)
-                    ).inc()
             if state.get("parse_error"):
                 update_kwargs["error"] = {
                     "type": "SchemaValidationFailed",
