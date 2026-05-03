@@ -441,13 +441,106 @@ status:
 
 ## 8. Handler ServiceAccount
 
-Unchanged from rev 2.
+Each `KapeHandler` gets a dedicated ServiceAccount with zero Kubernetes RBAC permissions. The handler runtime never calls the Kubernetes API — the operator fully materialises all config before pod start.
+
+### 8.1 ServiceAccount Spec
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kape-handler-{name}
+  namespace: { handler.namespace }
+  labels:
+    kape.io/handler: { name }
+  # Empty in v1 — reserved for cloud workload identity:
+  # eks.amazonaws.com/role-arn: ...
+  # iam.gke.io/service-account: ...
+  ownerReferences:
+    - apiVersion: kape.io/v1alpha1
+      kind: KapeHandler
+      name: { name }
+      controller: true
+      blockOwnerDeletion: true
+```
+
+### 8.2 Security Decisions
+
+| Aspect          | Decision                                                                               |
+| --------------- | -------------------------------------------------------------------------------------- |
+| RBAC            | None — no Role, RoleBinding, or ClusterRole created                                    |
+| Token mount     | `automountServiceAccountToken: false` on pod spec — set by operator, not on SA         |
+| Cloud identity  | Empty annotations in v1, reserved for IRSA / GKE Workload Identity                     |
+| k8s-mcp RBAC    | Belongs to the MCP server's own SA — engineer's responsibility                         |
+| MCP access path | Handler → kapetool sidecar (localhost) → k8s-mcp server (has its own SA with K8s RBAC) |
 
 ---
 
 ## 9. Operator Deployment
 
-Unchanged from rev 2.
+### 9.1 Deployment Spec
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-operator
+  namespace: kape-system
+spec:
+  replicas: 1 # scale to 2 for HA — leader election handles it
+  template:
+    spec:
+      serviceAccountName: kape-operator
+      automountServiceAccountToken: true # operator needs K8s API access
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # nonroot — distroless convention
+        fsGroup: 65532
+      containers:
+        - name: kape-operator
+          image: kape/operator:{version} # version from Helm chart
+          args:
+            - --leader-elect=true
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kape-operator
+              readOnly: true
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8081 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: kape-operator-config
+      terminationGracePeriodSeconds: 10
+```
+
+### 9.2 Image
+
+| Aspect     | Decision                                                       |
+| ---------- | -------------------------------------------------------------- |
+| Base image | `gcr.io/distroless/static` — no shell, smallest attack surface |
+| Build      | `CGO_ENABLED=0 GOOS=linux go build` — pure static binary       |
+| Version    | Set via Helm chart value `operator.image.tag`                  |
 
 ---
 
@@ -509,7 +602,12 @@ rules:
 
 ### 10.2 Role: kape-operator-leader-election
 
-Unchanged from rev 2.
+```yaml
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+```
 
 ### 10.3 Kubernetes Events Emitted
 
@@ -526,7 +624,15 @@ All events from rev 2, plus:
 
 ## 11. Leader Election
 
-Unchanged from rev 2.
+| Aspect           | Decision                                         |
+| ---------------- | ------------------------------------------------ |
+| Mechanism        | controller-runtime built-in via Kubernetes Lease |
+| Lease name       | `kape-operator-leader-election`                  |
+| Lease namespace  | `kape-system`                                    |
+| Renewal interval | 15s (controller-runtime default)                 |
+| Retry period     | 10s (controller-runtime default)                 |
+| Default replicas | 1 — scale to 2 for HA, no code change required   |
+| Flag             | `--leader-elect=true` (default, configurable)    |
 
 ---
 
