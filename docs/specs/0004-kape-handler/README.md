@@ -255,33 +255,41 @@ Unchanged from rev 3. Pull consumer, immediate ACK, single concurrency per pod.
 
 ### 5.1 Graph Structure
 
-Unchanged from rev 3.
-
 ```
 [START]
    │
    ▼
-[entry_router]
+[entry_router]       ← conditional: normal path or retry path
    │
-   ├── ActionError retry → [route_actions]
+   ├── ActionError retry → [route_actions]   (skip LLM, re-run failed actions only)
+   │
    └── normal / full LLM retry →
          │
          ▼
-      [reason]              ← ReAct loop with federated kapeproxy tools + load_skill
+      [reason]              ← ReAct loop: LLM call with tool bindings
          │
          ├── tool_calls → [call_tools] → back to [reason]
+         │
          └── final answer →
                │
                ▼
-            [parse_output]
+            [parse_output]        ← model.with_structured_output(SchemaOutput)
+               │
                ▼
-            [validate_schema]
-               ▼
-            [run_guardrails]
-               ▼
-            [route_actions]
-               ▼
-             [END]
+            [validate_schema]     ← Pydantic assertion; writes Task on failure
+               │
+               ├── failed → [END]
+               │
+               └── passed →
+                     │
+                     ▼
+                  [run_guardrails]     ← LangChain PII middleware + custom hooks
+                     │
+                     ▼
+                  [route_actions]      ← ActionsRouter (deterministic)
+                     │
+                     ▼
+                   [END]
 ```
 
 ### 5.2 Tool Registry Construction
@@ -357,21 +365,347 @@ Unchanged in structure. Tool calls dispatched based on the tool's registered exe
 
 W3C TraceContext headers injected into all kapeproxy calls for OTEL propagation.
 
-### 5.6 Parse Output, Validate Schema, Run Guardrails Nodes
+### 5.6 Parse Output Node
 
-Unchanged from rev 3.
+Uses LangChain's `.with_structured_output()` API. The `SchemaOutput` Pydantic model is generated at startup from the `KapeSchema` spec materialized in the ConfigMap. No extra dependencies beyond LangChain.
+
+```python
+structured_model = model.with_structured_output(SchemaOutput)
+
+async def parse_output(state: AgentState) -> AgentState:
+    try:
+        output: SchemaOutput = await structured_model.ainvoke(state["messages"])
+        return {"schema_output": output.model_dump(), "parse_error": None}
+    except ValidationError as e:
+        return {"schema_output": None, "parse_error": str(e)}
+```
+
+Fail-fast on validation failure. No automatic retry. The failed Task record is the signal — the engineer inspects, fixes the `KapeSchema` or system prompt, redeploys via GitOps, and retries via the dashboard.
+
+### 5.7 Validate Schema Node
+
+Explicit audit checkpoint that runs after `parse_output`. Exists to produce a visible Task record on schema failure.
+
+```python
+async def validate_schema(state: AgentState) -> AgentState:
+    if state["parse_error"]:
+        await task_service.update_task(
+            state["task_id"],
+            status=TaskStatus.SchemaValidationFailed,
+            error=TaskError(
+                type="SchemaValidationFailed",
+                detail=state["parse_error"],
+                schema=config.kape.schema_name,
+            ),
+        )
+        return {"should_abort": True}
+    return {"should_abort": False}
+```
+
+### 5.8 Run Guardrails Node
+
+Implemented as LangChain middleware. Two layers:
+
+**Layer 1 — PIIMiddleware (built-in LangChain)**
+
+Applied at the agent level across all LLM input and output:
+
+```python
+middleware = [
+    PIIMiddleware("email",       strategy="redact", apply_to_input=True, apply_to_output=True),
+    PIIMiddleware("api_key",     strategy="block",  apply_to_input=True),
+    PIIMiddleware("credit_card", strategy="redact", apply_to_input=True, apply_to_output=True),
+]
+```
+
+**Layer 2 — Custom `before_agent` / `after_agent` hooks**
+
+Engineer-configurable deterministic checks materialized from `KapeHandler.spec.guardrails` into the ConfigMap by the operator. Run before and after agent execution for session-level data safety checks.
+
+Tool-level access control (which tools the LLM can call) is enforced entirely by the `KapeTool` sidecar allowlist — not by the guardrails layer.
 
 ---
 
 ## 6. Layer 4 — ActionsRouter
 
-Unchanged from rev 3.
+### 6.1 Design Principles
+
+The ActionsRouter is fully deterministic — no LLM involvement. It receives the validated `schema_output` and executes the `actions[]` array declared within it. This is a programmable dispatch table, not an AI decision.
+
+All eligible actions execute in parallel via `asyncio.gather`. Failure of one action does not block others.
+
+### 6.2 Action Schema
+
+Each action in `schema_output.actions[]`:
+
+```yaml
+actions:
+  - name: "alert-security-team"
+    condition: "decision.severity == 'critical'"
+    type: "event-emitter"
+    data:
+      subject: "kape.events.security.alert"
+      payload:
+        severity: "{{ decision.severity }}"
+        resource: "{{ decision.resource }}"
+
+  - name: "store-incident-context"
+    condition: "true"
+    type: "save-memory"
+    data:
+      collection: "incidents"
+      content: "{{ decision.summary }}"
+      metadata:
+        event_id: "{{ event.id }}"
+
+  - name: "notify-external-system"
+    condition: "decision.notify == true"
+    type: "webhook"
+    data:
+      url: "{{ env.WEBHOOK_URL }}"
+      method: "POST"
+      headers:
+        Authorization: "Bearer {{ env.WEBHOOK_TOKEN }}"
+      body:
+        incident: "{{ decision.summary }}"
+```
+
+### 6.3 Action Types
+
+| Type            | Description                            |
+| --------------- | -------------------------------------- |
+| `event-emitter` | Publish a CloudEvent to a NATS subject |
+| `save-memory`   | Write to Qdrant vector store           |
+| `webhook`       | Call an external HTTP endpoint         |
+
+### 6.4 Condition Evaluation
+
+Conditions are evaluated using `simpleeval` — never raw `eval()`:
+
+```python
+from simpleeval import simple_eval
+
+context = {
+    "decision": schema_output,
+    "event":    event.model_dump(),
+    "env":      dict(os.environ),
+}
+
+eligible = [
+    action for action in actions
+    if simple_eval(action.condition, names=context)
+]
+```
+
+### 6.5 Data Templating
+
+`action.data` fields support Jinja2 templating. The same context object is used for both condition evaluation and template rendering — including `env` for all injected env vars from `spec.envs`:
+
+```python
+from jinja2 import Environment
+
+jinja_env = Environment()
+
+def render_action_data(data: dict, context: dict) -> dict:
+    rendered = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            rendered[key] = jinja_env.from_string(value).render(context)
+        elif isinstance(value, dict):
+            rendered[key] = render_action_data(value, context)
+        else:
+            rendered[key] = value
+    return rendered
+```
+
+### 6.6 Execution
+
+```python
+async def route_actions(state: AgentState) -> AgentState:
+    actions = get_eligible_actions(state)
+
+    # On ActionError retry: skip previously succeeded actions
+    if state.get("retry_task"):
+        succeeded = {r.name for r in state["retry_task"].actions
+                     if r.status == "Completed"}
+        actions = [a for a in actions if a.name not in succeeded]
+
+    if state["dry_run"]:
+        results = [
+            ActionResult(name=a.name, type=a.type, status="Skipped", dry_run=True)
+            for a in actions
+        ]
+        return {"action_results": results, "task_status": TaskStatus.Completed}
+
+    rendered = [render_action_data(a, build_context(state)) for a in actions]
+    outcomes = await asyncio.gather(
+        *[ACTION_REGISTRY[a.type].execute(a) for a in rendered],
+        return_exceptions=True,
+    )
+
+    results = [
+        ActionResult(
+            name=action.name,
+            type=action.type,
+            status="Failed" if isinstance(outcome, Exception) else "Completed",
+            error=str(outcome) if isinstance(outcome, Exception) else None,
+            dry_run=False,
+        )
+        for action, outcome in zip(rendered, outcomes)
+    ]
+
+    if all(r.status == "Failed" for r in results):
+        overall = TaskStatus.Failed
+    elif any(r.status == "Failed" for r in results):
+        overall = TaskStatus.ActionError
+    else:
+        overall = TaskStatus.Completed
+
+    return {"action_results": results, "task_status": overall}
+```
+
+### 6.7 DryRun Behaviour
+
+`dryRun` is a property of `KapeHandler.spec.dryRun`. When true:
+
+- The full agent loop executes — LLM calls, tool calls, schema validation, guardrails all run normally
+- The ActionsRouter evaluates conditions and renders templates but skips all execution
+- Task is written with `status: Completed, dry_run: true` and full `action_results[]` showing what would have executed
+- Engineers use dryRun to validate prompts and schema outputs against real events without side effects
 
 ---
 
 ## 7. Layer 5 — Task Record Persistence
 
-Unchanged from rev 3.
+### 7.1 Storage and Access
+
+PostgreSQL only (via CloudNativePG). All Task persistence is mediated entirely by `kape-task-service` — a Go REST API. The handler runtime never holds database credentials and never connects to PostgreSQL directly. All reads and writes go through HTTP calls to `kape-task-service`, whose endpoint is injected into the handler ConfigMap by the operator.
+
+### 7.2 Task Service API (handler-facing endpoints)
+
+| Method   | Path          | Description                                 |
+| -------- | ------------- | ------------------------------------------- |
+| `POST`   | `/tasks`      | Create Task on ACK                          |
+| `PATCH`  | `/tasks/{id}` | Update Task to final status                 |
+| `DELETE` | `/tasks/{id}` | Delete Task on stale event drop             |
+| `GET`    | `/tasks/{id}` | Fetch original Task on retry (entry router) |
+
+### 7.3 Write Pattern
+
+Two writes per event:
+
+```
+1. On ACK receipt:
+   POST /tasks
+   → Task{status: Processing, received_at: now(), event_raw: <full CloudEvents envelope>}
+
+2. On agent completion:
+   PATCH /tasks/{id}
+   → {status, schema_output, actions, error, completed_at, duration_ms, dry_run, otel_trace_id}
+```
+
+### 7.4 Task Schema
+
+```sql
+CREATE TYPE task_status AS ENUM (
+    'Processing',
+    'Completed',
+    'Failed',
+    'SchemaValidationFailed',
+    'ActionError',
+    'UnprocessableEvent',
+    'PendingApproval',
+    'Timeout',
+    'Retried'
+);
+
+CREATE TABLE tasks (
+    -- Identity
+    id              TEXT        PRIMARY KEY,          -- ULID, time-sortable
+    cluster         TEXT        NOT NULL,
+    handler         TEXT        NOT NULL,
+    namespace       TEXT        NOT NULL,
+
+    -- Event provenance
+    event_id        TEXT        NOT NULL,
+    event_source    TEXT        NOT NULL,
+    event_type      TEXT        NOT NULL,
+    event_raw       JSONB       NOT NULL,             -- full CloudEvents envelope, immutable
+
+    -- Execution
+    status          task_status NOT NULL,
+    dry_run         BOOLEAN     NOT NULL DEFAULT false,
+
+    -- Output
+    schema_output   JSONB,
+    actions         JSONB,                            -- list[ActionResult]
+
+    -- Error
+    error           JSONB,                            -- TaskError | null
+
+    -- Lineage
+    retry_of        TEXT        REFERENCES tasks(id),
+
+    -- Observability
+    otel_trace_id   TEXT,                             -- consumable deep link — not indexed
+
+    -- Timing
+    received_at     TIMESTAMPTZ NOT NULL,
+    completed_at    TIMESTAMPTZ,
+    duration_ms     INTEGER
+) PARTITION BY RANGE (received_at);
+```
+
+See `kape-audit-design.md` for the full schema specification including indexes, partitioning strategy, and state machine.
+
+### 7.5 Task Status Enum
+
+| Status                   | Description                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `Processing`             | ACK received, agent running. Pod may be alive or crashed — black box.        |
+| `Completed`              | All actions succeeded (or `dry_run: true`).                                  |
+| `Failed`                 | Unhandled runtime exception, or max iterations exceeded.                     |
+| `SchemaValidationFailed` | LLM output did not match `KapeSchema`.                                       |
+| `ActionError`            | One or more actions failed in the ActionsRouter.                             |
+| `UnprocessableEvent`     | CloudEvent envelope was malformed — could not parse.                         |
+| `PendingApproval`        | Approval event published; awaiting human approval. (v2 — not written in v1.) |
+| `Timeout`                | Manually marked via dashboard — operator judged task stuck.                  |
+| `Retried`                | Superseded by a retry execution. Original task preserved for lineage.        |
+
+### 7.6 Timeout Detection
+
+Timeout is a UI concern — no background jobs. The dashboard fetches all `Processing` tasks ordered by `received_at ASC` and computes elapsed time client-side. The operator decides when elapsed time indicates a stuck task and manually marks it `Timeout` via the dashboard.
+
+`kape-task-service` exposes:
+
+- `PATCH /tasks/{id}/status` — mark single task as `Timeout`
+- `PATCH /tasks/bulk/status` — mark multiple tasks as `Timeout`
+
+### 7.7 Retry Flow
+
+```
+1. Operator marks Task as Timeout (if Processing) or clicks Retry (any retryable status)
+2. Dashboard calls POST /tasks/{id}/retry on kape-task-service
+3. Service fetches original Task from PostgreSQL
+4. Service PATCH /tasks/{id} → {status: Retried}
+5. Service re-publishes Task.event_raw to NATS with CloudEvent extension:
+     retry_of: <original_task_id>
+6. Handler receives event, entry_router fetches original Task via GET /tasks/{retry_of}
+7. Routes based on preRetryStatus (see Section 5.2)
+8. New Task created with retry_of: <original_task_id>
+```
+
+`retry_of` linkage is always written on the new Task — regardless of retry scenario. Full chain visibility in the dashboard via `GET /tasks/{id}/lineage`.
+
+**Retryable statuses and routing:**
+
+| Status                   | LLM path                       |
+| ------------------------ | ------------------------------ |
+| `Processing`             | Full LLM                       |
+| `SchemaValidationFailed` | Full LLM                       |
+| `Failed`                 | Full LLM                       |
+| `Timeout`                | Full LLM                       |
+| `ActionError`            | Skip LLM — failed actions only |
 
 ---
 
@@ -379,11 +713,39 @@ Unchanged from rev 3.
 
 ### 8.1 Instrumentation Strategy
 
-Unchanged from rev 3 in scope. Tool call OTEL spans are now all emitted by kapeproxy — previously each `kapetool` sidecar emitted its own spans. The span structure is the same; the emitter is centralised.
+OTEL scope is strictly KAPE business logic — event processing, LLM calls, tool calls, action execution. Kubernetes operational concerns (pod crash, eviction, startup failure) are handled via standard k8s tooling. OTEL is not used for infrastructure-level signals.
+
+**Instrumentation library:** `openinference-instrumentation-langchain`. OpenInference provides auto-instrumentation for all LangGraph nodes, LLM calls, and tool invocations following OpenInference semantic conventions. No LangSmith dependency. Backend-agnostic — the OTLP endpoint is a configuration concern.
+
+**Tool call audit:** MCP tool call detail (inputs, outputs, latency, allow/deny outcomes) is owned by the OTEL backend via OpenInference auto-instrumentation. No `tool_audit_log` table is maintained in PostgreSQL. The `kape.task_id` span attribute on the root trace enables cross-referencing between Task records and trace data.
 
 ### 8.2 Tracer Setup
 
-Unchanged from rev 3.
+Configured at startup, before the LangGraph graph is built:
+
+```python
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry import trace
+from openinference.instrumentation.langchain import LangChainInstrumentor
+
+resource = Resource.create({
+    "service.name":   "kape-handler",
+    "kape.handler":   config.kape.handler_name,
+    "kape.cluster":   config.kape.cluster_name,
+    "kape.namespace": config.kape.handler_namespace,
+})
+
+provider = TracerProvider(resource=resource)
+provider.add_span_processor(BatchSpanProcessor(
+    OTLPSpanExporter(endpoint=config.otel.endpoint)
+))
+trace.set_tracer_provider(provider)
+
+LangChainInstrumentor().instrument()
+```
 
 ### 8.3 Span Structure
 
@@ -548,7 +910,66 @@ No collision possible — KapeTool name prefix guarantees uniqueness across upst
 
 ## 11. Data Models
 
-Unchanged from rev 3.
+### 11.1 TaskStatus
+
+```python
+class TaskStatus(str, Enum):
+    Processing             = "Processing"
+    Completed              = "Completed"
+    Failed                 = "Failed"
+    SchemaValidationFailed = "SchemaValidationFailed"
+    ActionError            = "ActionError"
+    UnprocessableEvent     = "UnprocessableEvent"
+    PendingApproval        = "PendingApproval"
+    Timeout                = "Timeout"
+    Retried                = "Retried"
+```
+
+### 11.2 Task
+
+```python
+class Task(BaseModel):
+    id:             str
+    cluster:        str
+    handler:        str
+    namespace:      str
+    event_id:       str
+    event_source:   str
+    event_type:     str
+    event_raw:      dict          # full CloudEvents envelope — immutable, used for retry
+    status:         TaskStatus
+    dry_run:        bool
+    schema_output:  dict | None
+    actions:        list[ActionResult]
+    error:          TaskError | None
+    retry_of:       str | None    # original Task ID — always set on retries
+    otel_trace_id:  str | None    # consumable deep link — not indexed
+    received_at:    datetime
+    completed_at:   datetime | None
+    duration_ms:    int | None
+```
+
+### 11.3 TaskError
+
+```python
+class TaskError(BaseModel):
+    type:       str         # SchemaValidationFailed | UnhandledError | MalformedEvent | MaxIterationsExceeded
+    detail:     str
+    schema:     str | None  # KapeSchema name (SchemaValidationFailed only)
+    raw:        str | None  # raw event bytes (MalformedEvent only)
+    traceback:  str | None  # Python traceback (UnhandledError only)
+```
+
+### 11.4 ActionResult
+
+```python
+class ActionResult(BaseModel):
+    name:    str
+    type:    str     # event-emitter | save-memory | webhook
+    status:  str     # Completed | Failed | Skipped
+    dry_run: bool
+    error:   str | None
+```
 
 ---
 
