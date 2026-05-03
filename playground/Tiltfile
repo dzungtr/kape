@@ -9,7 +9,8 @@ if os.environ.get('DOCKER_HOST', '') == '':
     os.environ['DOCKER_HOST'] = 'unix:///run/user/%s/podman/podman.sock' % local('id -u', quiet=True).strip()
 
 # Use the existing compose file for all services.
-docker_compose('./docker-compose.playground.yml')
+# podman=True tells Tilt (v0.33+) to drive podman-compose instead of docker compose.
+docker_compose('./docker-compose.playground.yml', podman=True)
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 # nats, postgres, qdrant: no hot-reload, plain compose resources.
