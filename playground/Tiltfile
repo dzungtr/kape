@@ -1,0 +1,82 @@
+# Load .env so ANTHROPIC_API_KEY and POSTGRES_PASSWORD reach compose services.
+load('ext://dotenv', 'dotenv')
+dotenv()
+
+# Use the existing compose file for all services.
+docker_compose('./docker-compose.playground.yml')
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+# nats, postgres, qdrant: no hot-reload, plain compose resources.
+dc_resource('nats',     labels=['infra'])
+dc_resource('postgres', labels=['infra'])
+dc_resource('qdrant',   labels=['infra'])
+
+# ── stub-mcp (Python / FastMCP) ───────────────────────────────────────────────
+# Rebuild fully when requirements.txt or Dockerfile change.
+# Otherwise sync main.py changes into the running container live.
+docker_build(
+    'kape-playground-stub-mcp',
+    context='..',
+    dockerfile='../playground/stub-mcp/Dockerfile',
+    live_update=[
+        fall_back_on([
+            'playground/stub-mcp/requirements.txt',
+            'playground/stub-mcp/Dockerfile',
+        ]),
+        sync('../playground/stub-mcp/main.py', '/app/main.py'),
+        run('kill -HUP 1 || true'),
+    ],
+)
+dc_resource('stub-mcp', labels=['app'])
+
+# ── task-service (Go / distroless) ────────────────────────────────────────────
+# The final image is distroless (no shell), so live_update run() steps cannot
+# execute inside the container.  Instead we rebuild the binary locally and copy
+# it into the running container, then restart the service.
+local_resource(
+    'task-service-hot-reload',
+    cmd=(
+        'cd /home/tony/projects/kape-io && '
+        'go build -o /tmp/kape-task-service-bin ./task-service/cmd/task-service/... && '
+        'podman cp /tmp/kape-task-service-bin kape-playground-task-service-1:/kape-task-service && '
+        'podman restart kape-playground-task-service-1'
+    ),
+    deps=['../task-service'],
+    ignore=['../task-service/vendor'],
+    resource_deps=['task-service'],
+    labels=['app'],
+    trigger_mode=TRIGGER_MODE_AUTO,
+)
+dc_resource('task-service', labels=['app'])
+
+# ── runtime (Python / uv) ─────────────────────────────────────────────────────
+# Sync source changes live; rebuild when pyproject.toml or uv.lock change.
+docker_build(
+    'kape-playground-runtime',
+    context='..',
+    dockerfile='../runtime/Dockerfile',
+    live_update=[
+        fall_back_on([
+            'runtime/pyproject.toml',
+            'runtime/uv.lock',
+            'runtime/Dockerfile',
+        ]),
+        sync('../runtime/src/', '/app/src/'),
+        run('kill -HUP 1 || true'),
+    ],
+)
+dc_resource('runtime', labels=['app'], resource_deps=['nats', 'task-service', 'stub-mcp', 'qdrant'])
+
+# ── dashboard (Node.js / React) ───────────────────────────────────────────────
+# The production Docker image compiles to static assets — file-sync hot-reload
+# is not practical.  Run Vite's dev server locally instead so HMR works on
+# port 3000.  The compose dashboard service is suppressed.
+dc_resource('dashboard', auto_init=False, labels=['disabled'])
+
+local_resource(
+    'dashboard-dev',
+    serve_cmd='npm run dev --prefix ../dashboard',
+    deps=['../dashboard/src'],
+    resource_deps=['task-service'],
+    labels=['app'],
+)
