@@ -46,6 +46,12 @@ class OtelConfig:
 
 
 @dataclass
+class ProxyConfig:
+    endpoint: str
+    transport: str
+
+
+@dataclass
 class SchemaConfig:
     name: str
     json_schema: dict[str, Any]
@@ -58,6 +64,7 @@ class Config:
     nats: NatsConfig
     task_service: TaskServiceConfig
     otel: OtelConfig
+    proxy: ProxyConfig
     schema: SchemaConfig
 
 
@@ -112,6 +119,10 @@ def load_config(settings_file: str | None = None) -> Config:
         otel=OtelConfig(
             endpoint=raw.otel.endpoint,
             service_name=raw.otel.service_name,
+        ),
+        proxy=ProxyConfig(
+            endpoint=raw.proxy.endpoint,
+            transport=raw.proxy.transport,
         ),
         schema=SchemaConfig(
             name=raw.schema.name,

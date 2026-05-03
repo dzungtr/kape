@@ -34,6 +34,14 @@ endpoint = "http://localhost:8080"
 endpoint = "http://localhost:4318"
 service_name = "kape-handler"
 
+[proxy]
+endpoint  = "http://localhost:8080"
+transport = "sse"
+
+[tools.order-memory]
+type            = "memory"
+qdrant_endpoint = "http://kape-memory-order-memory.kape-system:6333"
+
 [schema]
 name = "test-schema"
 
