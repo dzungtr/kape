@@ -3,8 +3,8 @@ load('ext://dotenv', 'dotenv')
 dotenv()
 
 # Point Tilt at the Podman socket so docker_build() uses Podman instead of Docker.
-# Tilt reads DOCKER_HOST from the environment; set it here as a fallback so the
-# Tiltfile is self-contained even when the caller hasn't exported it.
+# Set here as a fallback so the Tiltfile is self-contained even when the caller
+# hasn't exported DOCKER_HOST.
 if os.environ.get('DOCKER_HOST', '') == '':
     os.environ['DOCKER_HOST'] = 'unix:///run/user/%s/podman/podman.sock' % local('id -u', quiet=True).strip()
 
@@ -19,16 +19,16 @@ dc_resource('postgres', labels=['infra'])
 dc_resource('qdrant',   labels=['infra'])
 
 # ── stub-mcp (Python / FastMCP) ───────────────────────────────────────────────
-# Rebuild fully when requirements.txt or Dockerfile change.
-# Otherwise sync main.py changes into the running container live.
+# Dockerfile.local is identical to Dockerfile in content; having a named local
+# variant keeps the pattern consistent and leaves room for dev-only additions.
 docker_build(
     'kape-playground-stub-mcp',
     context='..',
-    dockerfile='../playground/stub-mcp/Dockerfile',
+    dockerfile='../playground/stub-mcp/Dockerfile.local',
     live_update=[
         fall_back_on([
             'playground/stub-mcp/requirements.txt',
-            'playground/stub-mcp/Dockerfile',
+            'playground/stub-mcp/Dockerfile.local',
         ]),
         sync('../playground/stub-mcp/main.py', '/app/main.py'),
         run('kill -HUP 1 || true'),
@@ -36,50 +36,44 @@ docker_build(
 )
 dc_resource('stub-mcp', labels=['app'])
 
-# ── task-service (Go / distroless) ────────────────────────────────────────────
-# The final image is distroless (no shell), so live_update run() steps cannot
-# execute inside the container.  Instead we rebuild the binary locally and copy
-# it into the running container, then restart the service.
-#
-# Container naming differs between Docker Compose (hyphens) and podman-compose
-# (may use underscores).  Resolve the actual name at load time so the resource
-# works with both.
-task_service_container = local(
-    "podman ps --filter 'label=com.docker.compose.service=task-service' --filter 'label=com.docker.compose.project=kape-playground' --format '{{.Names}}' | head -1 || true",
-    quiet=True,
-).strip()
-if task_service_container == '':
-    # Compose not running yet — fall back to the conventional name; Tilt will
-    # retry the cmd after the compose service starts anyway.
-    task_service_container = 'kape-playground-task-service-1'
-
-local_resource(
-    'task-service-hot-reload',
-    cmd=(
-        'cd /home/tony/projects/kape-io && '
-        'go build -o /tmp/kape-task-service-bin ./task-service/cmd/task-service/... && '
-        'podman cp /tmp/kape-task-service-bin %s:/kape-task-service && '
-        'podman restart %s'
-    ) % (task_service_container, task_service_container),
-    deps=['../task-service'],
-    ignore=['../task-service/vendor'],
-    resource_deps=['task-service'],
-    labels=['app'],
-    trigger_mode=TRIGGER_MODE_AUTO,
+# ── task-service (Go) ─────────────────────────────────────────────────────────
+# Dockerfile.local uses golang:1.23-alpine as the final image (has shell + Go
+# toolchain), so live_update run() steps work.  Source is synced in and the
+# binary is rebuilt inside the container on each change.
+docker_build(
+    'kape-playground-task-service',
+    context='..',
+    dockerfile='../task-service/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'task-service/go.mod',
+            'task-service/go.sum',
+            'task-service/Dockerfile.local',
+            'go.work',
+            'go.work.sum',
+        ]),
+        sync('../task-service/', '/workspace/task-service/'),
+        run(
+            'go build -o /usr/local/bin/kape-task-service ./task-service/cmd/task-service/... && '
+            'kill -HUP 1 || true',
+            dir='/workspace',
+        ),
+    ],
 )
 dc_resource('task-service', labels=['app'])
 
 # ── runtime (Python / uv) ─────────────────────────────────────────────────────
-# Sync source changes live; rebuild when pyproject.toml or uv.lock change.
+# Dockerfile.local is a single-stage image so uv is available for dep re-installs.
+# Source syncs live; pyproject.toml / uv.lock changes trigger a full rebuild.
 docker_build(
     'kape-playground-runtime',
     context='..',
-    dockerfile='../runtime/Dockerfile',
+    dockerfile='../runtime/Dockerfile.local',
     live_update=[
         fall_back_on([
             'runtime/pyproject.toml',
             'runtime/uv.lock',
-            'runtime/Dockerfile',
+            'runtime/Dockerfile.local',
         ]),
         sync('../runtime/src/', '/app/src/'),
         run('kill -HUP 1 || true'),
@@ -88,15 +82,20 @@ docker_build(
 dc_resource('runtime', labels=['app'], resource_deps=['nats', 'task-service', 'stub-mcp', 'qdrant'])
 
 # ── dashboard (Node.js / React) ───────────────────────────────────────────────
-# The production Docker image compiles to static assets — file-sync hot-reload
-# is not practical.  Run Vite's dev server locally instead so HMR works on
-# port 3000.  The compose dashboard service is suppressed.
-dc_resource('dashboard', auto_init=False, labels=['disabled'])
-
-local_resource(
-    'dashboard-dev',
-    serve_cmd='npm run dev --prefix ../dashboard',
-    deps=['../dashboard/src'],
-    resource_deps=['task-service'],
-    labels=['app'],
+# Dockerfile.local runs `npm run dev` (Vite dev server) with --host 0.0.0.0 so
+# the port is reachable from the host.  Source syncs trigger Vite's built-in HMR
+# without any container restart.
+docker_build(
+    'kape-playground-dashboard',
+    context='..',
+    dockerfile='../dashboard/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'dashboard/package.json',
+            'dashboard/package-lock.json',
+            'dashboard/Dockerfile.local',
+        ]),
+        sync('../dashboard/src/', '/app/src/'),
+    ],
 )
+dc_resource('dashboard', labels=['app'], resource_deps=['task-service'])

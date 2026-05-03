@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+RUN pip install uv
+WORKDIR /app
+COPY runtime/pyproject.toml runtime/uv.lock ./
+RUN uv sync --no-dev
+COPY runtime/src ./src
+ENV PATH="/app/.venv/bin:$PATH"
+ENTRYPOINT ["kape-runtime"]
