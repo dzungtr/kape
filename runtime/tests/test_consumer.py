@@ -134,50 +134,6 @@ async def test_consumer_deletes_task_on_stale_event():
 
 
 @pytest.mark.asyncio
-async def test_consumer_skips_duplicate_event_without_creating_task():
-    from kape_runtime.dedup import DedupWindow
-
-    msg1 = make_nats_msg(CLOUD_EVENT)
-    msg2 = make_nats_msg(CLOUD_EVENT)
-
-    mock_task_svc = AsyncMock()
-    mock_task_svc.create.return_value = {"id": "01JXYZ"}
-    mock_task_svc.update_status = AsyncMock()
-
-    mock_graph = AsyncMock()
-    mock_graph.ainvoke.return_value = {
-        "task_status": TaskStatus.Completed,
-        "schema_output": {"decision": "ignore", "confidence": 0.9, "reasoning": "OK"},
-        "parse_error": None,
-        "messages": [],
-        "action_results": [],
-        "should_abort": False,
-    }
-
-    loop = ConsumerLoop(
-        task_svc=mock_task_svc,
-        graph=mock_graph,
-        kape_cfg=MagicMock(
-            handler_name="test",
-            handler_namespace="default",
-            cluster_name="kind-local",
-            dry_run=False,
-            max_event_age_seconds=300,
-            schema_name="test-schema",
-        ),
-        dedup=DedupWindow(ttl_seconds=60),
-    )
-
-    await loop.process_message(msg1)
-    await loop.process_message(msg2)
-
-    msg1.ack.assert_awaited_once()
-    msg2.ack.assert_awaited_once()
-    assert mock_task_svc.create.await_count == 1
-    assert mock_graph.ainvoke.await_count == 1
-
-
-@pytest.mark.asyncio
 async def test_consumer_writes_failed_on_unhandled_exception():
     msg = make_nats_msg(CLOUD_EVENT)
 

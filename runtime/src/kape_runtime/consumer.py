@@ -11,7 +11,6 @@ import nats
 from ulid import ULID
 
 from kape_runtime.config import KapeConfig, NatsConfig
-from kape_runtime.dedup import DedupWindow
 from kape_runtime.metrics import (
     kape_decisions_total,
     kape_events_total,
@@ -31,12 +30,10 @@ class ConsumerLoop:
         task_svc: TaskServiceClient,
         graph: Any,
         kape_cfg: KapeConfig,
-        dedup: DedupWindow | None = None,
     ) -> None:
         self._task_svc = task_svc
         self._graph = graph
         self._kape_cfg = kape_cfg
-        self._dedup = dedup if dedup is not None else DedupWindow(ttl_seconds=60)
 
     async def process_message(self, msg: Any) -> None:
         """ACK → create Task → parse CloudEvent → staleness check → invoke graph → update Task."""
@@ -85,15 +82,6 @@ class ConsumerLoop:
             )
             kape_events_total.labels(
                 handler=kape_cfg.handler_name, status="failed"
-            ).inc()
-            return
-
-        # 3a. Dedup check — drop duplicates seen within the dedup window without
-        # creating a Task. The NATS message has already been ACKed above.
-        if self._dedup.is_duplicate(event.id):
-            logger.info("Dropping duplicate event %s", event.id)
-            kape_events_total.labels(
-                handler=kape_cfg.handler_name, status="deduplicated"
             ).inc()
             return
 
