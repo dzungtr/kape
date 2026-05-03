@@ -17,6 +17,7 @@ from kape_runtime.graph.nodes import (
     should_call_tools,
 )
 from kape_runtime.graph.state import AgentState
+from kape_runtime.memory import build_memory_tool
 from kape_runtime.schema_loader import make_structured_llm
 
 
@@ -40,11 +41,16 @@ def build_graph(
     jinja_env = Environment(autoescape=select_autoescape([]))
     structured_llm = make_structured_llm(llm, schema_cfg.json_schema)
 
+    tools: list[BaseTool] = list(mcp_tools)
+    if (memory_tool := build_memory_tool()) is not None:
+        tools.append(memory_tool)
+    # TODO(Phase 7.3): when kape_runtime.skills lands, append make_load_skill_tool(...)
+
     graph = StateGraph(AgentState)
 
     graph.add_node("entry_router_node", lambda state: {})
-    graph.add_node("reason", make_reason_node(llm, mcp_tools, kape_cfg, llm_cfg, jinja_env))
-    graph.add_node("call_tools", ToolNode(list(mcp_tools)))
+    graph.add_node("reason", make_reason_node(llm, tools, kape_cfg, llm_cfg, jinja_env))
+    graph.add_node("call_tools", ToolNode(tools))
     graph.add_node("respond", make_respond_node(structured_llm))
 
     graph.add_edge(START, "entry_router_node")
