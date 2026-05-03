@@ -18,7 +18,7 @@ Build the audit database API that the runtime will write Task records to, and th
 ## Work
 
 - PostgreSQL schema: `tasks` table DDL from spec 0008
-- CloudNativePG cluster manifest for production; `docker-compose.yml` with plain PostgreSQL for local dev
+- CloudNativePG cluster manifest for production; `playground/docker-compose.playground.yml` for local dev (full stack: NATS, Postgres, Qdrant, and services)
 - Chi router with endpoints:
   - `POST /tasks` — create Task record
   - `PATCH /tasks/{id}/status` — update Task status
