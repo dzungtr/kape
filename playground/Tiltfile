@@ -2,6 +2,12 @@
 load('ext://dotenv', 'dotenv')
 dotenv()
 
+# Point Tilt at the Podman socket so docker_build() uses Podman instead of Docker.
+# Tilt reads DOCKER_HOST from the environment; set it here as a fallback so the
+# Tiltfile is self-contained even when the caller hasn't exported it.
+if os.environ.get('DOCKER_HOST', '') == '':
+    os.environ['DOCKER_HOST'] = 'unix:///run/user/%s/podman/podman.sock' % local('id -u', quiet=True).strip()
+
 # Use the existing compose file for all services.
 docker_compose('./docker-compose.playground.yml')
 
@@ -33,14 +39,27 @@ dc_resource('stub-mcp', labels=['app'])
 # The final image is distroless (no shell), so live_update run() steps cannot
 # execute inside the container.  Instead we rebuild the binary locally and copy
 # it into the running container, then restart the service.
+#
+# Container naming differs between Docker Compose (hyphens) and podman-compose
+# (may use underscores).  Resolve the actual name at load time so the resource
+# works with both.
+task_service_container = local(
+    "podman ps --filter 'label=com.docker.compose.service=task-service' --filter 'label=com.docker.compose.project=kape-playground' --format '{{.Names}}' | head -1 || true",
+    quiet=True,
+).strip()
+if task_service_container == '':
+    # Compose not running yet — fall back to the conventional name; Tilt will
+    # retry the cmd after the compose service starts anyway.
+    task_service_container = 'kape-playground-task-service-1'
+
 local_resource(
     'task-service-hot-reload',
     cmd=(
         'cd /home/tony/projects/kape-io && '
         'go build -o /tmp/kape-task-service-bin ./task-service/cmd/task-service/... && '
-        'podman cp /tmp/kape-task-service-bin kape-playground-task-service-1:/kape-task-service && '
-        'podman restart kape-playground-task-service-1'
-    ),
+        'podman cp /tmp/kape-task-service-bin %s:/kape-task-service && '
+        'podman restart %s'
+    ) % (task_service_container, task_service_container),
     deps=['../task-service'],
     ignore=['../task-service/vendor'],
     resource_deps=['task-service'],
