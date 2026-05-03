@@ -99,3 +99,37 @@ make fire-adapter ADAPTER=alertmanager
 ```bash
 make playground-down   # stops and removes all containers and volumes
 ```
+
+---
+
+## Tilt / Hot Reload
+
+`Tiltfile` in `playground/` wires Tilt to the existing compose stack so source changes are reflected in running containers without a full rebuild.
+
+### Prerequisites
+
+| Tool | Install |
+|---|---|
+| tilt | https://docs.tilt.dev/install.html |
+| All tools listed above | (same as regular playground) |
+
+### How to run
+
+```bash
+cd playground && tilt up
+```
+
+Tilt opens a browser UI at `http://localhost:10350` showing live status for every resource.
+
+### What each resource does
+
+| Resource | Type | Hot-reload behaviour |
+|---|---|---|
+| `nats` | compose | No hot-reload — infra only |
+| `postgres` | compose | No hot-reload — infra only |
+| `qdrant` | compose | No hot-reload — infra only |
+| `stub-mcp` | compose + docker_build | Syncs `playground/stub-mcp/main.py` live; full rebuild if `requirements.txt` or `Dockerfile` changes |
+| `task-service` | compose | Image rebuilt normally via compose |
+| `task-service-hot-reload` | local_resource | Builds Go binary locally, copies it into the running container, and restarts it on any `*.go` change; bypasses the distroless image's lack of a shell |
+| `runtime` | compose + docker_build | Syncs `runtime/src/` live; full rebuild if `pyproject.toml` or `uv.lock` changes |
+| `dashboard-dev` | local_resource | Runs `npm run dev` (Vite HMR) directly on the host — the compose dashboard service is disabled when using Tilt |

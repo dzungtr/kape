@@ -1,0 +1,101 @@
+# Load .env so ANTHROPIC_API_KEY and POSTGRES_PASSWORD reach compose services.
+load('ext://dotenv', 'dotenv')
+dotenv()
+
+# Point Tilt at the Podman socket so docker_build() uses Podman instead of Docker.
+# Set here as a fallback so the Tiltfile is self-contained even when the caller
+# hasn't exported DOCKER_HOST.
+if os.environ.get('DOCKER_HOST', '') == '':
+    os.environ['DOCKER_HOST'] = 'unix:///run/user/%s/podman/podman.sock' % local('id -u', quiet=True).strip()
+
+# Use the existing compose file for all services.
+# podman=True tells Tilt (v0.33+) to drive podman-compose instead of docker compose.
+docker_compose('./docker-compose.playground.yml', podman=True)
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+# nats, postgres, qdrant: no hot-reload, plain compose resources.
+dc_resource('nats',     labels=['infra'])
+dc_resource('postgres', labels=['infra'])
+dc_resource('qdrant',   labels=['infra'])
+
+# ── stub-mcp (Python / FastMCP) ───────────────────────────────────────────────
+# Dockerfile.local is identical to Dockerfile in content; having a named local
+# variant keeps the pattern consistent and leaves room for dev-only additions.
+docker_build(
+    'kape-playground-stub-mcp',
+    context='..',
+    dockerfile='../playground/stub-mcp/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'playground/stub-mcp/requirements.txt',
+            'playground/stub-mcp/Dockerfile.local',
+        ]),
+        sync('../playground/stub-mcp/main.py', '/app/main.py'),
+        run('kill -HUP 1 || true'),
+    ],
+)
+dc_resource('stub-mcp', labels=['app'])
+
+# ── task-service (Go) ─────────────────────────────────────────────────────────
+# Dockerfile.local uses golang:1.23-alpine as the final image (has shell + Go
+# toolchain), so live_update run() steps work.  Source is synced in and the
+# binary is rebuilt inside the container on each change.
+docker_build(
+    'kape-playground-task-service',
+    context='..',
+    dockerfile='../task-service/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'task-service/go.mod',
+            'task-service/go.sum',
+            'task-service/Dockerfile.local',
+            'go.work',
+            'go.work.sum',
+        ]),
+        sync('../task-service/', '/workspace/task-service/'),
+        run(
+            'go build -o /usr/local/bin/kape-task-service ./task-service/cmd/task-service/... && '
+            'kill -HUP 1 || true',
+            dir='/workspace',
+        ),
+    ],
+)
+dc_resource('task-service', labels=['app'])
+
+# ── runtime (Python / uv) ─────────────────────────────────────────────────────
+# Dockerfile.local is a single-stage image so uv is available for dep re-installs.
+# Source syncs live; pyproject.toml / uv.lock changes trigger a full rebuild.
+docker_build(
+    'kape-playground-runtime',
+    context='..',
+    dockerfile='../runtime/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'runtime/pyproject.toml',
+            'runtime/uv.lock',
+            'runtime/Dockerfile.local',
+        ]),
+        sync('../runtime/src/', '/app/src/'),
+        run('kill -HUP 1 || true'),
+    ],
+)
+dc_resource('runtime', labels=['app'], resource_deps=['nats', 'task-service', 'stub-mcp', 'qdrant'])
+
+# ── dashboard (Node.js / React) ───────────────────────────────────────────────
+# Dockerfile.local runs `npm run dev` (Vite dev server) with --host 0.0.0.0 so
+# the port is reachable from the host.  Source syncs trigger Vite's built-in HMR
+# without any container restart.
+docker_build(
+    'kape-playground-dashboard',
+    context='..',
+    dockerfile='../dashboard/Dockerfile.local',
+    live_update=[
+        fall_back_on([
+            'dashboard/package.json',
+            'dashboard/package-lock.json',
+            'dashboard/Dockerfile.local',
+        ]),
+        sync('../dashboard/src/', '/app/src/'),
+    ],
+)
+dc_resource('dashboard', labels=['app'], resource_deps=['task-service'])
