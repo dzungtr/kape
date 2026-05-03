@@ -135,7 +135,7 @@ This document is the concrete build plan for KAPE v1. All design decisions are s
 **Work:**
 
 - PostgreSQL schema: `tasks` table DDL from spec 0008 (all columns, JSONB fields, indexes, monthly partitioning)
-- CloudNativePG cluster manifest for production; `docker-compose.yml` with plain PostgreSQL for local dev
+- CloudNativePG cluster manifest for production; `playground/docker-compose.playground.yml` for local dev (full stack: NATS, Postgres, Qdrant, and services)
 - Chi router with endpoints:
   - `POST /tasks` — create Task record
   - `PATCH /tasks/{id}/status` — update Task status
