@@ -1,4 +1,4 @@
-.PHONY: generate build test lint docker-build
+.PHONY: generate build test lint docker-build playground-up playground-down playground-operator playground-logs fire-adapter
 
 generate:
 	controller-gen rbac:roleName=kape-operator crd:allowDangerousTypes=true webhook \
@@ -34,3 +34,27 @@ docker-build:
 	docker build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
 	docker build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
 	docker build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
+
+playground-up:
+	@if [ ! -f playground/runtime/settings.toml ]; then \
+	  cp playground/runtime/settings.toml.example playground/runtime/settings.toml; \
+	  echo "Created playground/runtime/settings.toml from example — edit before firing events."; \
+	fi
+	@if [ ! -f playground/.env ]; then \
+	  cp playground/.env.example playground/.env; \
+	  echo "Created playground/.env — set ANTHROPIC_API_KEY before starting runtime."; \
+	fi
+	podman compose -f playground/docker-compose.playground.yml --env-file playground/.env up -d --build
+
+playground-down:
+	podman compose -f playground/docker-compose.playground.yml down -v
+
+playground-operator:
+	go run ./playground/operator/...
+
+playground-logs:
+	podman compose -f playground/docker-compose.playground.yml logs -f
+
+fire-adapter:
+	@test -n "$(ADAPTER)" || (echo "Usage: make fire-adapter ADAPTER=alertmanager" && exit 1)
+	go run ./adapters/cmd/$(ADAPTER)/... --playground
