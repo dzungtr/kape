@@ -36,6 +36,10 @@ endpoint = "http://localhost:8080"
 endpoint = "http://localhost:4318"
 service_name = "kape-handler"
 
+[proxy]
+endpoint = "http://localhost:8080"
+transport = "sse"
+
 [schema]
 name = "test-schema"
 
@@ -64,6 +68,8 @@ type = "string"
     assert config.nats.stream == "KAPE_EVENTS"
     assert config.task_service.endpoint == "http://localhost:8080"
     assert config.otel.endpoint == "http://localhost:4318"
+    assert config.proxy.endpoint == "http://localhost:8080"
+    assert config.proxy.transport == "sse"
     assert config.schema.name == "test-schema"
     assert config.schema.json_schema["type"] == "object"
     assert "decision" in config.schema.json_schema["required"]
@@ -99,6 +105,10 @@ endpoint = "http://localhost:8080"
 [otel]
 endpoint = "http://localhost:4318"
 service_name = "kape-handler"
+
+[proxy]
+endpoint = "http://localhost:8080"
+transport = "sse"
 
 [schema]
 name = "test-schema"
