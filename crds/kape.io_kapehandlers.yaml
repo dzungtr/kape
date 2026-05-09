@@ -353,6 +353,22 @@ spec:
                   event payloads.
                 minLength: 1
                 type: string
+              skills:
+                description: |-
+                  Skills is the list of KapeSkills this handler attaches.
+                  Each skill's instruction is assembled into the system prompt (eager) or
+                  mounted at /etc/kape/skills (lazy). Skills are processed in declaration order.
+                items:
+                  description: SkillRef references a KapeSkill available to the agent.
+                  properties:
+                    ref:
+                      description: Ref is the name of the KapeSkill in the same namespace.
+                      minLength: 1
+                      type: string
+                  required:
+                  - ref
+                  type: object
+                type: array
               tools:
                 description: Tools is the list of tools available to the agent.
                 items:
