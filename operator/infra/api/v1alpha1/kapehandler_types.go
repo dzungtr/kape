@@ -93,6 +93,13 @@ type ToolRef struct {
 	Ref string `json:"ref"`
 }
 
+// SkillRef references a KapeSkill available to the agent.
+type SkillRef struct {
+	// Ref is the name of the KapeSkill in the same namespace.
+	// +kubebuilder:validation:MinLength=1
+	Ref string `json:"ref"`
+}
+
 // ActionSpec defines a deterministic post-decision action.
 type ActionSpec struct {
 	// Name is a unique identifier for this action.
@@ -156,6 +163,12 @@ type KapeHandlerSpec struct {
 
 	// Tools is the list of tools available to the agent.
 	Tools []ToolRef `json:"tools"`
+
+	// Skills is the list of KapeSkills this handler attaches.
+	// Each skill's instruction is assembled into the system prompt (eager) or
+	// mounted at /etc/kape/skills (lazy). Skills are processed in declaration order.
+	// +optional
+	Skills []SkillRef `json:"skills,omitempty"`
 
 	// SchemaRef is the name of the schema resource that describes event payloads.
 	// +kubebuilder:validation:MinLength=1
