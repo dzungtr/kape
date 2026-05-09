@@ -101,7 +101,8 @@ func main() {
 	}
 
 	// KapeSchemaReconciler
-	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo)
+	schemaRecorder := mgr.GetEventRecorderFor("kapeschema-controller")
+	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo, schemaRecorder)
 	if err := kapecontroller.SetupSchemaReconciler(mgr, schemaRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeSchema controller")
 		os.Exit(1)

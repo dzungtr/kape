@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
@@ -19,12 +21,13 @@ const schemaFinalizer = "kape.io/schema-protection"
 
 // SchemaReconciler performs the full reconcile logic for KapeSchema.
 type SchemaReconciler struct {
-	schemas ports.SchemaRepository
+	schemas  ports.SchemaRepository
+	recorder record.EventRecorder
 }
 
 // NewSchemaReconciler creates a SchemaReconciler.
-func NewSchemaReconciler(schemas ports.SchemaRepository) *SchemaReconciler {
-	return &SchemaReconciler{schemas: schemas}
+func NewSchemaReconciler(schemas ports.SchemaRepository, recorder record.EventRecorder) *SchemaReconciler {
+	return &SchemaReconciler{schemas: schemas, recorder: recorder}
 }
 
 // Reconcile implements the KapeSchema reconcile loop.
@@ -76,6 +79,7 @@ func (r *SchemaReconciler) Reconcile(ctx context.Context, key types.NamespacedNa
 	if err := r.schemas.UpdateStatus(ctx, schema); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.recorder.Event(schema, corev1.EventTypeNormal, "SchemaValid", "JSON Schema validated successfully")
 	return ctrl.Result{}, nil
 }
 
@@ -89,13 +93,15 @@ func (r *SchemaReconciler) handleDeletion(ctx context.Context, schema *v1alpha1.
 		for _, h := range handlers {
 			names = append(names, h.Name)
 		}
+		msg := fmt.Sprintf("Cannot delete: referenced by handlers: [%s]", strings.Join(names, ", "))
 		schema.Status.Conditions = setCondition(schema.Status.Conditions, metav1.Condition{
 			Type:    "Ready",
 			Status:  metav1.ConditionFalse,
 			Reason:  "ReferencedByHandlers",
-			Message: fmt.Sprintf("Cannot delete: referenced by handlers: [%s]", strings.Join(names, ", ")),
+			Message: msg,
 		})
 		_ = r.schemas.UpdateStatus(ctx, schema)
+		r.recorder.Event(schema, corev1.EventTypeWarning, "DeletionBlocked", msg)
 		return ctrl.Result{}, nil // blocked — no requeue; re-triggered on handler deletion
 	}
 	if err := r.schemas.RemoveFinalizer(ctx, schema, schemaFinalizer); err != nil {
