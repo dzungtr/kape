@@ -76,6 +76,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 - Handler integration (slice 3).
 - Watches that re-enqueue handlers on KapeSkill changes (slice 4).
 
+**Definition of Done (slice 1)**
+
+Per Phase 6 README acceptance: *"Apply KapeSkill referencing a KapeTool → KapeSkill status shows Ready"* AND *"Attempt to delete a KapeSkill referenced by a KapeHandler → deletion blocked."* Both demonstrated by tests. PR raised, SBOM scans run, Snyk Code scan clean.
+
 ---
 
 ### Slice 2 — KapeSchema reconciler audit + gap-fill
@@ -92,6 +96,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 - `operator/controller/reconcile/schema_test.go` — extend to assert events are recorded.
 
 **No new files.**
+
+**Definition of Done (slice 2)**
+
+All existing KapeSchema acceptance tests still pass (no regression). New tests demonstrate `DeletionBlocked` (Warning) event and `SchemaValid` (Normal) event are recorded. PR raised with SBOM scans + Snyk Code scan clean.
 
 ---
 
@@ -121,6 +129,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 
 **Note on `load_skill` runtime tool:** Phase 6 mounts the lazy ConfigMap but does not register a `load_skill` tool in the handler runtime. That is a separate runtime PR. The mount is a forward-compatible affordance; the runtime ignores it today.
 
+**Definition of Done (slice 3)**
+
+Per Phase 6 README acceptance: *"Apply KapeHandler + KapeSkill (lazyLoad: true) → kape-skills-{name} ConfigMap exists, mounted at /etc/kape/skills/."* AND a KapeSkill with not-Ready KapeTool puts the KapeHandler in Pending with reason `KapeSkillNotReady`. AND eager-skill instruction text appears in settings.toml in declaration order. AND `computeRolloutHash` changes when a referenced KapeSkill's `.Spec` content changes. All four demonstrated by tests. PR raised with SBOM scans + Snyk Code scan clean.
+
 ---
 
 ### Slice 4 — Cross-resource watch wiring for KapeSkill
@@ -135,6 +147,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 - `operator/controller/watches_test.go` — extend to verify the new mapper enqueues the right handlers.
 
 **Note:** No new label sync. Slice 3 already writes the labels this watch reads.
+
+**Definition of Done (slice 4)**
+
+Editing a KapeSkill's spec triggers a reconcile of every referencing KapeHandler — verified by observing the rollout-hash annotation change on the handler's Deployment within one reconcile cycle. PR raised with SBOM scans + Snyk Code scan clean.
 
 ---
 
@@ -169,6 +185,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 - `operator/infra/k8s/deployment_test.go` — assert single kapeproxy container + no `kapetool-*` containers + correct mounts.
 - `kapeproxy/cmd/kapeproxy-stub/main_test.go` — table-test the stub's `tools/list` output for the documented config schema. (Lightweight; stub is going away in slice 7.)
 
+**Definition of Done (slice 5)**
+
+Per Phase 6 README acceptance: *"Apply KapeHandler referencing a KapeSkill → handler pod has single kapeproxy sidecar (no per-tool sidecars)"* AND *"kapeproxy `tools/list` returns namespaced tool names (`kapetool-name__tool-name`)"*. The stub binary delivers the second criterion in slice 5; slice 7 carries it forward unchanged. The `kape/kapeproxy:stub` image is built and pushed by slice 5's CI workflow before merge. PR raised with SBOM scans (existing 3 modules) + Snyk Code scan clean.
+
 ---
 
 ### Slice 6 — KapeProxyReconciler (observability-only)
@@ -196,6 +216,10 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 - Does NOT write the `kapeproxy-config-{handler-name}` ConfigMap (slice 5 owns it).
 - Does NOT mutate `Deployment` resources.
 - Does NOT enumerate upstream MCP servers (no /status endpoint exists in slice 5's stub or slice 7's binary at v1; coarse condition is acceptable for M2).
+
+**Definition of Done (slice 6)**
+
+A KapeHandler with a healthy kapeproxy sidecar shows `KapeProxyReady=True` on `kubectl get kapehandler -o yaml`. A handler whose kapeproxy container is in CrashLoopBackOff shows `KapeProxyReady=False` AND `KapeProxyDegraded=True` with reason `RestartLoop`. A handler pod missing the kapeproxy container shows `KapeProxyReady=False` with reason `KapeProxyMissing`. All three demonstrated by tests. PR raised with SBOM scans + Snyk Code scan clean.
 
 ---
 
@@ -242,6 +266,10 @@ The kape-io PR checklist (in `kape-io/CLAUDE.md`) lists three Go modules for SBO
 - Single `kapeproxy.tool_call` span per call. No separate `policy_check` / `upstream_mcp_call` child spans.
 - Inbound W3C TraceContext extraction; outbound propagation to upstream MCPs.
 - Phase 7 (M3) refines this with the child-span split as part of broader observability hardening.
+
+**Definition of Done (slice 7)**
+
+End-to-end round trip works: real handler pod with real kapeproxy sidecar talking to a mock MCP upstream — `tools/list` returns namespaced+filtered names, `tools/call` for an allowed tool reaches the upstream with input redacted and response output redacted, `tools/call` for a disallowed tool returns MCP error -32601, an unreachable upstream is non-fatal at startup. A single `kapeproxy.tool_call` span is emitted per call with the documented attributes. The stub artifacts (`kapeproxy/cmd/kapeproxy-stub/main.go`, `kapeproxy/Dockerfile.stub`) are removed and the registry-side `:stub` tag is cleaned up. The PR Checklist amendment is applied (`kape-io/CLAUDE.md` includes `./kapeproxy`; SBOM PR comment template has 4 rows). PR raised with all 4 SBOM scans + Snyk Code scan clean.
 
 ---
 
