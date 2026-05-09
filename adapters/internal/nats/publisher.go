@@ -60,7 +60,7 @@ func (p *Publisher) Publish(ctx context.Context, subject string, event ce.Event)
 	bo.MaxElapsedTime = 0 // context deadline is the sole termination condition
 
 	op := func() error {
-		_, pubErr := p.js.Publish(ctx, subject, data)
+		_, pubErr := p.js.Publish(ctx, subject, data, jetstream.WithMsgID(event.ID()))
 		return pubErr
 	}
 
