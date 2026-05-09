@@ -31,8 +31,18 @@ type ServiceAccountPort interface {
 
 // DeploymentPort manages the handler Deployment.
 type DeploymentPort interface {
-	// Ensure creates or patches the handler Deployment with sidecar injection for mcp-type tools.
-	Ensure(ctx context.Context, handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig, rolloutHash string, tools []v1alpha1.KapeTool) error
+	// Ensure creates or patches the handler Deployment with sidecar injection
+	// for mcp-type tools. lazySkillsPresent=true causes the kape-skills volume
+	// + /etc/kape/skills mount to be added; the ConfigMap itself is owned by
+	// SkillConfigMapPort.
+	Ensure(
+		ctx context.Context,
+		handler *v1alpha1.KapeHandler,
+		cfg domainconfig.KapeConfig,
+		rolloutHash string,
+		tools []v1alpha1.KapeTool,
+		lazySkillsPresent bool,
+	) error
 	// GetStatus reads the current Deployment status. found is false when the Deployment does not exist.
 	GetStatus(ctx context.Context, key types.NamespacedName) (status *appsv1.DeploymentStatus, found bool, err error)
 }
@@ -42,13 +52,19 @@ type KapeConfigLoader interface {
 	Load(ctx context.Context) (domainconfig.KapeConfig, error)
 }
 
-// TOMLRenderer produces a settings.toml string from a KapeHandler, its resolved schema,
-// its resolved tools, and platform config.
+// TOMLRenderer produces a settings.toml string from a KapeHandler, its resolved
+// schema, resolved tools, eager + lazy skill slices, and platform config.
+//
+// The renderer is responsible for assembling the full system_prompt
+// (handler.systemPrompt → eager skill instructions in declaration order →
+// lazy skill preamble) per spec 0013 §3.2.
 type TOMLRenderer interface {
 	Render(
 		handler *v1alpha1.KapeHandler,
 		schema *v1alpha1.KapeSchema,
 		tools []v1alpha1.KapeTool,
+		eagerSkills []v1alpha1.KapeSkill,
+		lazySkills []v1alpha1.KapeSkill,
 		cfg domainconfig.KapeConfig,
 	) (string, error)
 }
