@@ -227,7 +227,7 @@ Each slice's content is listed file-by-file. Acceptance criteria are inherited v
 
 - `kapeproxy/internal/proxy/*_test.go` — unit tests for parser, router, redaction, audit, OTEL.
 - `kapeproxy/integration_test.go` — in-process mock MCP server; assert allowlist filtering, redaction, OTEL span emission, unreachable-upstream graceful behavior.
-- `operator/playground/` — one envtest scenario exercising real handler + real kapeproxy + mock MCP.
+- `operator/cmd/playground/` — one envtest scenario exercising real handler + real kapeproxy + mock MCP.
 
 **PR Checklist amendment**
 
@@ -270,20 +270,19 @@ type resolvedDependencies struct {
 
 **Why keyed by Name (not by ref):** Spec 0013 §3.2 specifies dedup-by-name semantics for skill-pulled tools.
 
-**Hash extension:**
+**Hash extension (pseudocode; real implementation uses `json.Marshal` + `h.Write`):**
 
-```go
-func computeRolloutHash(handler, schema *v1alpha1.KapeHandler/Schema, deps *resolvedDependencies) (string, error) {
-    h := sha256.New()
-    json.Marshal(handler.Spec) → h.Write
-    json.Marshal(schema.Spec)  → h.Write
-    for _, t := range deps.Tools  { json.Marshal(t.Spec) → h.Write }   // sorted by Name
-    for _, s := range deps.Skills { json.Marshal(s.Spec) → h.Write }   // declaration order
-    json.Marshal(cfg.KapeproxyImage)        → h.Write                   // slice 5 addition
-    json.Marshal(cfg.KapeproxyImageVersion) → h.Write                   // slice 5 addition
-    return hex(h.Sum(nil)), nil
-}
 ```
+computeRolloutHash(handler, schema, deps, cfg) → sha256 over (in this order):
+  1. handler.Spec
+  2. schema.Spec
+  3. for each tool in deps.Tools (sorted by Name): tool.Spec
+  4. for each skill in deps.Skills (declaration order): skill.Spec
+  5. cfg.KapeproxyImage          ← slice 5 addition
+  6. cfg.KapeproxyImageVersion   ← slice 5 addition
+```
+
+Slice 3 implements lines 1-4. Slice 5 adds lines 5-6 when introducing the kape-config kapeproxy fields.
 
 **Skills declaration order (not sorted):** Reordering `handler.spec.skills[]` changes the system prompt assembly order (eager skill text is concatenated in declaration order per spec 0013 §3.2). The hash must therefore reflect order, not just set membership.
 
@@ -358,10 +357,10 @@ Single owner per condition type — no two slices write the same one.
 
 ### 3.1 Tooling baseline
 
-- **envtest harness** at `operator/playground/` — full controller integration tests against a real apiserver+etcd binary. Already present.
+- **envtest harness** at `operator/cmd/playground/` — full controller integration tests against a real apiserver+etcd binary. Already present.
 - **Unit tests** alongside Go files (`_test.go`) — repo convention.
 - **Snyk SBOM scans** required pre-PR per `kape-io/CLAUDE.md`. Slice 7 extends the standing list to include `./kapeproxy`.
-- **Podman compose stack** at `playground/` — reachable via Tilt for manual verification.
+- **Podman compose stack** at `playground/` (top-level) — reachable via Tilt for manual verification.
 
 ### 3.2 Per-slice test requirements
 
