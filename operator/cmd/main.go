@@ -116,12 +116,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	skillConfigMapAdapt := k8sadapters.NewSkillConfigMapAdapter(k8sClient)
+
 	// KapeHandlerReconciler
 	handlerRec := reconcilehandler.NewHandlerReconciler(
 		handlerRepo,
 		schemaRepo,
 		toolRepo,
+		skillRepo,
 		configMapAdapt,
+		skillConfigMapAdapt,
 		saAdapt,
 		deployAdapt,
 		scaledObjAdapt,
