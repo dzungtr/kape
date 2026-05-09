@@ -55,6 +55,17 @@ func (r *HandlerRepository) UpdateStatus(ctx context.Context, handler *v1alpha1.
 	return nil
 }
 
+// ListHandlersBySkillRef returns KapeHandlers with label kape.io/skill-ref-{skillName}=true.
+func (r *HandlerRepository) ListHandlersBySkillRef(ctx context.Context, skillName string) ([]v1alpha1.KapeHandler, error) {
+	var list v1alpha1.KapeHandlerList
+	if err := r.client.List(ctx, &list, client.MatchingLabels{
+		"kape.io/skill-ref-" + skillName: "true",
+	}); err != nil {
+		return nil, fmt.Errorf("listing handlers by skill ref %q: %w", skillName, err)
+	}
+	return list.Items, nil
+}
+
 // SyncLabels merges labels onto the KapeHandler resource.
 // Returns nil on NotFound (handler was deleted between reconcile steps).
 func (r *HandlerRepository) SyncLabels(ctx context.Context, handler *v1alpha1.KapeHandler, labels map[string]string) error {

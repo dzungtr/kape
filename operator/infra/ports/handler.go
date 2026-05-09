@@ -15,6 +15,8 @@ type HandlerRepository interface {
 	Get(ctx context.Context, key types.NamespacedName) (*v1alpha1.KapeHandler, error)
 	UpdateStatus(ctx context.Context, handler *v1alpha1.KapeHandler) error
 	SyncLabels(ctx context.Context, handler *v1alpha1.KapeHandler, labels map[string]string) error
+	// ListHandlersBySkillRef returns all KapeHandlers with label kape.io/skill-ref-{skillName}=true.
+	ListHandlersBySkillRef(ctx context.Context, skillName string) ([]v1alpha1.KapeHandler, error)
 }
 
 // ConfigMapPort manages the handler settings.toml ConfigMap.
