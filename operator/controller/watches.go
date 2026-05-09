@@ -58,3 +58,28 @@ func MapSchemaToHandlers(c client.Client) func(ctx context.Context, obj client.O
 		return requests
 	}
 }
+
+// MapSkillToHandlers maps a KapeSkill change to the KapeHandlers that reference it.
+// Used as a secondary watch: KapeSkill changes re-enqueue referencing KapeHandlers.
+// Depends on Slice 3 having written kape.io/skill-ref-{name}=true labels on KapeHandler resources.
+func MapSkillToHandlers(c client.Client) func(ctx context.Context, obj client.Object) []reconcile.Request {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		skill, ok := obj.(*v1alpha1.KapeSkill)
+		if !ok {
+			return nil
+		}
+		var handlerList v1alpha1.KapeHandlerList
+		if err := c.List(ctx, &handlerList, client.MatchingLabels{
+			fmt.Sprintf("kape.io/skill-ref-%s", skill.Name): "true",
+		}); err != nil {
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(handlerList.Items))
+		for _, h := range handlerList.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: h.Name, Namespace: h.Namespace},
+			})
+		}
+		return requests
+	}
+}
