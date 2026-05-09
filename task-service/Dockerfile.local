@@ -1,6 +1,8 @@
-FROM golang:1.23-alpine
+FROM golang:1.25-alpine
 WORKDIR /workspace
 COPY go.work go.work.sum ./
 COPY task-service/ task-service/
+COPY adapters/ adapters/
+COPY operator/ operator/
 RUN go build -o /usr/local/bin/kape-task-service ./task-service/cmd/task-service/...
 ENTRYPOINT ["/usr/local/bin/kape-task-service"]
