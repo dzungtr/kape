@@ -42,6 +42,7 @@ func SetupHandlerReconciler(mgr manager.Manager, inner *reconcilehandler.Handler
 		Owns(&corev1.ServiceAccount{}).
 		Watches(&v1alpha1.KapeTool{}, handler.EnqueueRequestsFromMapFunc(MapToolToHandlers(mgr.GetClient()))).
 		Watches(&v1alpha1.KapeSchema{}, handler.EnqueueRequestsFromMapFunc(MapSchemaToHandlers(mgr.GetClient()))).
+		Watches(&v1alpha1.KapeSkill{}, handler.EnqueueRequestsFromMapFunc(MapSkillToHandlers(mgr.GetClient()))).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }
