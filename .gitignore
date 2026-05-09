@@ -48,3 +48,4 @@ examples/sre-alertmanager/src/mock-webhook/mock-webhook
 kubeconfig.playground
 playground/.env
 playground/runtime/settings.toml
+.claude/standups/

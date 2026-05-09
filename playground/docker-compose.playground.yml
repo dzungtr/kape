@@ -32,7 +32,7 @@ services:
     ports:
       - "6333:6333"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:6333/readyz || exit 1"]
+      test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/localhost/6333) 2>/dev/null'"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -44,7 +44,7 @@ services:
     ports:
       - "8090:8090"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8090/sse || exit 1"]
+      test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/127.0.0.1/8090) 2>/dev/null'"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -62,7 +62,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/tasks || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -75,7 +75,7 @@ services:
       KAPE_SETTINGS_FILE: /app/settings.toml
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     volumes:
-      - ./runtime/settings.toml:/app/settings.toml:ro
+      - ./runtime/settings.toml:/app/settings.toml:ro,Z
     depends_on:
       nats:
         condition: service_healthy

@@ -1,8 +1,9 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /workspace
-COPY go.work go.work.sum ./
-COPY adapters/ adapters/
-RUN go build -o /out/kape-adapter-audit ./adapters/cmd/audit/...
+COPY adapters/go.mod adapters/go.sum ./
+RUN go mod download
+COPY adapters/ .
+RUN go build -o /out/kape-adapter-audit ./cmd/audit/...
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /out/kape-adapter-audit /kape-adapter-audit
