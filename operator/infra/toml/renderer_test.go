@@ -68,7 +68,7 @@ func baseTools() []v1alpha1.KapeTool {
 
 func TestRenderer_IncludesMCPToolSection(t *testing.T) {
 	r := tomlrenderer.NewRenderer()
-	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), domainconfig.KapeConfig{})
+	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), nil, nil, domainconfig.KapeConfig{})
 	require.NoError(t, err)
 
 	assert.Contains(t, content, "[tools.grafana-mcp]")
@@ -79,7 +79,7 @@ func TestRenderer_IncludesMCPToolSection(t *testing.T) {
 
 func TestRenderer_IncludesMemoryToolSection(t *testing.T) {
 	r := tomlrenderer.NewRenderer()
-	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), domainconfig.KapeConfig{})
+	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), nil, nil, domainconfig.KapeConfig{})
 	require.NoError(t, err)
 
 	assert.Contains(t, content, "[tools.karpenter-memory]")
@@ -89,7 +89,7 @@ func TestRenderer_IncludesMemoryToolSection(t *testing.T) {
 
 func TestRenderer_IncludesSchemaSection(t *testing.T) {
 	r := tomlrenderer.NewRenderer()
-	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), domainconfig.KapeConfig{})
+	content, err := r.Render(baseHandler(), baseSchema(), baseTools(), nil, nil, domainconfig.KapeConfig{})
 	require.NoError(t, err)
 
 	assert.Contains(t, content, "[schema]")
@@ -104,9 +104,78 @@ func TestRenderer_MCPPortsAssignedPositionally(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "tool-b"}, Spec: v1alpha1.KapeToolSpec{Type: "mcp", MCP: &v1alpha1.MCPSpec{Upstream: v1alpha1.MCPUpstreamSpec{Transport: "sse", URL: "http://b:8080"}}}},
 	}
 	r := tomlrenderer.NewRenderer()
-	content, err := r.Render(handler, baseSchema(), tools, domainconfig.KapeConfig{})
+	content, err := r.Render(handler, baseSchema(), tools, nil, nil, domainconfig.KapeConfig{})
 	require.NoError(t, err)
 
 	assert.True(t, strings.Contains(content, "sidecar_port = 8080") || strings.Contains(content, "sidecar_port = 8081"),
 		"should assign ports 8080 and 8081 to two mcp tools")
+}
+
+func TestRender_SystemPromptIncludesEagerSkillInDeclarationOrder(t *testing.T) {
+	r := tomlrenderer.NewRenderer()
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "kape-system"},
+		Spec: v1alpha1.KapeHandlerSpec{
+			Trigger:   v1alpha1.TriggerSpec{Source: "alertmanager", Type: "kape.events.test"},
+			LLM:       v1alpha1.LLMSpec{Provider: "anthropic", Model: "claude-3", SystemPrompt: "base"},
+			SchemaRef: "my-schema",
+		},
+	}
+	schema := &v1alpha1.KapeSchema{Spec: v1alpha1.KapeSchemaSpec{
+		Version: "v1",
+		JSONSchema: v1alpha1.JSONSchemaObject{Type: "object"},
+	}}
+	eager := []v1alpha1.KapeSkill{
+		{ObjectMeta: metav1.ObjectMeta{Name: "first"}, Spec: v1alpha1.KapeSkillSpec{Instruction: "FIRST-INSTR"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "second"}, Spec: v1alpha1.KapeSkillSpec{Instruction: "SECOND-INSTR"}},
+	}
+	out, err := r.Render(handler, schema, nil, eager, nil, domainconfig.KapeConfig{})
+	require.NoError(t, err)
+	// FIRST appears before SECOND
+	idx1 := strings.Index(out, "FIRST-INSTR")
+	idx2 := strings.Index(out, "SECOND-INSTR")
+	require.NotEqual(t, -1, idx1, "first skill text missing:\n%s", out)
+	require.NotEqual(t, -1, idx2, "second skill text missing:\n%s", out)
+	assert.Less(t, idx1, idx2, "skills must appear in declaration order")
+	// TOML encoder serialises newlines as \n escape sequences in quoted strings.
+	assert.Contains(t, out, `FIRST-INSTR\n\n---\n\nSECOND-INSTR`)
+}
+
+func TestRender_SystemPromptIncludesLazyPreamble(t *testing.T) {
+	r := tomlrenderer.NewRenderer()
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "kape-system"},
+		Spec: v1alpha1.KapeHandlerSpec{
+			Trigger:   v1alpha1.TriggerSpec{Source: "alertmanager", Type: "kape.events.test"},
+			LLM:       v1alpha1.LLMSpec{Provider: "anthropic", Model: "claude-3", SystemPrompt: "base"},
+			SchemaRef: "my-schema",
+		},
+	}
+	schema := &v1alpha1.KapeSchema{Spec: v1alpha1.KapeSchemaSpec{Version: "v1", JSONSchema: v1alpha1.JSONSchemaObject{Type: "object"}}}
+	lazy := []v1alpha1.KapeSkill{
+		{ObjectMeta: metav1.ObjectMeta{Name: "check-orders"}, Spec: v1alpha1.KapeSkillSpec{Description: "investigates orders", Instruction: "should-not-appear", LazyLoad: true}},
+	}
+	out, err := r.Render(handler, schema, nil, nil, lazy, domainconfig.KapeConfig{})
+	require.NoError(t, err)
+	assert.Contains(t, out, "Available skills (call load_skill with the skill name to retrieve full instructions):")
+	assert.Contains(t, out, "- check-orders: investigates orders")
+	assert.NotContains(t, out, "should-not-appear", "lazy skill instruction must not be inlined")
+}
+
+func TestRender_NoSkills_PromptUnchanged(t *testing.T) {
+	r := tomlrenderer.NewRenderer()
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "kape-system"},
+		Spec: v1alpha1.KapeHandlerSpec{
+			Trigger:   v1alpha1.TriggerSpec{Source: "alertmanager", Type: "kape.events.test"},
+			LLM:       v1alpha1.LLMSpec{Provider: "anthropic", Model: "claude-3", SystemPrompt: "base prompt only"},
+			SchemaRef: "my-schema",
+		},
+	}
+	schema := &v1alpha1.KapeSchema{Spec: v1alpha1.KapeSchemaSpec{Version: "v1", JSONSchema: v1alpha1.JSONSchemaObject{Type: "object"}}}
+	out, err := r.Render(handler, schema, nil, nil, nil, domainconfig.KapeConfig{})
+	require.NoError(t, err)
+	assert.NotContains(t, out, "Available skills (call load_skill")
+	assert.NotContains(t, out, `---`)
+	assert.Contains(t, out, "base prompt only")
 }
