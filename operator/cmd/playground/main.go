@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo)
+	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo, mgr.GetEventRecorderFor("kapeschema-controller"))
 	if err := kapecontroller.SetupSchemaReconciler(mgr, schemaRec, 3); err != nil {
 		log.Error(err, "setting up KapeSchema controller")
 		os.Exit(1)

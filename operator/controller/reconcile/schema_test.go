@@ -2,6 +2,7 @@ package reconcile_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
@@ -21,6 +23,22 @@ func newSchemaScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
 	return s
+}
+
+func newFakeRecorder() *record.FakeRecorder {
+	return record.NewFakeRecorder(10)
+}
+
+func drainEvents(rec *record.FakeRecorder) []string {
+	var events []string
+	for {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
 }
 
 func validSchema() *v1alpha1.KapeSchema {
@@ -42,7 +60,7 @@ func validSchema() *v1alpha1.KapeSchema {
 func TestSchemaReconciler_ValidSchema_SetsReadyAndHash(t *testing.T) {
 	schema := validSchema()
 	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema).WithStatusSubresource(schema).Build()
-	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c))
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), newFakeRecorder())
 
 	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
 
@@ -69,7 +87,7 @@ func TestSchemaReconciler_InvalidSchema_SetsNotReady(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema).WithStatusSubresource(schema).Build()
-	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c))
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), newFakeRecorder())
 
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "bad-schema", Namespace: "kape-system"})
 
@@ -97,7 +115,7 @@ func TestSchemaReconciler_DeletionBlockedWhenHandlerReferences(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema, handler).WithStatusSubresource(schema).Build()
-	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c))
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), newFakeRecorder())
 
 	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
 
@@ -111,11 +129,57 @@ func TestSchemaReconciler_DeletionBlockedWhenHandlerReferences(t *testing.T) {
 func TestSchemaReconciler_FinalizerAddedOnCreate(t *testing.T) {
 	schema := validSchema()
 	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema).WithStatusSubresource(schema).Build()
-	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c))
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), newFakeRecorder())
 
 	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
 
 	require.NoError(t, err)
 	got, _ := k8sadapters.NewSchemaRepository(c).Get(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
 	assert.Contains(t, got.Finalizers, "kape.io/schema-protection")
+}
+
+func TestSchemaReconciler_ValidSchema_EmitsSchemaValidEvent(t *testing.T) {
+	schema := validSchema()
+	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema).WithStatusSubresource(schema).Build()
+	rec := newFakeRecorder()
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), rec)
+
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	events := drainEvents(rec)
+	assert.Contains(t, events, "Normal SchemaValid JSON Schema validated successfully")
+}
+
+func TestSchemaReconciler_DeletionBlockedEmitsDeletionBlockedEvent(t *testing.T) {
+	now := metav1.Now()
+	schema := validSchema()
+	schema.DeletionTimestamp = &now
+	schema.Finalizers = []string{"kape.io/schema-protection"}
+
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-handler",
+			Namespace: "kape-system",
+			Labels:    map[string]string{"kape.io/schema-ref": "my-schema"},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(newSchemaScheme()).WithObjects(schema, handler).WithStatusSubresource(schema).Build()
+	rec := newFakeRecorder()
+	r := reconcile.NewSchemaReconciler(k8sadapters.NewSchemaRepository(c), rec)
+
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "my-schema", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	events := drainEvents(rec)
+	// At least one event must be a Warning DeletionBlocked event
+	found := false
+	for _, e := range events {
+		if strings.HasPrefix(e, "Warning DeletionBlocked") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a Warning DeletionBlocked event, got: %v", events)
 }
