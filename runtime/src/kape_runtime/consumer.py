@@ -40,7 +40,7 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
 
 _llm_retry = tenacity.retry(
     retry=tenacity.retry_if_exception(_is_transient_llm_error),
-    wait=tenacity.wait_exponential(multiplier=2, min=1, max=10),
+    wait=tenacity.wait_exponential(multiplier=2, min=1, max=30),
     stop=tenacity.stop_after_attempt(5),
     reraise=True,
 )
