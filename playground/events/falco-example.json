@@ -1,0 +1,22 @@
+{
+  "specversion": "1.0",
+  "type": "falco.alert.firing",
+  "source": "kape-falco-adapter",
+  "id": "playground-002",
+  "time": "2026-05-03T10:01:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "output": "Sensitive file opened for reading by non-trusted program (user=root command=cat /etc/shadow)",
+    "priority": "Critical",
+    "rule": "Read sensitive file untrusted",
+    "time": "2026-05-03T10:01:00.000Z",
+    "output_fields": {
+      "container.id": "abc123def456",
+      "container.name": "suspicious-container",
+      "evt.type": "open",
+      "fd.name": "/etc/shadow",
+      "proc.cmdline": "cat /etc/shadow",
+      "user.name": "root"
+    }
+  }
+}

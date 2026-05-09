@@ -31,10 +31,20 @@ sbom/
 
 # Compiled binaries
 task-service/task-service
+
 # ignore binary build
 cmd
 !**/cmd/
 !**/cmd/**/*.go
 !**/cmd/**/TODO.md
+# ignore binary build — matches the compiled binary named "cmd" at repo root level
+/cmd
+operator/cmd/cmd
+
 examples/sre-alertmanager/src/mock-api/mock-api
 examples/sre-alertmanager/src/mock-webhook/mock-webhook
+
+# Playground
+kubeconfig.playground
+playground/.env
+playground/runtime/settings.toml

@@ -11,6 +11,10 @@ import nats
 from ulid import ULID
 
 from kape_runtime.config import KapeConfig, NatsConfig
+from kape_runtime.metrics import (
+    kape_events_total,
+    kape_llm_latency_seconds,
+)
 from kape_runtime.models import CloudEvent, TaskStatus
 from kape_runtime.task_service import TaskServiceClient
 
@@ -20,7 +24,12 @@ logger = logging.getLogger(__name__)
 class ConsumerLoop:
     """NATS JetStream pull consumer: one event at a time, explicit ACK-first strategy."""
 
-    def __init__(self, task_svc: TaskServiceClient, graph: Any, kape_cfg: KapeConfig) -> None:
+    def __init__(
+        self,
+        task_svc: TaskServiceClient,
+        graph: Any,
+        kape_cfg: KapeConfig,
+    ) -> None:
         self._task_svc = task_svc
         self._graph = graph
         self._kape_cfg = kape_cfg
@@ -70,6 +79,9 @@ class ConsumerLoop:
                     "raw": raw_bytes.decode("utf-8", errors="replace"),
                 },
             )
+            kape_events_total.labels(
+                handler=kape_cfg.handler_name, status="failed"
+            ).inc()
             return
 
         task = await self._task_svc.create(create_payload)
@@ -86,20 +98,21 @@ class ConsumerLoop:
 
         start_time = datetime.now(tz=timezone.utc)
         try:
-            state = await self._graph.ainvoke(
-                AgentState(
-                    event=raw_dict,
-                    task_id=task["id"],
-                    retry_task=None,
-                    messages=[],
-                    schema_output=None,
-                    parse_error=None,
-                    action_results=[],
-                    task_status=None,
-                    should_abort=False,
-                    dry_run=kape_cfg.dry_run,
+            with kape_llm_latency_seconds.labels(handler=kape_cfg.handler_name).time():
+                state = await self._graph.ainvoke(
+                    AgentState(
+                        event=raw_dict,
+                        task_id=task["id"],
+                        retry_task=None,
+                        messages=[],
+                        schema_output=None,
+                        parse_error=None,
+                        action_results=[],
+                        task_status=None,
+                        should_abort=False,
+                        dry_run=kape_cfg.dry_run,
+                    )
                 )
-            )
 
             duration_ms = int(
                 (datetime.now(tz=timezone.utc) - start_time).total_seconds() * 1000
@@ -111,8 +124,9 @@ class ConsumerLoop:
                 "completed_at": datetime.now(tz=timezone.utc).isoformat(),
                 "duration_ms": duration_ms,
             }
-            if state.get("schema_output") is not None:
-                update_kwargs["schema_output"] = state["schema_output"]
+            schema_output = state.get("schema_output")
+            if schema_output is not None:
+                update_kwargs["schema_output"] = schema_output
             if state.get("parse_error"):
                 update_kwargs["error"] = {
                     "type": "SchemaValidationFailed",
@@ -121,6 +135,13 @@ class ConsumerLoop:
                 }
 
             await self._task_svc.update_status(task["id"], **update_kwargs)
+
+            metric_status = (
+                "failed" if task_status == TaskStatus.Failed else "processed"
+            )
+            kape_events_total.labels(
+                handler=kape_cfg.handler_name, status=metric_status
+            ).inc()
 
         except Exception as exc:
             logger.exception("Unhandled error processing event %s", event.id)
@@ -138,6 +159,9 @@ class ConsumerLoop:
                     "traceback": traceback.format_exc(),
                 },
             )
+            kape_events_total.labels(
+                handler=kape_cfg.handler_name, status="failed"
+            ).inc()
 
     async def run(self, nats_cfg: NatsConfig) -> None:
         """Connect to NATS and run the pull consumer loop indefinitely."""

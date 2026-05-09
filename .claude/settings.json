@@ -9,7 +9,7 @@
       "Bash(rg *)",
       "Bash(fd *)",
       "Bash(tree *)",
-      "Bash(mkdir *)",
+      "Bash(mkdir -p *)",
       "Bash(cp *)",
       "Bash(cd .worktrees/*)",
       "Bash(sed *)",
@@ -28,8 +28,16 @@
       "Bash(git show *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(GOWORK=off go test *)",
+      "Bash(GOWORK=off go build *)",
+      "Bash(GOWORK=off go vet *)"
     ],
-    "deny": ["Bash(go install *)", "Bash(rm -rf /)"]
+    "deny": [
+      "Bash(go install *)",
+      "Bash(rm -rf /)",
+      "Bash(make migrate)",
+      "Bash(make -C task-service migrate)"
+    ]
   }
 }

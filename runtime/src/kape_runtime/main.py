@@ -11,6 +11,7 @@ import uvicorn
 from kape_runtime.config import build_llm, load_config
 from kape_runtime.consumer import ConsumerLoop
 from kape_runtime.graph.graph import build_graph
+from kape_runtime.graph.mcp import build_mcp_tools
 from kape_runtime.probe import build_probe_app
 from kape_runtime.task_service import TaskServiceClient
 from kape_runtime.tracing import setup_tracing
@@ -30,7 +31,10 @@ async def main() -> None:
     )
 
     llm = build_llm(config.llm)
-    compiled_graph = build_graph(llm, config.kape, config.llm, config.schema)
+    mcp_tools = await build_mcp_tools(config.proxy)
+    compiled_graph = build_graph(
+        llm, config.kape, config.llm, config.schema, mcp_tools=mcp_tools
+    )
 
     _ready = False
 

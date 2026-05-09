@@ -1,0 +1,99 @@
+name: kape-playground
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kape
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kape_dev}
+      POSTGRES_DB: kape
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kape"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.7
+    ports:
+      - "6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:6333/readyz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  stub-mcp:
+    build:
+      context: ..
+      dockerfile: playground/stub-mcp/Dockerfile
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8090/sse || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  task-service:
+    build:
+      context: ..
+      dockerfile: task-service/Dockerfile
+    environment:
+      DATABASE_URL: postgres://kape:${POSTGRES_PASSWORD:-kape_dev}@postgres:5432/kape?sslmode=disable
+      ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  runtime:
+    build:
+      context: ..
+      dockerfile: runtime/Dockerfile
+    environment:
+      KAPE_SETTINGS_FILE: /app/settings.toml
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - ./runtime/settings.toml:/app/settings.toml:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+      task-service:
+        condition: service_healthy
+      stub-mcp:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    environment:
+      TASK_SERVICE_URL: http://task-service:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      task-service:
+        condition: service_healthy
