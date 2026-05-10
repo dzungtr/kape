@@ -37,6 +37,14 @@ services:
       timeout: 3s
       retries: 5
 
+  kapeproxy:
+    build:
+      context: ../kapeproxy
+      dockerfile: ../kapeproxy/Dockerfile.stub
+    image: kape/kapeproxy:stub
+    profiles:
+      - build-only
+
   stub-mcp:
     build:
       context: ..
