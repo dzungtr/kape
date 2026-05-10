@@ -94,6 +94,7 @@ func main() {
 	renderer             := tomlrenderer.NewRenderer()
 
 	statefulSetAdapt := k8sadapters.NewStatefulSetAdapter(k8sClient)
+	podReader        := k8sadapters.NewPodReaderAdapter(k8sClient)
 
 	// KapeToolReconciler
 	toolRec := reconcilehandler.NewToolReconciler(toolRepo, statefulSetAdapt, cfgLoader)
@@ -138,6 +139,13 @@ func main() {
 	// Register controller
 	if err := kapecontroller.SetupHandlerReconciler(mgr, handlerRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeHandler controller")
+		os.Exit(1)
+	}
+
+	// KapeProxyReconciler
+	proxyRec := reconcilehandler.NewKapeProxyReconciler(podReader, handlerRepo)
+	if err := kapecontroller.SetupKapeProxyReconciler(mgr, proxyRec, cfg.MaxConcurrentReconciles); err != nil {
+		log.Error(err, "setting up KapeProxy controller")
 		os.Exit(1)
 	}
 
