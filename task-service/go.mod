@@ -1,8 +1,6 @@
 module github.com/kape-io/kape/task-service
 
-go 1.25.0
-
-toolchain go1.25.9
+go 1.25.10
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1

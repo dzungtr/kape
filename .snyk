@@ -1,0 +1,11 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+ignore:
+  CVE-2026-2454:
+    - '*':
+        reason: >
+          vmihailenco/msgpack v5.4.1 (indirect via go-pg/pg/v10 in task-service).
+          No upstream fix available as of 2026-05-10. Attack surface limited to
+          internal Postgres paths — not exposed to untrusted msgpack input.
+          Review when upstream releases a patch.
+        expires: '2026-08-10T00:00:00.000Z'
