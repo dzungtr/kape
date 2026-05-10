@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	"github.com/kape-io/kape/operator/infra/ports"
 )
@@ -74,17 +75,18 @@ func (d *resolvedDependencies) LazySkills() []v1alpha1.KapeSkill {
 
 // HandlerReconciler performs the full reconcile logic for KapeHandler.
 type HandlerReconciler struct {
-	handlers        ports.HandlerRepository
-	schemas         ports.SchemaRepository
-	tools           ports.ToolRepository
-	skills          ports.SkillRepository
-	configMaps      ports.ConfigMapPort
-	skillConfigMaps ports.SkillConfigMapPort
-	serviceAccounts ports.ServiceAccountPort
-	deployments     ports.DeploymentPort
-	scaledObjects   ports.ScaledObjectPort
-	tomlRenderer    ports.TOMLRenderer
-	kapeConfig      ports.KapeConfigLoader
+	handlers         ports.HandlerRepository
+	schemas          ports.SchemaRepository
+	tools            ports.ToolRepository
+	skills           ports.SkillRepository
+	configMaps       ports.ConfigMapPort
+	kapeproxyConfigs ports.KapeproxyConfigPort
+	skillConfigMaps  ports.SkillConfigMapPort
+	serviceAccounts  ports.ServiceAccountPort
+	deployments      ports.DeploymentPort
+	scaledObjects    ports.ScaledObjectPort
+	tomlRenderer     ports.TOMLRenderer
+	kapeConfig       ports.KapeConfigLoader
 }
 
 func handlerDeploymentName(handler *v1alpha1.KapeHandler) string {
@@ -102,6 +104,7 @@ func NewHandlerReconciler(
 	tools ports.ToolRepository,
 	skills ports.SkillRepository,
 	configMaps ports.ConfigMapPort,
+	kapeproxyConfigs ports.KapeproxyConfigPort,
 	skillConfigMaps ports.SkillConfigMapPort,
 	serviceAccounts ports.ServiceAccountPort,
 	deployments ports.DeploymentPort,
@@ -110,17 +113,18 @@ func NewHandlerReconciler(
 	kapeConfig ports.KapeConfigLoader,
 ) *HandlerReconciler {
 	return &HandlerReconciler{
-		handlers:        handlers,
-		schemas:         schemas,
-		tools:           tools,
-		skills:          skills,
-		configMaps:      configMaps,
-		skillConfigMaps: skillConfigMaps,
-		serviceAccounts: serviceAccounts,
-		deployments:     deployments,
-		scaledObjects:   scaledObjects,
-		tomlRenderer:    tomlRenderer,
-		kapeConfig:      kapeConfig,
+		handlers:         handlers,
+		schemas:          schemas,
+		tools:            tools,
+		skills:           skills,
+		configMaps:       configMaps,
+		kapeproxyConfigs: kapeproxyConfigs,
+		skillConfigMaps:  skillConfigMaps,
+		serviceAccounts:  serviceAccounts,
+		deployments:      deployments,
+		scaledObjects:    scaledObjects,
+		tomlRenderer:     tomlRenderer,
+		kapeConfig:       kapeConfig,
 	}
 }
 
@@ -190,18 +194,20 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 		return ctrl.Result{}, nil // terminal
 	}
 
-	// 4. Compute hashes
-	rolloutHash, err := computeRolloutHash(handler, deps)
+	// 4. Load config
+	cfg, err := r.kapeConfig.Load(ctx)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("loading kape-config: %w", err)
+	}
+
+	// 5. Compute rollout hash (requires cfg for kapeproxy image fields)
+	rolloutHash, err := computeRolloutHash(handler, deps, cfg)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("computing rollout hash: %w", err)
 	}
 	consumerName := strings.ReplaceAll(handler.Spec.Trigger.Type, ".", "-")
 
-	// 5. Load config and render settings.toml
-	cfg, err := r.kapeConfig.Load(ctx)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("loading kape-config: %w", err)
-	}
+	// 5a. Render and ensure settings.toml ConfigMap
 	eagerSkills := deps.EagerSkills()
 	lazySkills := deps.LazySkills()
 	tomlContent, err := r.tomlRenderer.Render(handler, deps.Schema, deps.Tools, eagerSkills, lazySkills, cfg)
@@ -212,6 +218,18 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
 		return ctrl.Result{}, fmt.Errorf("ensuring ConfigMap: %w", err)
 	}
 	log.V(1).Info("ConfigMap reconciled")
+
+	// 5b. Render and ensure kapeproxy-config ConfigMap (mcp-type tools only).
+	var mcpTools []v1alpha1.KapeTool
+	for _, t := range deps.Tools {
+		if t.Spec.Type == "mcp" {
+			mcpTools = append(mcpTools, t)
+		}
+	}
+	if err := r.kapeproxyConfigs.Ensure(ctx, handler, mcpTools); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring kapeproxy-config ConfigMap: %w", err)
+	}
+	log.V(1).Info("kapeproxy-config ConfigMap reconciled")
 
 	// 6. Reconcile lazy-skills ConfigMap (create when lazy skills exist, delete otherwise)
 	lazySkillsPresent := len(lazySkills) > 0
@@ -425,11 +443,13 @@ func (r *HandlerReconciler) validateDependencies(ctx context.Context, handler *v
 //  2. schema.Spec
 //  3. for each tool in deps.Tools (sorted by Name): tool.Spec
 //  4. for each skill in deps.Skills (declaration order): skill.Spec
+//  5. cfg.KapeproxyImage + cfg.KapeproxyImageVersion
 //
 // Skills are NOT sorted (D13): reordering handler.spec.skills[] changes the
 // system prompt assembly order, so the hash must reflect order, not just
 // set membership.
-func computeRolloutHash(handler *v1alpha1.KapeHandler, deps *resolvedDependencies) (string, error) {
+// kapeproxy image fields are included so kape-config changes trigger rollouts.
+func computeRolloutHash(handler *v1alpha1.KapeHandler, deps *resolvedDependencies, cfg domainconfig.KapeConfig) (string, error) {
 	h := sha256.New()
 	for _, item := range []interface{}{handler.Spec, deps.Schema.Spec} {
 		b, err := json.Marshal(item)
@@ -452,6 +472,8 @@ func computeRolloutHash(handler *v1alpha1.KapeHandler, deps *resolvedDependencie
 		}
 		h.Write(b)
 	}
+	h.Write([]byte(cfg.KapeproxyImage))
+	h.Write([]byte(cfg.KapeproxyImageVersion))
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 

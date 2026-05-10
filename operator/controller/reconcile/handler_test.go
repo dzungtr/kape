@@ -38,6 +38,7 @@ func newReconciler(c client.Client) *reconcile.HandlerReconciler {
 		k8sadapters.NewToolRepository(c),
 		k8sadapters.NewSkillRepository(c),
 		k8sadapters.NewConfigMapAdapter(c),
+		k8sadapters.NewKapeproxyConfigAdapter(c),
 		k8sadapters.NewSkillConfigMapAdapter(c),
 		k8sadapters.NewServiceAccountAdapter(c),
 		k8sadapters.NewDeploymentAdapter(c),
