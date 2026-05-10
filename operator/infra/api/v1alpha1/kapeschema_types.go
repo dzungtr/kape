@@ -27,6 +27,8 @@ type JSONSchemaObject struct {
 
 // KapeSchemaSpec defines the desired state of KapeSchema.
 // +kubebuilder:validation:XValidation:rule="self.version.matches('^v[0-9]+$')",message="spec.version must match pattern v[0-9]+ (e.g. v1, v2, v10)"
+// +kubebuilder:validation:XValidation:rule="size(self.jsonSchema.required) > 0",message="spec.jsonSchema.required must contain at least one field name"
+// +kubebuilder:validation:XValidation:rule="has(self.jsonSchema.additionalProperties) && self.jsonSchema.additionalProperties == false",message="spec.jsonSchema.additionalProperties must be set to false"
 type KapeSchemaSpec struct {
 	// version is the schema version identifier (e.g. v1, v2).
 	// +kubebuilder:validation:MinLength=1
