@@ -68,7 +68,7 @@ func (c KapeConfig) KapeproxyImageRef() string {
 	}
 	ver := c.KapeproxyImageVersion
 	if ver == "" {
-		ver = "stub"
+		ver = "0.7.0"
 	}
 	return fmt.Sprintf("%s:%s", img, ver)
 }
