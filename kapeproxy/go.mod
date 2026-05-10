@@ -3,6 +3,7 @@ module github.com/kape-io/kape/kapeproxy
 go 1.25.9
 
 require (
+	github.com/PaesslerAG/jsonpath v0.1.1
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/rs/zerolog v1.35.1
 	go.opentelemetry.io/otel v1.43.0
@@ -10,6 +11,7 @@ require (
 )
 
 require (
+	github.com/PaesslerAG/gval v1.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
