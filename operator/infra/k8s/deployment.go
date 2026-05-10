@@ -36,10 +36,11 @@ func (a *DeploymentAdapter) Ensure(
 	cfg domainconfig.KapeConfig,
 	rolloutHash string,
 	tools []v1alpha1.KapeTool,
+	lazySkillsPresent bool,
 ) error {
 	name := deploymentName(handler.Name)
 	key := types.NamespacedName{Name: name, Namespace: handler.Namespace}
-	desired := buildDeployment(handler, cfg, rolloutHash, tools)
+	desired := buildDeployment(handler, cfg, rolloutHash, tools, lazySkillsPresent)
 
 	var existing appsv1.Deployment
 	err := a.client.Get(ctx, key, &existing)
@@ -68,7 +69,7 @@ func (a *DeploymentAdapter) GetStatus(ctx context.Context, key types.NamespacedN
 	return &dep.Status, true, nil
 }
 
-func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig, rolloutHash string, tools []v1alpha1.KapeTool) appsv1.Deployment {
+func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig, rolloutHash string, tools []v1alpha1.KapeTool, lazySkillsPresent bool) appsv1.Deployment {
 	cfg = cfg.WithDefaults()
 	name := deploymentName(handler.Name)
 	saName := serviceAccountName(handler.Name)
@@ -86,16 +87,42 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	}
 	envVars = append(envVars, handler.Spec.Envs...)
 
-	handlerContainer := corev1.Container{
-		Name:      "handler",
-		Image:     cfg.HandlerImageRef(),
-		Env:       envVars,
-		Resources: resolveHandlerResources(handler.Spec.Resources),
-		VolumeMounts: []corev1.VolumeMount{{
-			Name:      "settings",
-			MountPath: "/etc/kape",
+	handlerVolumeMounts := []corev1.VolumeMount{{
+		Name:      "settings",
+		MountPath: "/etc/kape",
+		ReadOnly:  true,
+	}}
+	volumes := []corev1.Volume{{
+		Name: "settings",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+			},
+		},
+	}}
+
+	if lazySkillsPresent {
+		handlerVolumeMounts = append(handlerVolumeMounts, corev1.VolumeMount{
+			Name:      "kape-skills",
+			MountPath: "/etc/kape/skills",
 			ReadOnly:  true,
-		}},
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "kape-skills",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: SkillConfigMapName(handler.Name)},
+				},
+			},
+		})
+	}
+
+	handlerContainer := corev1.Container{
+		Name:         "handler",
+		Image:        cfg.HandlerImageRef(),
+		Env:          envVars,
+		Resources:    resolveHandlerResources(handler.Spec.Resources),
+		VolumeMounts: handlerVolumeMounts,
 	}
 
 	containers := append([]corev1.Container{handlerContainer}, buildSidecars(handler, tools, cfg)...)
@@ -128,14 +155,7 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 					ServiceAccountName:           saName,
 					AutomountServiceAccountToken: &noAutoMount,
 					Containers:                   containers,
-					Volumes: []corev1.Volume{{
-						Name: "settings",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
-							},
-						},
-					}},
+					Volumes:                      volumes,
 				},
 			},
 		},
