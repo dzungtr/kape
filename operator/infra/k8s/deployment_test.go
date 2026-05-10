@@ -43,7 +43,7 @@ func TestDeploymentAdapter_InjectsSidecarForMCPTool(t *testing.T) {
 	adapter := k8sadapters.NewDeploymentAdapter(c)
 	cfg := domainconfig.KapeConfig{}
 
-	err := adapter.Ensure(context.Background(), handler, cfg, "hash-abc", tools)
+	err := adapter.Ensure(context.Background(), handler, cfg, "hash-abc", tools, false)
 	require.NoError(t, err)
 
 	var dep appsv1.Deployment
@@ -75,7 +75,7 @@ func TestDeploymentAdapter_HandlerResources_DefaultsWhenSpecUnset(t *testing.T) 
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	adapter := k8sadapters.NewDeploymentAdapter(c)
 
-	require.NoError(t, adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h-1", nil))
+	require.NoError(t, adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h-1", nil, false))
 
 	var dep appsv1.Deployment
 	require.NoError(t, c.Get(context.Background(),
@@ -106,7 +106,7 @@ func TestDeploymentAdapter_HandlerResources_OverrideFromSpec(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	adapter := k8sadapters.NewDeploymentAdapter(c)
 
-	require.NoError(t, adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h-1", nil))
+	require.NoError(t, adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h-1", nil, false))
 
 	var dep appsv1.Deployment
 	require.NoError(t, c.Get(context.Background(),
@@ -134,7 +134,7 @@ func TestDeploymentAdapter_NoSidecarForMemoryTool(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	adapter := k8sadapters.NewDeploymentAdapter(c)
 
-	err := adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "hash-123", tools)
+	err := adapter.Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "hash-123", tools, false)
 	require.NoError(t, err)
 
 	var dep appsv1.Deployment

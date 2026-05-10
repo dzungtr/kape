@@ -86,7 +86,9 @@ func main() {
 	handlerRepo := k8sadapters.NewHandlerRepository(k8sClient)
 	schemaRepo := k8sadapters.NewSchemaRepository(k8sClient)
 	toolRepo := k8sadapters.NewToolRepository(k8sClient)
+	skillRepo := k8sadapters.NewSkillRepository(k8sClient)
 	configMapAdapt := k8sadapters.NewConfigMapAdapter(k8sClient)
+	skillConfigMapAdapt := k8sadapters.NewSkillConfigMapAdapter(k8sClient)
 	saAdapt := k8sadapters.NewServiceAccountAdapter(k8sClient)
 	deployAdapt := k8sadapters.NewDeploymentAdapter(k8sClient)
 	scaledObjAdapt := k8sadapters.NewScaledObjectAdapter(k8sClient)
@@ -106,8 +108,9 @@ func main() {
 	}
 
 	handlerRec := reconcilehandler.NewHandlerReconciler(
-		handlerRepo, schemaRepo, toolRepo,
-		configMapAdapt, saAdapt, deployAdapt, scaledObjAdapt,
+		handlerRepo, schemaRepo, toolRepo, skillRepo,
+		configMapAdapt, skillConfigMapAdapt,
+		saAdapt, deployAdapt, scaledObjAdapt,
 		renderer, cfgLoader,
 	)
 	if err := kapecontroller.SetupHandlerReconciler(mgr, handlerRec, 3); err != nil {

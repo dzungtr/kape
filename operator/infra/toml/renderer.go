@@ -8,6 +8,7 @@ import (
 
 	gotoml "github.com/pelletier/go-toml/v2"
 
+	reconcile "github.com/kape-io/kape/operator/controller/reconcile"
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 )
@@ -19,11 +20,16 @@ type Renderer struct{}
 func NewRenderer() *Renderer { return &Renderer{} }
 
 // Render serialises a KapeHandler, its resolved KapeSchema, resolved KapeTools,
-// and platform config into a settings.toml string.
+// eager + lazy skill slices, and platform config into a settings.toml string.
+//
+// The full system_prompt is assembled per spec 0013 §3.2 by calling
+// reconcile.AssembleSystemPrompt.
 func (r *Renderer) Render(
 	handler *v1alpha1.KapeHandler,
 	schema *v1alpha1.KapeSchema,
 	tools []v1alpha1.KapeTool,
+	eagerSkills []v1alpha1.KapeSkill,
+	lazySkills []v1alpha1.KapeSkill,
 	cfg domainconfig.KapeConfig,
 ) (string, error) {
 	cfg = cfg.WithDefaults()
@@ -52,6 +58,8 @@ func (r *Renderer) Render(
 		return "", fmt.Errorf("building schema section: %w", err)
 	}
 
+	systemPrompt := reconcile.AssembleSystemPrompt(handler, eagerSkills, lazySkills)
+
 	s := settingsTOML{
 		Kape: kapeTOML{
 			HandlerName:        handler.Name,
@@ -66,7 +74,7 @@ func (r *Renderer) Render(
 		LLM: llmTOML{
 			Provider:     handler.Spec.LLM.Provider,
 			Model:        handler.Spec.LLM.Model,
-			SystemPrompt: handler.Spec.LLM.SystemPrompt,
+			SystemPrompt: systemPrompt,
 		},
 		NATS: natsTOML{
 			Subject:  handler.Spec.Trigger.Type,
