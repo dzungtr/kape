@@ -39,6 +39,8 @@ func (l *KapeConfigLoader) Load(ctx context.Context) (domainconfig.KapeConfig, e
 		HandlerImageVersion:    cm.Data["kapehandler.version"],
 		KapetoolImage:          cm.Data["kapetool.image"],
 		KapetoolImageVersion:   cm.Data["kapetool.version"],
+		KapeproxyImage:         cm.Data["kapeproxy.image"],
+		KapeproxyImageVersion:  cm.Data["kapeproxy.version"],
 		NATSMonitoringEndpoint: cm.Data["nats.monitoringEndpoint"],
 		NATSStreamName:         cm.Data["nats.streamName"],
 		ClusterName:            cm.Data["cluster.name"],
