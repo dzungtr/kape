@@ -40,8 +40,8 @@ services:
   kapeproxy:
     build:
       context: ../kapeproxy
-      dockerfile: ../kapeproxy/Dockerfile.stub
-    image: kape/kapeproxy:stub
+      dockerfile: ../kapeproxy/Dockerfile
+    image: kape/kapeproxy:0.7.0
     profiles:
       - build-only
 
