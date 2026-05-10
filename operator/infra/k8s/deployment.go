@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -29,7 +28,7 @@ func NewDeploymentAdapter(c client.Client) *DeploymentAdapter {
 
 func deploymentName(handlerName string) string { return "kape-handler-" + handlerName }
 
-// Ensure creates or patches the handler Deployment with sidecar injection for mcp-type tools.
+// Ensure creates or patches the handler Deployment with a single kapeproxy sidecar.
 func (a *DeploymentAdapter) Ensure(
 	ctx context.Context,
 	handler *v1alpha1.KapeHandler,
@@ -74,7 +73,16 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	name := deploymentName(handler.Name)
 	saName := serviceAccountName(handler.Name)
 	cmName := configMapName(handler.Name)
+	kapeproxyCMName := kapeproxyConfigMapName(handler.Name)
 	noAutoMount := false
+
+	hasMCPTools := false
+	for _, t := range tools {
+		if t.Spec.Type == "mcp" {
+			hasMCPTools = true
+			break
+		}
+	}
 
 	var replicas int32 = 1
 	if handler.Spec.Scaling != nil && handler.Spec.Scaling.MinReplicas > 0 {
@@ -125,7 +133,19 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		VolumeMounts: handlerVolumeMounts,
 	}
 
-	containers := append([]corev1.Container{handlerContainer}, buildSidecars(handler, tools, cfg)...)
+	containers := []corev1.Container{handlerContainer}
+
+	if hasMCPTools {
+		volumes = append(volumes, corev1.Volume{
+			Name: "kapeproxy-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: kapeproxyCMName},
+				},
+			},
+		})
+		containers = append(containers, buildKapeproxySidecar(cfg))
+	}
 
 	dep := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -164,6 +184,33 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	return dep
 }
 
+func buildKapeproxySidecar(cfg domainconfig.KapeConfig) corev1.Container {
+	return corev1.Container{
+		Name:  "kapeproxy",
+		Image: cfg.KapeproxyImageRef(),
+		Ports: []corev1.ContainerPort{{
+			Name:          "mcp",
+			ContainerPort: 8080,
+			Protocol:      corev1.ProtocolTCP,
+		}},
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      "kapeproxy-config",
+			MountPath: "/etc/kapeproxy",
+			ReadOnly:  true,
+		}},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+	}
+}
+
 func resolveHandlerResources(override *corev1.ResourceRequirements) corev1.ResourceRequirements {
 	if override != nil {
 		return *override
@@ -178,67 +225,4 @@ func resolveHandlerResources(override *corev1.ResourceRequirements) corev1.Resou
 			corev1.ResourceMemory: resource.MustParse("512Mi"),
 		},
 	}
-}
-
-func buildSidecars(handler *v1alpha1.KapeHandler, tools []v1alpha1.KapeTool, cfg domainconfig.KapeConfig) []corev1.Container {
-	toolMap := make(map[string]v1alpha1.KapeTool, len(tools))
-	for _, t := range tools {
-		toolMap[t.Name] = t
-	}
-
-	var sidecars []corev1.Container
-	sidecarPort := int32(8080)
-	taskServiceEndpoint := fmt.Sprintf("http://kape-task-service.%s:8080", handler.Namespace)
-
-	for _, ref := range handler.Spec.Tools {
-		t, ok := toolMap[ref.Ref]
-		if !ok || t.Spec.Type != "mcp" {
-			continue
-		}
-		mcp := t.Spec.MCP
-
-		auditEnabled := "true"
-		if mcp.Audit != nil && mcp.Audit.Enabled != nil && !*mcp.Audit.Enabled {
-			auditEnabled = "false"
-		}
-
-		allowedToolsJSON := "[]"
-		if len(mcp.AllowedTools) > 0 {
-			if b, err := json.Marshal(mcp.AllowedTools); err == nil {
-				allowedToolsJSON = string(b)
-			}
-		}
-
-		redactionInput, redactionOutput := "[]", "[]"
-		if mcp.Redaction != nil {
-			if b, err := json.Marshal(mcp.Redaction.Input); err == nil {
-				redactionInput = string(b)
-			}
-			if b, err := json.Marshal(mcp.Redaction.Output); err == nil {
-				redactionOutput = string(b)
-			}
-		}
-
-		sidecars = append(sidecars, corev1.Container{
-			Name:  "kapetool-" + ref.Ref,
-			Image: cfg.KapetoolImageRef(),
-			Ports: []corev1.ContainerPort{{
-				Name:          "mcp",
-				ContainerPort: sidecarPort,
-				Protocol:      corev1.ProtocolTCP,
-			}},
-			Env: []corev1.EnvVar{
-				{Name: "KAPETOOL_UPSTREAM_URL", Value: mcp.Upstream.URL},
-				{Name: "KAPETOOL_UPSTREAM_TRANSPORT", Value: mcp.Upstream.Transport},
-				{Name: "KAPETOOL_ALLOWED_TOOLS", Value: allowedToolsJSON},
-				{Name: "KAPETOOL_REDACTION_INPUT", Value: redactionInput},
-				{Name: "KAPETOOL_REDACTION_OUTPUT", Value: redactionOutput},
-				{Name: "KAPETOOL_AUDIT_ENABLED", Value: auditEnabled},
-				{Name: "KAPETOOL_TASK_SERVICE_ENDPOINT", Value: taskServiceEndpoint},
-				{Name: "KAPETOOL_LISTEN_PORT", Value: fmt.Sprintf("%d", sidecarPort)},
-			},
-		})
-		sidecarPort++
-	}
-	return sidecars
 }

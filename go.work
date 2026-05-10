@@ -4,6 +4,7 @@ toolchain go1.25.10
 
 use (
 	./adapters
+	./kapeproxy
 	./operator
 	./task-service
 )

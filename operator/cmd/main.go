@@ -81,16 +81,17 @@ func main() {
 	k8sClient := mgr.GetClient()
 
 	// Adapters
-	handlerRepo     := k8sadapters.NewHandlerRepository(k8sClient)
-	schemaRepo      := k8sadapters.NewSchemaRepository(k8sClient)
-	toolRepo        := k8sadapters.NewToolRepository(k8sClient)
-	skillRepo       := k8sadapters.NewSkillRepository(k8sClient)
-	configMapAdapt  := k8sadapters.NewConfigMapAdapter(k8sClient)
-	saAdapt         := k8sadapters.NewServiceAccountAdapter(k8sClient)
-	deployAdapt     := k8sadapters.NewDeploymentAdapter(k8sClient)
-	scaledObjAdapt  := k8sadapters.NewScaledObjectAdapter(k8sClient)
-	cfgLoader       := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
-	renderer        := tomlrenderer.NewRenderer()
+	handlerRepo          := k8sadapters.NewHandlerRepository(k8sClient)
+	schemaRepo           := k8sadapters.NewSchemaRepository(k8sClient)
+	toolRepo             := k8sadapters.NewToolRepository(k8sClient)
+	skillRepo            := k8sadapters.NewSkillRepository(k8sClient)
+	configMapAdapt       := k8sadapters.NewConfigMapAdapter(k8sClient)
+	kapeproxyConfigAdapt := k8sadapters.NewKapeproxyConfigAdapter(k8sClient)
+	saAdapt              := k8sadapters.NewServiceAccountAdapter(k8sClient)
+	deployAdapt          := k8sadapters.NewDeploymentAdapter(k8sClient)
+	scaledObjAdapt       := k8sadapters.NewScaledObjectAdapter(k8sClient)
+	cfgLoader            := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
+	renderer             := tomlrenderer.NewRenderer()
 
 	statefulSetAdapt := k8sadapters.NewStatefulSetAdapter(k8sClient)
 
@@ -125,6 +126,7 @@ func main() {
 		toolRepo,
 		skillRepo,
 		configMapAdapt,
+		kapeproxyConfigAdapt,
 		skillConfigMapAdapt,
 		saAdapt,
 		deployAdapt,

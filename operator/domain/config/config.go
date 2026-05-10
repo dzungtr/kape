@@ -12,9 +12,13 @@ type KapeConfig struct {
 	HandlerImage        string
 	HandlerImageVersion string
 
-	// kapetool sidecar image
+	// kapetool sidecar image (retained for backward compat; not injected after slice 5)
 	KapetoolImage        string
 	KapetoolImageVersion string
+
+	// kapeproxy sidecar image
+	KapeproxyImage        string
+	KapeproxyImageVersion string
 
 	// NATS monitoring endpoint for KEDA ScaledObject
 	NATSMonitoringEndpoint string
@@ -56,6 +60,19 @@ func (c KapeConfig) KapetoolImageRef() string {
 	return fmt.Sprintf("%s:%s", img, ver)
 }
 
+// KapeproxyImageRef returns the full image reference for the kapeproxy sidecar.
+func (c KapeConfig) KapeproxyImageRef() string {
+	img := c.KapeproxyImage
+	if img == "" {
+		img = "kape/kapeproxy"
+	}
+	ver := c.KapeproxyImageVersion
+	if ver == "" {
+		ver = "stub"
+	}
+	return fmt.Sprintf("%s:%s", img, ver)
+}
+
 // WithDefaults returns a copy of KapeConfig with default values applied where fields are zero.
 func (c KapeConfig) WithDefaults() KapeConfig {
 	if c.ClusterName == "" {
@@ -72,6 +89,12 @@ func (c KapeConfig) WithDefaults() KapeConfig {
 	}
 	if c.KapetoolImageVersion == "" {
 		c.KapetoolImageVersion = "latest"
+	}
+	if c.KapeproxyImage == "" {
+		c.KapeproxyImage = "kape/kapeproxy"
+	}
+	if c.KapeproxyImageVersion == "" {
+		c.KapeproxyImageVersion = "stub"
 	}
 	if c.NATSMonitoringEndpoint == "" {
 		c.NATSMonitoringEndpoint = "http://nats.kape-system:8222"
