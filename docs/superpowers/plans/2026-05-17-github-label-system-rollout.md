@@ -4,7 +4,7 @@
 
 **Goal:** Roll out the 39-label taxonomy and its supporting automation as defined in `docs/superpowers/specs/2026-05-16-github-label-system-design.md`, so that every open issue carries machine-readable signals that `/standup`, planning, triage, and the state validator can consume without re-reading issue bodies.
 
-**Architecture:** Labels are managed by a declarative YAML manifest synced to GitHub by an idempotent bash script. Automation lands as three GitHub Actions workflows (label-sync, PR auto-labeler, state validator + weekly audit) plus a `/standup` config update. The roadmap migration script is updated to apply the new labels on new and existing roadmap issues. A one-shot backfill script labels remaining open issues. Each task is self-contained and dispatchable to a fresh subagent.
+**Architecture:** Labels are managed by a declarative YAML manifest synced to GitHub by an idempotent bash script. Automation lands as two GitHub Actions workflows (label-sync, state validator + weekly audit), a Claude skill for on-demand PR/issue labeling, and a `/standup` config update. The roadmap migration script is updated to apply the new labels on new and existing roadmap issues. A one-shot backfill script labels remaining open issues. Each task is self-contained and dispatchable to a fresh subagent.
 
 **Tech Stack:** bash 5+, `yq` (for YAML manipulation), `jq`, `gh` CLI, GitHub Actions (`actions/labeler@v5`), `bats-core` (for shell tests).
 
@@ -39,8 +39,7 @@ GHA workflows that run bats (none in this plan today, but a follow-up may add on
 | `tools/sync-labels.sh`                     | create  | Idempotent create/update/delete against the manifest  |
 | `tests/tools/sync-labels.bats`             | create  | bats tests for the sync script                        |
 | `.github/workflows/sync-labels.yml`        | create  | GHA: re-runs sync on manifest change                  |
-| `.github/labeler.yml`                      | create  | Path-glob → label mapping for PRs                     |
-| `.github/workflows/pr-labeler.yml`         | create  | GHA: applies labels on PR open/sync                   |
+| `.claude/skills/apply-labels/SKILL.md`     | create  | Claude skill: apply taxonomy to a PR or issue on demand |
 | `.claude/standup.json`                     | modify  | Add `urgent` and `blocked` datasources                |
 | `tools/validate-issue-labels.sh`           | create  | State-validator script (one issue per invocation)     |
 | `tests/tools/validate-issue-labels.bats`   | create  | bats tests for the validator                          |
@@ -55,7 +54,7 @@ GHA workflows that run bats (none in this plan today, but a follow-up may add on
 
 ```
 T1 (manifest) → T2 (sync script) → T3 (sync GHA) → T4 (initial sync)
-                                                       ├→ T5  (PR auto-labeler)
+                                                       ├→ T5  (apply-labels skill)
                                                        ├→ T6  (standup datasources)
                                                        ├→ T7  (validator script) → T8 (validator GHA)
                                                        ├→ T9  (migrate script update)
@@ -541,132 +540,191 @@ Add a comment to the rollout PR: `Initial label sync complete: <N created>, <N u
 
 ---
 
-## Task 5: PR auto-labeler
+## Task 5: `apply-labels` Claude skill
 
 **Files:**
-- Create: `.github/labeler.yml`
-- Create: `.github/workflows/pr-labeler.yml`
+- Create: `.claude/skills/apply-labels/SKILL.md`
 
-- [ ] **Step 1: Write labeler config**
+**Why a skill instead of a GHA labeler:**
+A GitHub-Actions auto-labeler can only do path-glob matching. The label taxonomy in this repo is agent-native: derivation rules are documented in `docs/agent-rituals.md` and benefit from Claude's ability to read body text, resolve ambiguity when a PR spans two areas, and reason about category vs `area/*` together. The skill is invoked on demand (e.g., during PR triage or before merge), and the human is in the loop because Claude is in the session. No `pull_request_target` security surface, no extra workflow to maintain.
 
-```yaml
-# .github/labeler.yml
-# Path-glob → label map for actions/labeler@v5.
-# Only sets labels that can be inferred unambiguously from changed paths.
-# Issue labels (commitment, signals, needs/*) are NOT set here.
+- [ ] **Step 1: Write the skill**
 
-area/operator:
-  - changed-files:
-    - any-glob-to-any-file: ['operator/**']
+```markdown
+---
+name: apply-labels
+description: Apply the kape-io label taxonomy (defined in docs/superpowers/specs/2026-05-16-github-label-system-design.md, consumed per docs/agent-rituals.md) to a GitHub issue or PR. Use when the user asks to label an issue/PR, when a new issue or PR lacks the required dimensions (area/*, category, commitment for issues), or as part of a triage pass. Reads context, derives labels deterministically where possible, and asks the user before applying ambiguous labels. Never sets commitment, urgent, or blocked without an observable trigger and human confirmation.
+---
 
-area/task-service:
-  - changed-files:
-    - any-glob-to-any-file: ['task-service/**']
+# Apply labels skill
 
-area/adapters:
-  - changed-files:
-    - any-glob-to-any-file: ['adapters/**']
+Apply the kape-io label taxonomy to a GitHub issue or PR. The full rule
+set lives in `docs/agent-rituals.md`; this skill is the operational
+recipe for executing it on one target at a time.
 
-area/kapeproxy:
-  - changed-files:
-    - any-glob-to-any-file: ['kapeproxy/**']
+## Inputs
 
-area/runtime:
-  - changed-files:
-    - any-glob-to-any-file: ['runtime/**']
+One of:
+- A PR number (e.g., "label PR 96") — fetch via `gh pr view <n>`
+- An issue number (e.g., "label issue 84") — fetch via `gh issue view <n>`
+- No argument — default to the current branch's PR via `gh pr view --json number,title,body,labels,files`
 
-area/dashboard:
-  - changed-files:
-    - any-glob-to-any-file: ['dashboard/**']
+If the user gives a bare number, infer PR vs issue by trying `gh pr view <n>` first; fall back to `gh issue view <n>` if it 404s.
 
-area/helm:
-  - changed-files:
-    - any-glob-to-any-file: ['helm/**']
+## What to fetch
 
-area/crds:
-  - changed-files:
-    - any-glob-to-any-file: ['crds/**']
-
-area/docs:
-  - changed-files:
-    - any-glob-to-any-file:
-      - 'docs/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - '!docs/superpowers/specs/**'  # spec docs get category=spec instead
-
-area/ci:
-  - changed-files:
-    - any-glob-to-any-file:
-      - '.github/**'
-      - 'tools/**'
-
-# --- Category labels (declarative paths only — humans set the rest) ---
-
-docs:
-  - changed-files:
-    - all-globs-to-all-files:
-      - 'docs/**'
-      - '!docs/superpowers/specs/**'
-      - '!**/*.go'
-      - '!**/*.py'
-      - '!**/*.ts'
-
-test:
-  - changed-files:
-    - all-globs-to-all-files:
-      - any-glob-to-any-file:
-        - '**/*_test.go'
-        - '**/test_*.py'
-        - '**/*.test.ts'
-        - 'tests/**'
-
-spec:
-  - changed-files:
-    - any-glob-to-any-file: ['docs/superpowers/specs/**']
+For a PR:
+```
+gh pr view <n> --json number,title,body,labels,files,headRefName
 ```
 
-- [ ] **Step 2: Write the workflow**
-
-```yaml
-# .github/workflows/pr-labeler.yml
-name: PR auto-label
-
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  contents: read
-  pull-requests: write
-
-jobs:
-  label:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/labeler@v5
-        with:
-          configuration-path: .github/labeler.yml
-          sync-labels: true
+For an issue:
+```
+gh issue view <n> --json number,title,body,labels,milestone,assignees
 ```
 
-- [ ] **Step 3: Validate workflow + config syntax**
+## Derivation rules
+
+### Always-safe (apply without asking)
+
+These have observable triggers. Apply directly and report.
+
+**`area/*` from PR changed files** — apply when one area accounts for ≥80% of changed paths.
+
+| If changed files match           | Set                |
+|----------------------------------|--------------------|
+| `operator/**`                    | `area/operator`    |
+| `task-service/**`                | `area/task-service`|
+| `adapters/**`                    | `area/adapters`    |
+| `kapeproxy/**`                   | `area/kapeproxy`   |
+| `runtime/**`                     | `area/runtime`     |
+| `dashboard/**`                   | `area/dashboard`   |
+| `helm/**`                        | `area/helm`        |
+| `crds/**`                        | `area/crds`        |
+| `docs/**` (excluding `docs/superpowers/specs/**`), `README.md`, `CONTRIBUTING.md` | `area/docs` |
+| `.github/**`, `tools/**`         | `area/ci`          |
+
+**`area/*` from issue title** — apply when exactly one keyword bucket matches the title (case-insensitive).
+
+| Title contains                                          | Set                |
+|---------------------------------------------------------|--------------------|
+| operator, reconciler, KapeHandler, KapeTool, KapeSchema, CRD validation | `area/operator` |
+| task-service, task service, OpenAPI                     | `area/task-service`|
+| adapter, AlertManager, audit adapter                    | `area/adapters`    |
+| kapeproxy, MCP proxy                                    | `area/kapeproxy`   |
+| runtime, LangGraph, Python, handler routes              | `area/runtime`     |
+| dashboard, SSE, EventSource, OAuth2 Proxy               | `area/dashboard`   |
+| helm, chart, template                                   | `area/helm`        |
+| CRD, CEL, XValidation                                   | `area/crds`        |
+| docs, README, runbook, CHANGELOG                        | `area/docs`        |
+| CI, workflow, Actions, Snyk                             | `area/ci`          |
+| NATS, Postgres, CloudNativePG, cert-manager, ESO, External Secrets | `area/infra` |
+
+**Category from PR paths** — apply when all changed files match one category bucket.
+
+| If all changed files are        | Set      |
+|---------------------------------|----------|
+| `docs/superpowers/specs/**`     | `spec`   |
+| under a `docs/` tree, no source | `docs`   |
+| test files (`*_test.go`, `test_*.py`, `*.test.ts`, `tests/**`) | `test` |
+
+**`phase/Mx-*` from issue title** — apply when title matches `[Pn/...]`.
+
+| Prefix       | Set                  |
+|--------------|----------------------|
+| `[P6/...]`   | `phase/M2-operator`  |
+| `[P7/...]`   | `phase/M3-runtime`   |
+| `[P8/...]`   | `phase/M4-security`  |
+| `[P9/...]`   | `phase/M5-dashboard` |
+| `[P10/...]`  | `phase/M6-release`   |
+
+### Ask-before-applying
+
+These require judgment. Propose and confirm.
+
+- **Ambiguous area** — when multiple area buckets match a PR's files (e.g., a PR touching both `operator/` and `crds/`). List the matches, recommend the dominant one, ask.
+- **Category** — for issues (which have no file paths) and PRs that span code. Look at title/body, propose one of `bug`, `enhancement`, `feature`, `refactor`, `redesign`, `security`, `chore`. Confirm.
+- **`needs-triage` / `ready`** — for issues. If category + area + commitment all present and no open `needs/*`, propose `ready`. Otherwise propose `needs-triage`.
+
+### Never apply autonomously
+
+The spec defines these labels as agent-only-with-cause. Always require the user to set them explicitly.
+
+- **`committed` / `stretch` / `backlog`** — commitment is a planning decision. Suggest based on milestone presence (issue in milestone → suggest `committed`; no milestone → suggest `backlog`), but require user confirmation.
+- **`urgent`** — requires "Reason:" line in body and a triggering condition (Snyk severity ≥ high, broken main CI, linked incident). Never apply unless the user explicitly asks.
+- **`blocked`** — requires "Blocked by: <ref>" line. Never apply without confirmation.
+- **`good first issue` / `help wanted`** — maintainer signal, never auto-applied.
+
+## Process
+
+1. **Resolve the target.** Determine PR vs issue from input.
+2. **Fetch context.** Read JSON above; print title and current labels in one short line.
+3. **Derive.** Walk the always-safe rules; collect proposed adds. Walk the ask-before-applying rules; collect proposed adds that need confirmation.
+4. **Diff.** Compute `to_add = derived - existing`. Skip any label already present.
+5. **Confirm ambiguous adds.** Present a single message: "I'll add [auto-derived list]. For [ambiguous categories], I propose [X] — confirm or override?" Wait for the user.
+6. **Apply.** `gh issue edit <n> --add-label "<csv>"` or `gh pr edit <n> --add-label "<csv>"`.
+7. **Report.** One line summary: `Labeled #<n>: added [<list>]. Existing: [<unchanged list>].`
+
+## Edge cases
+
+- **No `area/*` derivable** — for PRs, list the changed paths and ask the user which area. For issues, fall through to `needs-triage`.
+- **PR already has labels** — only add missing ones. Never remove labels unless the user asks.
+- **Target is closed or merged** — refuse with a one-line message. Labeling closed work has no consumer.
+- **`gh` not authenticated** — print the auth command and stop.
+
+## Reference
+
+Full rules and the rationale for each label live in:
+- `docs/superpowers/specs/2026-05-16-github-label-system-design.md` (spec)
+- `docs/agent-rituals.md` (rituals — read before adding new label-application logic)
+
+Update both files if rules change, then update this skill in lockstep.
+```
+
+- [ ] **Step 2: Validate the skill file**
 
 ```bash
-python3 -c "import yaml; yaml.safe_load(open('.github/labeler.yml'))"
-python3 -c "import yaml; yaml.safe_load(open('.github/workflows/pr-labeler.yml'))"
+python3 -c "
+import yaml, re
+content = open('.claude/skills/apply-labels/SKILL.md').read()
+fm = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL).group(1)
+meta = yaml.safe_load(fm)
+assert 'name' in meta and 'description' in meta, 'missing required frontmatter keys'
+assert meta['name'] == 'apply-labels', f'name mismatch: {meta[\"name\"]}'
+print('OK: frontmatter parses, required keys present')
+"
 ```
-Expected: no errors.
+Expected: `OK: frontmatter parses, required keys present`.
+
+- [ ] **Step 3: Smoke-test the skill against a real PR**
+
+Open Claude Code in the worktree and invoke the skill on this rollout PR:
+
+```
+/apply-labels <this PR number>
+```
+
+Expected behaviour:
+- Skill detects this is a PR.
+- Reads changed files (`docs/superpowers/plans/2026-05-17-github-label-system-rollout.md` + `.claude/skills/apply-labels/SKILL.md`).
+- Proposes `area/docs` (from `docs/**`) — but also notes `.claude/**` doesn't match any bucket, asks whether to extend `area/ci` or treat `.claude/` paths as `area/docs`.
+- Proposes category `docs` (all paths are docs/skill markdown, no source).
+- Does NOT propose commitment, signals, or `urgent`/`blocked`.
+- After confirmation, applies `area/docs` + `docs`.
+
+If anything in this flow surprises the user, fix the skill or the keyword tables in step 1 before committing.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add .github/labeler.yml .github/workflows/pr-labeler.yml
-git commit -m "ci: add PR auto-labeler
+git add .claude/skills/apply-labels/SKILL.md
+git commit -m "feat(skills): add apply-labels skill for issue/PR labeling
 
-actions/labeler@v5 with path-glob mapping to area/* and to the
-category labels that can be inferred unambiguously from paths
-(docs, test, spec). Other labels are set by humans or the validator."
+Replaces the originally-planned actions/labeler GHA. Claude reads the
+PR or issue, applies always-safe derivations (area/* from paths or
+title keywords, category from paths, phase/* from [Pn/mm] prefix),
+and asks before applying ambiguous labels. Never sets commitment,
+urgent, or blocked without explicit user confirmation per the spec."
 ```
 
 ---
@@ -1483,7 +1541,7 @@ and from the migration script's label-args."
 - [x] needs/* labels created (T1)
 - [x] Standalone keepers preserved (T1)
 - [x] Retired labels deleted (T4 — manual gate + T12 — roadmap-sync)
-- [x] PR auto-labeler implemented (T5)
+- [x] On-demand PR/issue labeling implemented as `apply-labels` skill (T5) — replaces the originally-planned PR auto-labeler GHA per design pivot
 - [x] Snyk integration sets security+urgent (T11)
 - [x] /standup datasources extended (T6)
 - [x] Migration script updated to new labels (T9)
