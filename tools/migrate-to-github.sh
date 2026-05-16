@@ -14,6 +14,42 @@ gh_api() {
   gh api "$@"
 }
 
+# Derive area/* label from issue title keywords. Returns empty if ambiguous.
+# Mapping mirrors docs/agent-rituals.md → "Title-keyword → area/* mapping".
+derive_area() {
+  local title="$1"
+  local t
+  t="$(echo "$title" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    *"operator"*|*"reconciler"*|*"kapehandler"*|*"kapetool"*|*"kapeschema"*|*"crd validation"*) echo "area/operator" ;;
+    *"task-service"*|*"task service"*|*"openapi"*) echo "area/task-service" ;;
+    *"adapter"*|*"alertmanager"*|*"audit adapter"*) echo "area/adapters" ;;
+    *"kapeproxy"*|*"mcp proxy"*) echo "area/kapeproxy" ;;
+    *"runtime"*|*"langgraph"*|*"python"*) echo "area/runtime" ;;
+    *"dashboard"*|*"sse"*|*"eventsource"*|*"oauth2 proxy"*) echo "area/dashboard" ;;
+    *"helm"*|*"chart"*|*"template"*) echo "area/helm" ;;
+    *"crd"*|*"cel"*|*"xvalidation"*) echo "area/crds" ;;
+    *"docs"*|*"readme"*|*"runbook"*|*"changelog"*) echo "area/docs" ;;
+    *"ci"*|*"workflow"*|*"actions"*|*"snyk"*) echo "area/ci" ;;
+    *"nats"*|*"postgres"*|*"cloudnativepg"*|*"cert-manager"*|*"eso"*|*"external secrets"*) echo "area/infra" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Derive phase/Mx-* label from "[Pn/mm]" title prefix.
+# Phase → milestone mapping comes from the milestones table.
+derive_phase() {
+  local title="$1"
+  case "$title" in
+    \[P6/*) echo "phase/M2-operator" ;;
+    \[P7/*) echo "phase/M3-runtime" ;;
+    \[P8/*) echo "phase/M4-security" ;;
+    \[P9/*) echo "phase/M5-dashboard" ;;
+    \[P10/*) echo "phase/M6-release" ;;
+    *) echo "" ;;
+  esac
+}
+
 create_label_if_missing() {
   local name="$1" color="$2"
   if ! gh_api "repos/${REPO}/labels/${name}" &>/dev/null; then
@@ -60,12 +96,21 @@ create_issue() {
     return
   fi
   echo "    Creating issue '${title}'..."
+  local area_label phase_label
+  area_label="$(derive_area "$title")"
+  phase_label="$(derive_phase "$title")"
+
+  local label_args=(-f "labels[]=roadmap-sync" -f "labels[]=enhancement" -f "labels[]=committed")
+  [[ -n "$area_label" ]]  && label_args+=(-f "labels[]=$area_label")
+  [[ -n "$phase_label" ]] && label_args+=(-f "labels[]=$phase_label")
+  [[ -z "$area_label" || -z "$phase_label" ]] && label_args+=(-f "labels[]=needs-triage")
+
   local issue_number
   issue_number=$(gh_api "repos/${REPO}/issues" \
     -f title="${title}" \
     -f body="${body}" \
     -f milestone="${milestone_number}" \
-    -f "labels[]=roadmap-sync" \
+    "${label_args[@]}" \
     --jq '.number')
   echo "      -> Issue #${issue_number}"
   # Close if phase is done
