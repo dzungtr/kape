@@ -2,12 +2,6 @@
 name: Sync labels
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/labels.yaml'
-      - 'tools/sync-labels.sh'
-      - '.github/workflows/sync-labels.yml'
   workflow_dispatch:
 
 permissions:
