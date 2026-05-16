@@ -1,0 +1,140 @@
+# .github/labels.yaml
+# Authoritative source for repo labels. Synced by tools/sync-labels.sh.
+# Schema: name (string), color (6-hex no #), description (<=100 chars).
+# See docs/superpowers/specs/2026-05-16-github-label-system-design.md for design.
+
+# --- Category (flat, exactly one per issue) ---
+- name: bug
+  color: d73a4a
+  description: "Defect — something is broken"
+- name: enhancement
+  color: a2eeef
+  description: "Improve an existing capability"
+- name: feature
+  color: 84b6eb
+  description: "New capability that doesn't exist yet"
+- name: refactor
+  color: fbca04
+  description: "Internal restructure, no behaviour change"
+- name: redesign
+  color: ff9f1c
+  description: "Reshape architecture/UX/API — behaviour changes"
+- name: security
+  color: b60205
+  description: "Security-relevant change (vuln fix, hardening, policy)"
+- name: docs
+  color: 0075ca
+  description: "Documentation-only"
+- name: chore
+  color: ededed
+  description: "Deps, config, build, tooling"
+- name: test
+  color: c5def5
+  description: "Test-only changes"
+- name: spec
+  color: 5319e7
+  description: "Design or spec doc under docs/superpowers/specs/"
+
+# --- Area (area/*, one per issue) ---
+- name: area/operator
+  color: 0e8a16
+  description: "Go operator (CRDs, reconcilers)"
+- name: area/task-service
+  color: 0e8a16
+  description: "Go task-service"
+- name: area/adapters
+  color: 0e8a16
+  description: "Go event adapters (alertmanager, k8s-audit)"
+- name: area/kapeproxy
+  color: 0e8a16
+  description: "Go MCP proxy"
+- name: area/runtime
+  color: 0e8a16
+  description: "Python LangGraph runtime"
+- name: area/dashboard
+  color: 0e8a16
+  description: "TypeScript dashboard"
+- name: area/helm
+  color: 0e8a16
+  description: "Helm charts and manifests"
+- name: area/crds
+  color: 0e8a16
+  description: "CRD schemas and CEL validation"
+- name: area/docs
+  color: 0e8a16
+  description: "docs/, README, runbooks (excludes spec docs)"
+- name: area/ci
+  color: 0e8a16
+  description: ".github/workflows, tooling"
+- name: area/infra
+  color: 0e8a16
+  description: "NATS, Postgres, cert-manager, External Secrets Operator"
+
+# --- Phase (phase/Mx-*, one per roadmap-tracked issue) ---
+- name: phase/M2-operator
+  color: 5319e7
+  description: "Phase 6 — Full Operator"
+- name: phase/M3-runtime
+  color: 5319e7
+  description: "Phase 7 — Full Runtime"
+- name: phase/M4-security
+  color: 5319e7
+  description: "Phase 8 — K8s Audit + Security"
+- name: phase/M5-dashboard
+  color: 5319e7
+  description: "Phase 9 — Dashboard"
+- name: phase/M6-release
+  color: 5319e7
+  description: "Phase 10 — Helm + Examples + Polish"
+
+# --- Commitment (flat, mutually exclusive) ---
+- name: committed
+  color: 0e8a16
+  description: "Belongs to its milestone. Counts against milestone capacity."
+- name: stretch
+  color: fbca04
+  description: "Targeted for milestone if capacity allows. First to slip."
+- name: backlog
+  color: c5def5
+  description: "Not committed to any milestone. Re-evaluated each cycle."
+
+# --- Signals (flat, additive) ---
+- name: urgent
+  color: b60205
+  description: "Interrupt rule. Standup ranks above committed. Body MUST have Reason:"
+- name: blocked
+  color: e99695
+  description: "Cannot progress. Body MUST have Blocked by: <ref>"
+- name: ready
+  color: 1d76db
+  description: "Triage complete: has category+area+commitment, no needs/*. Auto-set."
+- name: needs-triage
+  color: ededed
+  description: "Inverse of ready. Default on new issues."
+
+# --- Triage needs (needs/*, additive) ---
+- name: needs/repro
+  color: fbca04
+  description: "Bug needs reproduction steps from reporter"
+- name: needs/decision
+  color: d876e3
+  description: "Awaiting a maintainer call on scope or approach"
+- name: needs/info
+  color: d876e3
+  description: "Awaiting reporter or requester response"
+
+# --- Standalone keepers ---
+- name: good first issue
+  color: 7057ff
+  description: "Good for newcomers"
+- name: help wanted
+  color: 008672
+  description: "Extra attention is needed"
+- name: snyk-finding
+  color: d73a4a
+  description: "Snyk-surfaced security finding requiring a fix"
+
+# --- Transitional (retired in T12) ---
+- name: roadmap-sync
+  color: 0075ca
+  description: "Roadmap sync issue (transitional — retired after backfill)"
