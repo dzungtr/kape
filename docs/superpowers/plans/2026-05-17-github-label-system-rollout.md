@@ -4,7 +4,7 @@
 
 **Goal:** Roll out the 39-label taxonomy and its supporting automation as defined in `docs/superpowers/specs/2026-05-16-github-label-system-design.md`, so that every open issue carries machine-readable signals that `/standup`, planning, triage, and the state validator can consume without re-reading issue bodies.
 
-**Architecture:** Labels are managed by a declarative YAML manifest synced to GitHub by an idempotent bash script. Automation lands as two GitHub Actions workflows (label-sync, state validator + weekly audit), a Claude skill for on-demand PR/issue labeling, and a `/standup` config update. The roadmap migration script is updated to apply the new labels on new and existing roadmap issues. A one-shot backfill script labels remaining open issues. Each task is self-contained and dispatchable to a fresh subagent.
+**Architecture:** Labels are managed by a declarative YAML manifest synced to GitHub by an idempotent bash script. Automation lands as two GitHub Actions workflows (label-sync on manifest change, state validator on manual dispatch), a Claude skill for on-demand PR/issue labeling, and a `/standup` config update. The roadmap migration script is updated to apply the new labels on new and existing roadmap issues. A one-shot backfill script labels remaining open issues. Each task is self-contained and dispatchable to a fresh subagent.
 
 **Tech Stack:** bash 5+, `yq` (for YAML manipulation), `jq`, `gh` CLI, GitHub Actions. Tests are plain bash scripts (no external test harness like bats/shunit2) — see `tests/tools/_lib.sh` introduced in T2.
 
@@ -44,7 +44,7 @@ No test framework install needed — the test runner is plain bash (`tests/tools
 | `.claude/standup.json`                     | modify  | Add `urgent` and `blocked` datasources                |
 | `tools/validate-issue-labels.sh`           | create  | State-validator script (one issue per invocation)     |
 | `tests/tools/test_validate-issue-labels.sh`| create  | Bash tests for the validator (sources `_lib.sh`)      |
-| `.github/workflows/validate-labels.yml`    | create  | GHA: weekly + on-issue-event validator run            |
+| `.github/workflows/validate-labels.yml`    | create  | GHA: manual-dispatch validator run, uploads report artifact |
 | `tools/migrate-to-github.sh`               | modify  | Use new labels when creating roadmap issues           |
 | `tools/backfill-issue-labels.sh`           | create  | One-shot backfill for open issues                     |
 | `tools/snyk-finding-to-issue.sh`           | create or modify | Apply `security` + `urgent` on Snyk-sourced issues |
@@ -1194,7 +1194,12 @@ using the shared tests/tools/_lib.sh runner introduced in T2."
 **Files:**
 - Create: `.github/workflows/validate-labels.yml`
 
-Runs the validator weekly across all open issues and on every issue label change. Posts a comment on each issue with violations.
+Manual-only workflow. Runs the validator across all open issues on demand and emits a summary to the job log. No schedule, no issue-event trigger — invoked by a maintainer (or another workflow) via `workflow_dispatch` when they want a current snapshot of label-state violations.
+
+**Why workflow_dispatch only:**
+- Per-issue auto-comments on every label change get noisy fast (every triage edit re-checks and may re-post).
+- A weekly schedule adds maintenance cost (cron drift, stale cache, surprise notifications) for a check the maintainer can trigger any time it's actually useful — typically before a planning ritual or after a backfill.
+- Keeps the workflow surface minimal until there's evidence the manual cadence is insufficient.
 
 - [ ] **Step 1: Write the workflow**
 
@@ -1203,50 +1208,56 @@ Runs the validator weekly across all open issues and on every issue label change
 name: Validate issue labels
 
 on:
-  schedule:
-    - cron: '0 9 * * 1'  # Mondays 09:00 UTC
-  issues:
-    types: [opened, labeled, unlabeled, edited]
   workflow_dispatch:
+    inputs:
+      issue_limit:
+        description: 'Max number of open issues to validate (default 200)'
+        required: false
+        default: '200'
 
 permissions:
-  issues: write
+  issues: read
+  contents: read
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate single issue (on issues event)
-        if: github.event_name == 'issues'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          payload=$(gh issue view "$ISSUE_NUMBER" --json number,body,labels)
-          violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
-          if [[ -n "$violations" ]]; then
-            body=$(printf 'State validator found label inconsistencies:\n\n```\n%s\n```\n\nSee docs/agent-rituals.md for rule definitions.\n' "$violations")
-            gh issue comment "$ISSUE_NUMBER" --body "$body"
-          fi
 
-      - name: Validate all open issues (on schedule)
-        if: github.event_name != 'issues'
+      - name: Validate all open issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_LIMIT: ${{ github.event.inputs.issue_limit }}
         run: |
           set -euo pipefail
-          gh issue list --state open --limit 200 --json number | jq -r '.[].number' \
-            | while read -r num; do
-              payload=$(gh issue view "$num" --json number,body,labels)
-              violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
-              if [[ -n "$violations" ]]; then
-                echo "Issue #$num:"
-                echo "$violations"
-                echo
-              fi
-            done | tee weekly-validator-report.txt
-          # Note: scheduled run only reports to job log; per-issue comments would be too noisy weekly.
+          total=0
+          flagged=0
+          {
+            gh issue list --state open --limit "${ISSUE_LIMIT}" --json number \
+              | jq -r '.[].number' \
+              | while read -r num; do
+                  total=$((total+1))
+                  payload=$(gh issue view "$num" --json number,body,labels)
+                  violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
+                  if [[ -n "$violations" ]]; then
+                    flagged=$((flagged+1))
+                    echo "Issue #$num:"
+                    echo "$violations"
+                    echo
+                  fi
+                done
+            echo "---"
+            echo "Scanned: $total open issues."
+            echo "Flagged: $flagged with violations."
+          } | tee validator-report.txt
+
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-report
+          path: validator-report.txt
+          retention-days: 30
 ```
 
 - [ ] **Step 2: Validate workflow YAML**
@@ -1256,14 +1267,31 @@ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/validate-labels.
 ```
 Expected: no error.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Smoke-test the dispatch path**
+
+After the workflow is merged to main, run:
+
+```bash
+gh workflow run validate-labels.yml -f issue_limit=200
+gh run watch  # follow the latest run
+```
+
+Expected: the job completes successfully, prints per-issue violations (if any) followed by the `Scanned / Flagged` summary, and uploads `validator-report.txt` as an artifact.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add .github/workflows/validate-labels.yml
-git commit -m "ci: add state-validator workflow
+git commit -m "ci: add manual-dispatch state-validator workflow
 
-On issue events: validate single issue, comment if violations exist.
-On weekly schedule: validate all open issues, emit summary to job log."
+workflow_dispatch only. Scans all open issues (configurable limit),
+runs tools/validate-issue-labels.sh on each, emits per-issue
+violations and a Scanned/Flagged summary to the job log, and uploads
+the report as a 30-day artifact.
+
+No schedule, no issue-event trigger — maintainer triggers it when a
+current snapshot is actually wanted (before planning, after backfill).
+Keeps the workflow surface minimal."
 ```
 
 ---
