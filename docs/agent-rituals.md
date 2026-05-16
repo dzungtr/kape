@@ -16,6 +16,7 @@ bodies.
 | Planning           | `committed`, `stretch`, `backlog`, `ready`, `phase/*` | `committed` ⇄ `stretch`, `needs-triage` |
 | Triage             | `needs/*`, category, area, commitment     | category, area, commitment, `ready`, `needs-triage` |
 | Bug intake         | (Snyk MCP output, new-issue events)       | `bug`, `security`, `urgent`, `snyk-finding`, `area/*`, `backlog` |
+| `apply-labels` skill | target issue/PR labels, body, title, changed files | `area/*`, category, `phase/*`; proposes commitment but never applies without user confirmation |
 | State validator    | all                                       | none (reports only)                    |
 
 Only the writer roles above may set the listed labels. Other agents read but do
@@ -199,9 +200,9 @@ offending issue with the violation list.
 
 | Label                   | Settable by                                   | Cleared by                                |
 |-------------------------|-----------------------------------------------|-------------------------------------------|
-| Category labels         | Triage, bug intake, human                     | Human only                                |
-| `area/*`                | Triage, bug intake, human                     | Human only                                |
-| `phase/*`               | Phase-sync (on milestone change), migration script, human | Phase-sync, human               |
+| Category labels         | Triage, bug intake, `apply-labels` skill, human | Human only                              |
+| `area/*`                | Triage, bug intake, `apply-labels` skill, human | Human only                              |
+| `phase/*`               | Phase-sync (on milestone change), migration script, `apply-labels` skill, human | Phase-sync, human |
 | `committed`             | Planning, human (by milestone assignment)     | Planning (→ stretch), human               |
 | `stretch`               | Planning, human                               | Planning (→ committed), human             |
 | `backlog`               | Triage, bug intake, human                     | Planning (→ stretch / committed), human   |
