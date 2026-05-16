@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,9 @@ import (
 )
 
 func main() {
+	migrateOnly := flag.Bool("migrate-only", false, "run database migrations and exit")
+	flag.Parse()
+
 	// Config from environment
 	pgDSN := envOrDefault("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/kape?sslmode=disable")
 	addr := envOrDefault("ADDR", ":8080")
@@ -25,6 +29,12 @@ func main() {
 	// Run migrations
 	if err := postgres.RunMigrations(pgDSN); err != nil {
 		log.Fatalf("migrations: %v", err)
+	}
+
+	// When --migrate-only is set, exit after migrations complete successfully.
+	if *migrateOnly {
+		log.Println("migrations complete")
+		return
 	}
 
 	// Connect DB
