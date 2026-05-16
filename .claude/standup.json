@@ -6,8 +6,8 @@
       "command": "gh run list --status failure --limit 20 --json databaseId,displayTitle,workflowName,conclusion,updatedAt,headBranch"
     },
     {
-      "name": "enhancement",
-      "description": "Snyk code scan findings in the operator module — security issues that may warrant an enhancement or bug issue",
+      "name": "snyk-finding",
+      "description": "Snyk code scan findings in the operator module — security issues tracked via the snyk-finding label, separate from GitHub's default enhancement label",
       "tool": "mcp__Snyk__snyk_code_scan",
       "params": {
         "scanPath": "./operator"
