@@ -1,0 +1,54 @@
+# .github/workflows/validate-labels.yml
+name: Validate issue labels
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_limit:
+        description: 'Max number of open issues to validate (default 200)'
+        required: false
+        default: '200'
+
+permissions:
+  issues: read
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate all open issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_LIMIT: ${{ github.event.inputs.issue_limit }}
+        run: |
+          set -euo pipefail
+          total=0
+          flagged=0
+          {
+            gh issue list --state open --limit "${ISSUE_LIMIT}" --json number \
+              | jq -r '.[].number' \
+              | while read -r num; do
+                  total=$((total+1))
+                  payload=$(gh issue view "$num" --json number,body,labels)
+                  violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
+                  if [[ -n "$violations" ]]; then
+                    flagged=$((flagged+1))
+                    echo "Issue #$num:"
+                    echo "$violations"
+                    echo
+                  fi
+                done
+            echo "---"
+            echo "Scanned: $total open issues."
+            echo "Flagged: $flagged with violations."
+          } | tee validator-report.txt
+
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-report
+          path: validator-report.txt
+          retention-days: 30
