@@ -167,9 +167,9 @@ On Snyk MCP finding:
 
 ## State validator
 
-A periodic agent (see "Where it runs" below) checks open issues for inconsistent
-label state and reports violations. The validator never mutates labels — it
-only reports.
+An on-demand agent (see "Where it runs" below) checks open issues for
+inconsistent label state and reports violations. The validator never mutates
+labels — it only reports.
 
 ```
 For each open issue:
@@ -187,14 +187,21 @@ For each open issue:
 
 ### Where it runs
 
-The state validator runs in two places:
-1. As a step in the `/standup` skill, before the bucket ranking, so violations
-   surface in the daily report.
-2. As a scheduled GitHub Action (weekly), to catch issues that `/standup` did
-   not run against.
+The state validator runs in two places, both invoked on demand — no schedule,
+no per-issue auto-comment:
 
-Both share the same rule set; the GitHub Action posts a comment on each
-offending issue with the violation list.
+1. As a step in the `/standup` skill, before the bucket ranking, so violations
+   surface in the daily report whenever `/standup` is run.
+2. As a manual-dispatch GitHub Action (`gh workflow run validate-labels.yml`),
+   when a maintainer wants a current snapshot — typically before a planning
+   ritual or after a backfill. The Action emits the violation list to the job
+   log and uploads it as an artifact. It does not comment on issues.
+
+Both invocations share the same rule set. The deliberate choice to skip both
+a schedule and an issues-event trigger keeps the workflow surface minimal:
+per-event auto-comments get noisy on every triage edit, and a weekly cron
+adds maintenance cost (drift, surprise notifications) for a check the
+maintainer can trigger any time it's actually useful.
 
 ## Mutability summary
 
