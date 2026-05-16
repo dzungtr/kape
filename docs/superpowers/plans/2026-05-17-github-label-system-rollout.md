@@ -6,7 +6,7 @@
 
 **Architecture:** Labels are managed by a declarative YAML manifest synced to GitHub by an idempotent bash script. Automation lands as two GitHub Actions workflows (label-sync, state validator + weekly audit), a Claude skill for on-demand PR/issue labeling, and a `/standup` config update. The roadmap migration script is updated to apply the new labels on new and existing roadmap issues. A one-shot backfill script labels remaining open issues. Each task is self-contained and dispatchable to a fresh subagent.
 
-**Tech Stack:** bash 5+, `yq` (for YAML manipulation), `jq`, `gh` CLI, GitHub Actions (`actions/labeler@v5`), `bats-core` (for shell tests).
+**Tech Stack:** bash 5+, `yq` (for YAML manipulation), `jq`, `gh` CLI, GitHub Actions. Tests are plain bash scripts (no external test harness like bats/shunit2) — see `tests/tools/_lib.sh` introduced in T2.
 
 **Runtime environment:** Linux. Local dev on Fedora 43 (the maintainer's workstation); CI on `ubuntu-latest` (GHA runners). All scripts are pure bash (`#!/usr/bin/env bash`, arrays, `[[ ]]`, `set -euo pipefail`) — no POSIX-sh, no fish, no zsh idioms. GNU coreutils assumed (no BSD sed/grep flags).
 
@@ -14,17 +14,17 @@
 
 Fedora (local dev):
 ```bash
-sudo dnf install -y bats-core jq yq shellcheck
-# gh and python3 are typically already present
+sudo dnf install -y jq yq shellcheck
+# gh, python3, and bash 5+ are typically already present
 ```
 
 Ubuntu / Debian (GHA `ubuntu-latest` runner, pre-installs vary):
 ```bash
-sudo apt-get update && sudo apt-get install -y bats jq shellcheck
+sudo apt-get update && sudo apt-get install -y jq shellcheck
 sudo curl -L -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
 ```
 
-GHA workflows that run bats (none in this plan today, but a follow-up may add one) MUST include an install step — bats is not preinstalled on `ubuntu-latest`.
+No test framework install needed — the test runner is plain bash (`tests/tools/_lib.sh`).
 
 **Spec reference:** `docs/superpowers/specs/2026-05-16-github-label-system-design.md`
 **Rituals reference:** `docs/agent-rituals.md`
@@ -37,12 +37,13 @@ GHA workflows that run bats (none in this plan today, but a follow-up may add on
 |--------------------------------------------|---------|-------------------------------------------------------|
 | `.github/labels.yaml`                      | create  | Declarative manifest of all 39 labels                 |
 | `tools/sync-labels.sh`                     | create  | Idempotent create/update/delete against the manifest  |
-| `tests/tools/sync-labels.bats`             | create  | bats tests for the sync script                        |
+| `tests/tools/_lib.sh`                      | create  | Shared bash test runner: assertions, run_test, summary |
+| `tests/tools/test_sync-labels.sh`          | create  | Bash tests for the sync script (sources `_lib.sh`)    |
 | `.github/workflows/sync-labels.yml`        | create  | GHA: re-runs sync on manifest change                  |
 | `.claude/skills/apply-labels/SKILL.md`     | create  | Claude skill: apply taxonomy to a PR or issue on demand |
 | `.claude/standup.json`                     | modify  | Add `urgent` and `blocked` datasources                |
 | `tools/validate-issue-labels.sh`           | create  | State-validator script (one issue per invocation)     |
-| `tests/tools/validate-issue-labels.bats`   | create  | bats tests for the validator                          |
+| `tests/tools/test_validate-issue-labels.sh`| create  | Bash tests for the validator (sources `_lib.sh`)      |
 | `.github/workflows/validate-labels.yml`    | create  | GHA: weekly + on-issue-event validator run            |
 | `tools/migrate-to-github.sh`               | modify  | Use new labels when creating roadmap issues           |
 | `tools/backfill-issue-labels.sh`           | create  | One-shot backfill for open issues                     |
@@ -241,25 +242,130 @@ transitional roadmap-sync label that's retired in a later task."
 
 ---
 
-## Task 2: Build `tools/sync-labels.sh`
+## Task 2: Build `tools/sync-labels.sh` (with shared bash test runner)
 
 **Files:**
 - Create: `tools/sync-labels.sh`
-- Create: `tests/tools/sync-labels.bats`
+- Create: `tests/tools/_lib.sh` (shared assertions + runner, also used by T7)
+- Create: `tests/tools/test_sync-labels.sh`
 
 The script reads `.github/labels.yaml`, queries existing labels via `gh label list`, and applies the three-way diff: create missing, update changed, delete extras (with `--keep-extras` to opt out of deletion).
 
-- [ ] **Step 1: Write failing test for create case**
+Tests are pure bash — no bats or shunit2. `_lib.sh` provides `assert_contains`, `assert_not_contains`, `assert_empty`, `assert_status`, and a `run_test` driver that collects pass/fail counts. Each test file sources `_lib.sh`, defines test functions, calls `run_test` for each, and exits non-zero if any failed.
+
+- [ ] **Step 1: Write the shared test library**
 
 ```bash
-# tests/tools/sync-labels.bats
-#!/usr/bin/env bats
+#!/usr/bin/env bash
+# tests/tools/_lib.sh
+# Shared assertions and test driver for tests/tools/test_*.sh.
+# Source this file; do not run it directly.
+#
+# Usage in a test file:
+#   #!/usr/bin/env bash
+#   set -uo pipefail
+#   source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
+#   test_my_thing() { ... assert_contains ... ; }
+#   run_test "my thing does X" test_my_thing
+#   summary  # prints results and exits non-zero on failure
 
-setup() {
-  TEST_DIR="$(mktemp -d)"
-  export GH_REPO="test/repo"  # fake repo
-  export SYNC_LABELS_DRY_RUN=1  # tested mode: emit plan to stdout, no gh calls
-  cat > "$TEST_DIR/labels.yaml" <<'EOF'
+# Intentionally NO `set -e` here — failing assertions must not abort the
+# runner; each test returns its status to run_test.
+
+PASSED=0
+FAILED=0
+FAILURES=()
+
+# Quote-truncate a value to 400 chars for readable failure output.
+_trunc() { printf '%s' "$1" | head -c 400; }
+
+assert_contains() {
+  local haystack="$1" needle="$2" msg="${3:-assert_contains}"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    return 0
+  fi
+  printf '    FAIL (%s): expected substring %q\n' "$msg" "$needle" >&2
+  printf '    actual: %s\n' "$(_trunc "$haystack")" >&2
+  return 1
+}
+
+assert_not_contains() {
+  local haystack="$1" needle="$2" msg="${3:-assert_not_contains}"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    return 0
+  fi
+  printf '    FAIL (%s): forbidden substring %q present\n' "$msg" "$needle" >&2
+  printf '    actual: %s\n' "$(_trunc "$haystack")" >&2
+  return 1
+}
+
+assert_empty() {
+  local value="$1" msg="${2:-assert_empty}"
+  if [[ -z "$value" ]]; then
+    return 0
+  fi
+  printf '    FAIL (%s): expected empty\n' "$msg" >&2
+  printf '    actual: %s\n' "$(_trunc "$value")" >&2
+  return 1
+}
+
+assert_status() {
+  local expected="$1" actual="$2" msg="${3:-assert_status}"
+  if [[ "$expected" -eq "$actual" ]]; then
+    return 0
+  fi
+  printf '    FAIL (%s): expected exit %d, got %d\n' "$msg" "$expected" "$actual" >&2
+  return 1
+}
+
+# Run a named test function. The function returns 0 for pass, non-zero for fail.
+# Each test runs in a subshell so env-var mutations and exported vars do not leak.
+run_test() {
+  local name="$1" fn="$2"
+  printf '  %-60s ' "$name"
+  if ( "$fn" ); then
+    PASSED=$((PASSED+1))
+    echo "PASS"
+  else
+    FAILED=$((FAILED+1))
+    FAILURES+=("$name")
+    echo "FAIL"
+  fi
+}
+
+summary() {
+  echo
+  echo "=== Summary ==="
+  echo "Passed: $PASSED"
+  echo "Failed: $FAILED"
+  if [[ $FAILED -gt 0 ]]; then
+    printf '\nFailures:\n' >&2
+    for f in "${FAILURES[@]}"; do
+      printf '  - %s\n' "$f" >&2
+    done
+    exit 1
+  fi
+  exit 0
+}
+```
+
+- [ ] **Step 2: Write the failing test file (one test only — the create case)**
+
+```bash
+#!/usr/bin/env bash
+# tests/tools/test_sync-labels.sh
+# Pure-bash tests for tools/sync-labels.sh.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
+
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+# Fixture: minimal 2-label manifest
+cat > "$TEST_DIR/labels.yaml" <<'EOF'
 - name: bug
   color: d73a4a
   description: "Defect"
@@ -267,31 +373,35 @@ setup() {
   color: 0e8a16
   description: "Operator"
 EOF
-}
 
-teardown() {
-  rm -rf "$TEST_DIR"
-}
+# --- tests ---
 
-@test "dry-run plans creates for labels missing from gh" {
-  # fake "gh label list --json name,color,description" returns empty
+test_dry_run_create() {
   export SYNC_LABELS_GH_LIST_FIXTURE='[]'
-  run bash "$BATS_TEST_DIRNAME/../../tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"CREATE bug"* ]]
-  [[ "$output" == *"CREATE area/operator"* ]]
+  local output rc
+  output="$(bash "$ROOT/tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" 2>&1)"
+  rc=$?
+  assert_status 0 "$rc" "script exit code" || return 1
+  assert_contains "$output" "CREATE bug" "should plan to create bug" || return 1
+  assert_contains "$output" "CREATE area/operator" "should plan to create area/operator" || return 1
 }
+
+# --- runner ---
+
+echo "Running $(basename "${BASH_SOURCE[0]}")"
+echo
+run_test "dry-run plans creates for missing labels" test_dry_run_create
+summary
 ```
 
-- [ ] **Step 2: Run test, watch it fail**
+- [ ] **Step 3: Run test, watch it fail**
 
-Ensure `bats-core` is installed (see "Prerequisite tools" at the top of the plan — `sudo dnf install -y bats-core` on Fedora). Then:
 ```bash
-bats tests/tools/sync-labels.bats
+bash tests/tools/test_sync-labels.sh
 ```
-Expected: FAIL with "No such file or directory" for `tools/sync-labels.sh`.
+Expected: FAIL with the test runner reporting "FAIL" because `tools/sync-labels.sh` does not exist yet (bash would exit non-zero from the missing-file invocation).
 
-- [ ] **Step 3: Write minimal sync script (create-only path)**
+- [ ] **Step 4: Write minimal sync script (create-only path is enough to pass the first test)**
 
 ```bash
 #!/usr/bin/env bash
@@ -378,73 +488,97 @@ main() {
 main "$@"
 ```
 
-- [ ] **Step 4: Run test, watch it pass**
+- [ ] **Step 5: Run test, watch it pass**
 
 ```bash
-bats tests/tools/sync-labels.bats
+bash tests/tools/test_sync-labels.sh
 ```
-Expected: PASS for "dry-run plans creates for labels missing from gh".
+Expected: `Passed: 1`, `Failed: 0`. Exit code 0.
 
-- [ ] **Step 5: Add tests for update and delete cases**
+- [ ] **Step 6: Add the remaining 4 tests**
+
+Insert these test functions before the runner block in `tests/tools/test_sync-labels.sh`:
 
 ```bash
-# Append to tests/tools/sync-labels.bats
-
-@test "dry-run plans updates when color or description differs" {
+test_dry_run_update() {
   export SYNC_LABELS_GH_LIST_FIXTURE='[{"name":"bug","color":"000000","description":"Defect"}]'
-  run bash "$BATS_TEST_DIRNAME/../../tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"UPDATE bug"* ]]
+  local output rc
+  output="$(bash "$ROOT/tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" 2>&1)"
+  rc=$?
+  assert_status 0 "$rc" "script exit code" || return 1
+  assert_contains "$output" "UPDATE bug" "should plan to update bug (color changed)" || return 1
 }
 
-@test "dry-run plans deletes for labels not in manifest" {
+test_dry_run_delete() {
   export SYNC_LABELS_GH_LIST_FIXTURE='[{"name":"bug","color":"d73a4a","description":"Defect"},{"name":"area/operator","color":"0e8a16","description":"Operator"},{"name":"obsolete","color":"ffffff","description":"old"}]'
-  run bash "$BATS_TEST_DIRNAME/../../tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"DELETE obsolete"* ]]
+  local output rc
+  output="$(bash "$ROOT/tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" 2>&1)"
+  rc=$?
+  assert_status 0 "$rc" "script exit code" || return 1
+  assert_contains "$output" "DELETE obsolete" "should plan to delete labels not in manifest" || return 1
 }
 
-@test "--keep-extras suppresses deletes" {
+test_keep_extras_suppresses_delete() {
   export SYNC_LABELS_GH_LIST_FIXTURE='[{"name":"obsolete","color":"ffffff","description":"old"}]'
-  run bash "$BATS_TEST_DIRNAME/../../tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" --keep-extras
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"DELETE"* ]]
+  local output rc
+  output="$(bash "$ROOT/tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" --keep-extras 2>&1)"
+  rc=$?
+  assert_status 0 "$rc" "script exit code" || return 1
+  assert_not_contains "$output" "DELETE" "--keep-extras should suppress deletes" || return 1
 }
 
-@test "exits zero with no mutations when manifest matches gh exactly" {
+test_no_op_when_matched() {
   export SYNC_LABELS_GH_LIST_FIXTURE='[{"name":"bug","color":"d73a4a","description":"Defect"},{"name":"area/operator","color":"0e8a16","description":"Operator"}]'
-  run bash "$BATS_TEST_DIRNAME/../../tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml"
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"CREATE"* ]]
-  [[ "$output" != *"UPDATE"* ]]
-  [[ "$output" != *"DELETE"* ]]
+  local output rc
+  output="$(bash "$ROOT/tools/sync-labels.sh" --manifest "$TEST_DIR/labels.yaml" 2>&1)"
+  rc=$?
+  assert_status 0 "$rc" "script exit code" || return 1
+  assert_not_contains "$output" "CREATE" "no creates expected" || return 1
+  assert_not_contains "$output" "UPDATE" "no updates expected" || return 1
+  assert_not_contains "$output" "DELETE" "no deletes expected" || return 1
 }
 ```
 
-- [ ] **Step 6: Run full test suite, all pass**
+Then extend the runner block at the bottom:
 
 ```bash
-bats tests/tools/sync-labels.bats
+run_test "dry-run plans creates for missing labels"        test_dry_run_create
+run_test "dry-run plans updates on color/description diff" test_dry_run_update
+run_test "dry-run plans deletes for labels not in manifest" test_dry_run_delete
+run_test "--keep-extras suppresses deletes"                test_keep_extras_suppresses_delete
+run_test "no-op when manifest matches gh exactly"          test_no_op_when_matched
+summary
 ```
-Expected: 4 tests PASS.
 
-- [ ] **Step 7: Make script executable + shellcheck clean**
+- [ ] **Step 7: Run the full suite, all pass**
 
 ```bash
-chmod +x tools/sync-labels.sh
-shellcheck tools/sync-labels.sh
+bash tests/tools/test_sync-labels.sh
+```
+Expected: `Passed: 5`, `Failed: 0`. Exit code 0.
+
+- [ ] **Step 8: Make scripts executable + shellcheck clean**
+
+```bash
+chmod +x tools/sync-labels.sh tests/tools/test_sync-labels.sh
+shellcheck tools/sync-labels.sh tests/tools/_lib.sh tests/tools/test_sync-labels.sh
 ```
 Expected: shellcheck exits 0.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add tools/sync-labels.sh tests/tools/sync-labels.bats
-git commit -m "feat(tools): add idempotent sync-labels.sh + bats tests
+git add tools/sync-labels.sh tests/tools/_lib.sh tests/tools/test_sync-labels.sh
+git commit -m "feat(tools): add idempotent sync-labels.sh + bash tests
 
-Reads .github/labels.yaml, diffs against gh label list, prints/applies
-create/update/delete. Default mode is dry-run; --apply does the work.
---keep-extras opts out of deletion."
+tools/sync-labels.sh reads .github/labels.yaml, diffs against gh
+label list, prints/applies create/update/delete. Default is dry-run;
+--apply does the work. --keep-extras opts out of deletion.
+
+Tests are pure bash. tests/tools/_lib.sh provides assert_contains,
+assert_not_contains, assert_empty, assert_status, and a run_test/summary
+driver. test_sync-labels.sh covers create, update, delete, --keep-extras,
+and no-op paths (5 tests)."
 ```
 
 ---
@@ -796,33 +930,52 @@ populate the ACT NOW and STUCK buckets without re-reading bodies."
 
 **Files:**
 - Create: `tools/validate-issue-labels.sh`
-- Create: `tests/tools/validate-issue-labels.bats`
+- Create: `tests/tools/test_validate-issue-labels.sh` (sources `tests/tools/_lib.sh` from T2)
 
 Implements the rules from `docs/agent-rituals.md` → "State validator". Input: one issue's JSON via stdin. Output: zero or more lines of `ERROR <code>: <msg>` or `WARN <code>: <msg>`. Exit code: 0 always (errors are data, not script failure). Caller aggregates.
+
+Tests reuse the shared bash test runner introduced in T2 — no bats, no external harness.
 
 - [ ] **Step 1: Write the first failing test (multiple commitments → ERROR)**
 
 ```bash
-# tests/tools/validate-issue-labels.bats
-#!/usr/bin/env bats
+#!/usr/bin/env bash
+# tests/tools/test_validate-issue-labels.sh
+# Pure-bash tests for tools/validate-issue-labels.sh.
+set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
+
+# Helper: feed a JSON blob to the validator and capture stdout.
 run_validator() {
   local input="$1"
-  echo "$input" | bash "$BATS_TEST_DIRNAME/../../tools/validate-issue-labels.sh"
+  echo "$input" | bash "$ROOT/tools/validate-issue-labels.sh"
 }
 
-@test "issue with two commitments → ERROR" {
-  result=$(run_validator '{"number":1,"body":"","labels":[{"name":"committed"},{"name":"stretch"}]}')
-  [[ "$result" == *"ERROR multiple-commitments"* ]]
+# --- tests ---
+
+test_two_commitments_error() {
+  local result
+  result="$(run_validator '{"number":1,"body":"","labels":[{"name":"committed"},{"name":"stretch"}]}')"
+  assert_contains "$result" "ERROR multiple-commitments" "two commitments must error" || return 1
 }
+
+# --- runner ---
+
+echo "Running $(basename "${BASH_SOURCE[0]}")"
+echo
+run_test "issue with two commitments → ERROR" test_two_commitments_error
+summary
 ```
 
 - [ ] **Step 2: Run, watch fail**
 
 ```bash
-bats tests/tools/validate-issue-labels.bats
+bash tests/tools/test_validate-issue-labels.sh
 ```
-Expected: FAIL with "No such file or directory".
+Expected: FAIL — `tools/validate-issue-labels.sh` does not exist yet.
 
 - [ ] **Step 3: Write minimal validator**
 
@@ -855,72 +1008,97 @@ commitments=$(count_labels_matching '^(committed|stretch|backlog)$')
 if [[ "$commitments" -gt 1 ]]; then
   echo "ERROR multiple-commitments: issue has $commitments commitment labels (expected 0 or 1)"
 fi
-
-main_exit() { exit 0; }
-main_exit
 ```
 
 - [ ] **Step 4: Run, watch pass**
 
 ```bash
-bats tests/tools/validate-issue-labels.bats
+chmod +x tools/validate-issue-labels.sh
+bash tests/tools/test_validate-issue-labels.sh
 ```
-Expected: 1 test PASS.
+Expected: `Passed: 1`, `Failed: 0`.
 
-- [ ] **Step 5: Add remaining rule tests**
+- [ ] **Step 5: Add the remaining 10 tests**
+
+Insert these test functions in `tests/tools/test_validate-issue-labels.sh` before the runner block:
 
 ```bash
-# Append to tests/tools/validate-issue-labels.bats
-
-@test "ready without category → ERROR" {
-  result=$(run_validator '{"number":2,"body":"","labels":[{"name":"ready"},{"name":"area/operator"},{"name":"backlog"}]}')
-  [[ "$result" == *"ERROR ready-missing-category"* ]]
+test_ready_without_category() {
+  local result
+  result="$(run_validator '{"number":2,"body":"","labels":[{"name":"ready"},{"name":"area/operator"},{"name":"backlog"}]}')"
+  assert_contains "$result" "ERROR ready-missing-category" "ready without category must error" || return 1
 }
 
-@test "ready without area → ERROR" {
-  result=$(run_validator '{"number":3,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"backlog"}]}')
-  [[ "$result" == *"ERROR ready-missing-area"* ]]
+test_ready_without_area() {
+  local result
+  result="$(run_validator '{"number":3,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"backlog"}]}')"
+  assert_contains "$result" "ERROR ready-missing-area" "ready without area must error" || return 1
 }
 
-@test "ready without commitment → ERROR" {
-  result=$(run_validator '{"number":4,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"area/operator"}]}')
-  [[ "$result" == *"ERROR ready-missing-commitment"* ]]
+test_ready_without_commitment() {
+  local result
+  result="$(run_validator '{"number":4,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"area/operator"}]}')"
+  assert_contains "$result" "ERROR ready-missing-commitment" "ready without commitment must error" || return 1
 }
 
-@test "ready with needs/* → ERROR" {
-  result=$(run_validator '{"number":5,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"area/operator"},{"name":"backlog"},{"name":"needs/info"}]}')
-  [[ "$result" == *"ERROR ready-with-needs"* ]]
+test_ready_with_needs() {
+  local result
+  result="$(run_validator '{"number":5,"body":"","labels":[{"name":"ready"},{"name":"bug"},{"name":"area/operator"},{"name":"backlog"},{"name":"needs/info"}]}')"
+  assert_contains "$result" "ERROR ready-with-needs" "ready with needs/* must error" || return 1
 }
 
-@test "both needs-triage and ready → ERROR" {
-  result=$(run_validator '{"number":6,"body":"","labels":[{"name":"ready"},{"name":"needs-triage"},{"name":"bug"},{"name":"area/operator"},{"name":"backlog"}]}')
-  [[ "$result" == *"ERROR both-needs-triage-and-ready"* ]]
+test_both_triage_and_ready() {
+  local result
+  result="$(run_validator '{"number":6,"body":"","labels":[{"name":"ready"},{"name":"needs-triage"},{"name":"bug"},{"name":"area/operator"},{"name":"backlog"}]}')"
+  assert_contains "$result" "ERROR both-needs-triage-and-ready" "both labels must error" || return 1
 }
 
-@test "urgent without Reason: → WARN" {
-  result=$(run_validator '{"number":7,"body":"some text without the marker","labels":[{"name":"urgent"}]}')
-  [[ "$result" == *"WARN urgent-without-reason"* ]]
+test_urgent_without_reason_warns() {
+  local result
+  result="$(run_validator '{"number":7,"body":"some text without the marker","labels":[{"name":"urgent"}]}')"
+  assert_contains "$result" "WARN urgent-without-reason" "urgent w/o reason must warn" || return 1
 }
 
-@test "urgent with Reason: → no warn" {
-  result=$(run_validator '{"number":8,"body":"Reason: prod incident\nmore text","labels":[{"name":"urgent"}]}')
-  [[ "$result" != *"urgent-without-reason"* ]]
+test_urgent_with_reason_no_warn() {
+  local result
+  result="$(run_validator '{"number":8,"body":"Reason: prod incident\nmore text","labels":[{"name":"urgent"}]}')"
+  assert_not_contains "$result" "urgent-without-reason" "urgent w/ reason must not warn" || return 1
 }
 
-@test "blocked without Blocked by: → WARN" {
-  result=$(run_validator '{"number":9,"body":"some text","labels":[{"name":"blocked"}]}')
-  [[ "$result" == *"WARN blocked-without-reference"* ]]
+test_blocked_without_reference_warns() {
+  local result
+  result="$(run_validator '{"number":9,"body":"some text","labels":[{"name":"blocked"}]}')"
+  assert_contains "$result" "WARN blocked-without-reference" "blocked w/o reference must warn" || return 1
 }
 
-@test "blocked with Blocked by: → no warn" {
-  result=$(run_validator '{"number":10,"body":"Blocked by: #42","labels":[{"name":"blocked"}]}')
-  [[ "$result" != *"blocked-without-reference"* ]]
+test_blocked_with_reference_no_warn() {
+  local result
+  result="$(run_validator '{"number":10,"body":"Blocked by: #42","labels":[{"name":"blocked"}]}')"
+  assert_not_contains "$result" "blocked-without-reference" "blocked w/ reference must not warn" || return 1
 }
 
-@test "clean issue → no output" {
-  result=$(run_validator '{"number":11,"body":"","labels":[{"name":"bug"},{"name":"area/operator"},{"name":"backlog"},{"name":"ready"}]}')
-  [ -z "$result" ]
+test_clean_issue_silent() {
+  local result
+  result="$(run_validator '{"number":11,"body":"","labels":[{"name":"bug"},{"name":"area/operator"},{"name":"backlog"},{"name":"ready"}]}')"
+  assert_empty "$result" "clean issue must produce no output" || return 1
 }
+```
+
+Extend the runner block at the bottom:
+
+```bash
+run_test "issue with two commitments → ERROR"             test_two_commitments_error
+run_test "ready without category → ERROR"                 test_ready_without_category
+run_test "ready without area → ERROR"                     test_ready_without_area
+run_test "ready without commitment → ERROR"               test_ready_without_commitment
+run_test "ready with needs/* → ERROR"                     test_ready_with_needs
+run_test "both needs-triage and ready → ERROR"            test_both_triage_and_ready
+run_test "urgent without Reason: → WARN"                  test_urgent_without_reason_warns
+run_test "urgent with Reason: → no warn"                  test_urgent_with_reason_no_warn
+run_test "blocked without Blocked by: → WARN"             test_blocked_without_reference_warns
+run_test "blocked with Blocked by: → no warn"             test_blocked_with_reference_no_warn
+run_test "clean issue → no output"                        test_clean_issue_silent
+summary
 ```
 
 - [ ] **Step 6: Extend validator to satisfy the new tests**
@@ -981,30 +1159,32 @@ if has_label "blocked" && ! body_has_line '^Blocked by:'; then
 fi
 ```
 
-- [ ] **Step 7: Run full bats suite, all pass**
+- [ ] **Step 7: Run the full suite, all 11 pass**
 
 ```bash
-chmod +x tools/validate-issue-labels.sh
-bats tests/tools/validate-issue-labels.bats
+bash tests/tools/test_validate-issue-labels.sh
 ```
-Expected: 10 tests PASS.
+Expected: `Passed: 11`, `Failed: 0`. Exit code 0.
 
 - [ ] **Step 8: shellcheck clean**
 
 ```bash
-shellcheck tools/validate-issue-labels.sh
+chmod +x tests/tools/test_validate-issue-labels.sh
+shellcheck tools/validate-issue-labels.sh tests/tools/test_validate-issue-labels.sh
 ```
 Expected: exits 0.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add tools/validate-issue-labels.sh tests/tools/validate-issue-labels.bats
-git commit -m "feat(tools): add issue label state validator
+git add tools/validate-issue-labels.sh tests/tools/test_validate-issue-labels.sh
+git commit -m "feat(tools): add issue label state validator + bash tests
 
 Implements the rules from docs/agent-rituals.md → State validator.
 Reads one issue's JSON via stdin, emits ERROR/WARN lines, exits 0.
-Covered by 10 bats tests."
+
+Covered by 11 pure-bash tests in tests/tools/test_validate-issue-labels.sh
+using the shared tests/tools/_lib.sh runner introduced in T2."
 ```
 
 ---
