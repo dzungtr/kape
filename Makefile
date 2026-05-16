@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: generate build test lint build-images docker-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
+.PHONY: generate build test lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -39,9 +39,23 @@ build-images: ## Build all container images with podman
 	podman build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
 	podman build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
 
-docker-build: ## [DEPRECATED] Use build-images instead
-	@echo "WARNING: docker-build is deprecated — use 'make build-images' instead" >&2
-	$(MAKE) build-images
+docker-build: ## Build all container images using docker
+	docker build -t kape-operator:dev -f operator/Dockerfile .
+	docker build -t kape-task-service:dev -f task-service/Dockerfile .
+	docker build -t kape-runtime:dev -f runtime/Dockerfile .
+	docker build -t kape-dashboard:dev -f dashboard/Dockerfile .
+	docker build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
+	docker build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
+	docker build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
+
+podman-build: ## Build all images using podman (local dev)
+	podman build -t kape-operator:dev -f operator/Dockerfile .
+	podman build -t kape-task-service:dev -f task-service/Dockerfile .
+	podman build -t kape-runtime:dev -f runtime/Dockerfile .
+	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
+	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
+	podman build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
+	podman build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
 
 playground-up: ## Start the playground stack (copies example configs if absent)
 	@if [ ! -f playground/runtime/settings.toml ]; then \
