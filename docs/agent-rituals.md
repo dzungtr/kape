@@ -16,6 +16,7 @@ bodies.
 | Planning           | `committed`, `stretch`, `backlog`, `ready`, `phase/*` | `committed` ⇄ `stretch`, `needs-triage` |
 | Triage             | `needs/*`, category, area, commitment     | category, area, commitment, `ready`, `needs-triage` |
 | Bug intake         | (Snyk MCP output, new-issue events)       | `bug`, `security`, `urgent`, `snyk-finding`, `area/*`, `backlog` |
+| `apply-labels` skill | target issue/PR labels, body, title, changed files | `area/*`, category, `phase/*`; proposes commitment but never applies without user confirmation |
 | State validator    | all                                       | none (reports only)                    |
 
 Only the writer roles above may set the listed labels. Other agents read but do
@@ -166,9 +167,9 @@ On Snyk MCP finding:
 
 ## State validator
 
-A periodic agent (see "Where it runs" below) checks open issues for inconsistent
-label state and reports violations. The validator never mutates labels — it
-only reports.
+An on-demand agent (see "Where it runs" below) checks open issues for
+inconsistent label state and reports violations. The validator never mutates
+labels — it only reports.
 
 ```
 For each open issue:
@@ -186,22 +187,29 @@ For each open issue:
 
 ### Where it runs
 
-The state validator runs in two places:
-1. As a step in the `/standup` skill, before the bucket ranking, so violations
-   surface in the daily report.
-2. As a scheduled GitHub Action (weekly), to catch issues that `/standup` did
-   not run against.
+The state validator runs in two places, both invoked on demand — no schedule,
+no per-issue auto-comment:
 
-Both share the same rule set; the GitHub Action posts a comment on each
-offending issue with the violation list.
+1. As a step in the `/standup` skill, before the bucket ranking, so violations
+   surface in the daily report whenever `/standup` is run.
+2. As a manual-dispatch GitHub Action (`gh workflow run validate-labels.yml`),
+   when a maintainer wants a current snapshot — typically before a planning
+   ritual or after a backfill. The Action emits the violation list to the job
+   log and uploads it as an artifact. It does not comment on issues.
+
+Both invocations share the same rule set. The deliberate choice to skip both
+a schedule and an issues-event trigger keeps the workflow surface minimal:
+per-event auto-comments get noisy on every triage edit, and a weekly cron
+adds maintenance cost (drift, surprise notifications) for a check the
+maintainer can trigger any time it's actually useful.
 
 ## Mutability summary
 
 | Label                   | Settable by                                   | Cleared by                                |
 |-------------------------|-----------------------------------------------|-------------------------------------------|
-| Category labels         | Triage, bug intake, human                     | Human only                                |
-| `area/*`                | Triage, bug intake, human                     | Human only                                |
-| `phase/*`               | Phase-sync (on milestone change), migration script, human | Phase-sync, human               |
+| Category labels         | Triage, bug intake, `apply-labels` skill, human | Human only                              |
+| `area/*`                | Triage, bug intake, `apply-labels` skill, human | Human only                              |
+| `phase/*`               | Phase-sync (on milestone change), migration script, `apply-labels` skill, human | Phase-sync, human |
 | `committed`             | Planning, human (by milestone assignment)     | Planning (→ stretch), human               |
 | `stretch`               | Planning, human                               | Planning (→ committed), human             |
 | `backlog`               | Triage, bug intake, human                     | Planning (→ stretch / committed), human   |

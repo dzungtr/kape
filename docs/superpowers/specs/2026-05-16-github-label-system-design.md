@@ -166,7 +166,7 @@ The following were considered and rejected in favour of observable state:
 
 Each hook is a small, well-scoped change. Detail goes in the implementation plan; this spec only fixes the surface.
 
-1. **PR auto-labeler.** `.github/labeler.yml` mapping path globs → `area/*` and category for unambiguous paths (`docs/**` → `docs`, `**/*_test.go` → `test`, `helm/**` → `area/helm`).
+1. **`apply-labels` Claude skill.** On-demand skill at `.claude/skills/apply-labels/SKILL.md` that labels a PR or issue. Reads changed files (for PRs) or title (for issues), applies always-safe derivations (`area/*` from paths/keywords, category from paths, `phase/Mx-*` from `[Pn/mm]` prefix), and asks before applying ambiguous labels. Never sets commitment or signals (`urgent`/`blocked`) autonomously. Chosen over an `actions/labeler` GHA because the taxonomy is agent-native — Claude can read body text, resolve area ambiguity, and reason about category + area together, which path-globs cannot. Invoked in-session with the human in the loop; no `pull_request_target` security surface.
 2. **Snyk integration.** When `snyk-finding` is set (existing flow), also set `security` + `urgent`. Set `committed` only if a maintainer assigns the issue to a milestone; otherwise leave `backlog`.
 3. **`/standup` extension.** Add datasources in `.claude/standup.json` for open issues with `urgent` and `blocked` so the daily report buckets them explicitly. The existing `bug` datasource is kept.
 4. **`needs-rebase` automation for PRs only.** Out of scope for this label system — PRs use GitHub's mergeable state directly.
