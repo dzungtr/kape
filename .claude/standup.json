@@ -1,0 +1,17 @@
+{
+  "datasources": [
+    {
+      "name": "bug",
+      "description": "Failed GitHub Actions runs in the last 7 days — signals potential regressions needing a bug issue",
+      "command": "gh run list --status failure --limit 20 --json databaseId,displayTitle,workflowName,conclusion,updatedAt,headBranch"
+    },
+    {
+      "name": "enhancement",
+      "description": "Snyk code scan findings in the operator module — security issues that may warrant an enhancement or bug issue",
+      "tool": "mcp__Snyk__snyk_code_scan",
+      "params": {
+        "scanPath": "./operator"
+      }
+    }
+  ]
+}
