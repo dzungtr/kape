@@ -8,6 +8,24 @@
 
 **Tech Stack:** bash 5+, `yq` (for YAML manipulation), `jq`, `gh` CLI, GitHub Actions (`actions/labeler@v5`), `bats-core` (for shell tests).
 
+**Runtime environment:** Linux. Local dev on Fedora 43 (the maintainer's workstation); CI on `ubuntu-latest` (GHA runners). All scripts are pure bash (`#!/usr/bin/env bash`, arrays, `[[ ]]`, `set -euo pipefail`) — no POSIX-sh, no fish, no zsh idioms. GNU coreutils assumed (no BSD sed/grep flags).
+
+**Prerequisite tools (install once per environment):**
+
+Fedora (local dev):
+```bash
+sudo dnf install -y bats-core jq yq shellcheck
+# gh and python3 are typically already present
+```
+
+Ubuntu / Debian (GHA `ubuntu-latest` runner, pre-installs vary):
+```bash
+sudo apt-get update && sudo apt-get install -y bats jq shellcheck
+sudo curl -L -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
+```
+
+GHA workflows that run bats (none in this plan today, but a follow-up may add one) MUST include an install step — bats is not preinstalled on `ubuntu-latest`.
+
 **Spec reference:** `docs/superpowers/specs/2026-05-16-github-label-system-design.md`
 **Rituals reference:** `docs/agent-rituals.md`
 
@@ -268,7 +286,7 @@ teardown() {
 
 - [ ] **Step 2: Run test, watch it fail**
 
-Install bats if not present (`apt install bats` on the runner) then:
+Ensure `bats-core` is installed (see "Prerequisite tools" at the top of the plan — `sudo dnf install -y bats-core` on Fedora). Then:
 ```bash
 bats tests/tools/sync-labels.bats
 ```
