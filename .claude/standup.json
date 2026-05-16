@@ -7,11 +7,21 @@
     },
     {
       "name": "snyk-finding",
-      "description": "Snyk code scan findings in the operator module — security issues tracked via the snyk-finding label, separate from GitHub's default enhancement label",
+      "description": "Snyk code scan findings in the operator module — security issues tracked via the snyk-finding label",
       "tool": "mcp__Snyk__snyk_code_scan",
       "params": {
         "scanPath": "./operator"
       }
+    },
+    {
+      "name": "urgent-issues",
+      "description": "Open issues labelled urgent — surfaced top of standup per agent-rituals.md",
+      "command": "gh issue list --state open --label urgent --json number,title,labels,assignees,milestone,updatedAt,body"
+    },
+    {
+      "name": "blocked-issues",
+      "description": "Open issues labelled blocked — surfaced in Stuck bucket when blocked > 3 days per agent-rituals.md",
+      "command": "gh issue list --state open --label blocked --json number,title,labels,assignees,milestone,updatedAt,body"
     }
   ]
 }
