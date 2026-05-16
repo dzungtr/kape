@@ -36,7 +36,7 @@ Issues live in GitHub Issues on `dzungtr/kape` and are managed via the `gh` CLI.
 
 ### Triage labels
 
-Canonical role names are used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+Maps Pocock canonical roles onto this repo's taxonomy (`needs-info` → `needs/info`, `ready-for-{agent,human}` → single `ready`; audience encoded via assignee). See `docs/agents/triage-labels.md` and `docs/agent-rituals.md`.
 
 ### Domain docs
 
