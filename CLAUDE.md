@@ -27,3 +27,17 @@ Before creating any PR, run SBOM generation for all Go modules and post a summar
 
    If `snyk_sbom_scan` returns no component count, write "N/A".
    If any module scan fails, write "FAILED: <error message>" in the Components column and "N/A" in the Flagged column for that module row.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `dzungtr/kape` and are managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical role names are used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
