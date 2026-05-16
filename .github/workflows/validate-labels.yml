@@ -28,19 +28,17 @@ jobs:
           total=0
           flagged=0
           {
-            gh issue list --state open --limit "${ISSUE_LIMIT}" --json number \
-              | jq -r '.[].number' \
-              | while read -r num; do
-                  total=$((total+1))
-                  payload=$(gh issue view "$num" --json number,body,labels)
-                  violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
-                  if [[ -n "$violations" ]]; then
-                    flagged=$((flagged+1))
-                    echo "Issue #$num:"
-                    echo "$violations"
-                    echo
-                  fi
-                done
+            while read -r num; do
+              total=$((total+1))
+              payload=$(gh issue view "$num" --json number,body,labels)
+              violations=$(echo "$payload" | bash tools/validate-issue-labels.sh)
+              if [[ -n "$violations" ]]; then
+                flagged=$((flagged+1))
+                echo "Issue #$num:"
+                echo "$violations"
+                echo
+              fi
+            done < <(gh issue list --state open --limit "${ISSUE_LIMIT}" --json number | jq -r '.[].number')
             echo "---"
             echo "Scanned: $total open issues."
             echo "Flagged: $flagged with violations."
