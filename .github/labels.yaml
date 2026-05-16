@@ -133,8 +133,3 @@
 - name: snyk-finding
   color: "d73a4a"
   description: "Snyk-surfaced security finding requiring a fix"
-
-# --- Transitional (retired in T12) ---
-- name: roadmap-sync
-  color: "0075ca"
-  description: "Roadmap sync issue (transitional — retired after backfill)"

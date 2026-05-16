@@ -89,7 +89,7 @@ create_issue() {
   local title="$1" body="$2" milestone_number="$3" state="$4"
   # Check if issue already exists with same title
   local existing
-  existing=$(gh_api "repos/${REPO}/issues?state=all&per_page=100&labels=roadmap-sync" \
+  existing=$(gh_api "repos/${REPO}/issues?state=all&per_page=100&milestone=${milestone_number}" \
     --jq ".[] | select(.title == \"${title}\") | .number" 2>/dev/null | head -1 || true)
   if [[ -n "$existing" ]]; then
     echo "    Issue '${title}' already exists (#${existing}), skipping."
@@ -100,7 +100,7 @@ create_issue() {
   area_label="$(derive_area "$title")"
   phase_label="$(derive_phase "$title")"
 
-  local label_args=(-f "labels[]=roadmap-sync" -f "labels[]=enhancement" -f "labels[]=committed")
+  local label_args=(-f "labels[]=enhancement" -f "labels[]=committed")
   [[ -n "$area_label" ]]  && label_args+=(-f "labels[]=$area_label")
   [[ -n "$phase_label" ]] && label_args+=(-f "labels[]=$phase_label")
   [[ -z "$area_label" || -z "$phase_label" ]] && label_args+=(-f "labels[]=needs-triage")
