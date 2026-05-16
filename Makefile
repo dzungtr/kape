@@ -1,32 +1,45 @@
-.PHONY: generate build test lint docker-build playground-up playground-down playground-operator playground-logs fire-adapter
+.DEFAULT_GOAL := help
+.PHONY: generate build test lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
 
-generate:
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+
+generate: ## Regenerate CRD manifests and TypeScript API types
 	controller-gen rbac:roleName=kape-operator crd:allowDangerousTypes=true webhook \
 		paths=./operator/infra/... \
 		output:crd:artifacts:config=./crds
 	npx openapi-typescript task-service/openapi/openapi.yaml \
 		-o dashboard/app/types/generated/task-service.ts
 
-build:
+build: ## Build all Go binaries, Python wheel, and dashboard
 	go build ./operator/cmd/...
 	go build ./task-service/cmd/...
 	go build ./adapters/cmd/...
 	cd runtime && uv build
 	cd dashboard && npm run build
 
-test:
+test: ## Run all tests (Go, Python, dashboard)
 	go test ./operator/...
 	go test ./task-service/...
 	go test ./adapters/...
 	cd runtime && uv run pytest
 	cd dashboard && npm test -- --passWithNoTests
 
-lint:
+lint: ## Run golangci-lint and ruff across all modules
 	golangci-lint run ./operator/... ./task-service/... ./adapters/...
 	cd runtime && uv run ruff check . && uv run ruff format --check .
 	cd dashboard && npm run lint
 
-docker-build:
+build-images: ## Build all container images with podman
+	podman build -t kape-operator:dev -f operator/Dockerfile .
+	podman build -t kape-task-service:dev -f task-service/Dockerfile .
+	podman build -t kape-runtime:dev -f runtime/Dockerfile .
+	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
+	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
+	podman build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
+	podman build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
+
+docker-build: ## Build all container images using docker
 	docker build -t kape-operator:dev -f operator/Dockerfile .
 	docker build -t kape-task-service:dev -f task-service/Dockerfile .
 	docker build -t kape-runtime:dev -f runtime/Dockerfile .
@@ -35,7 +48,16 @@ docker-build:
 	docker build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
 	docker build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
 
-playground-up:
+podman-build: ## Build all images using podman (local dev)
+	podman build -t kape-operator:dev -f operator/Dockerfile .
+	podman build -t kape-task-service:dev -f task-service/Dockerfile .
+	podman build -t kape-runtime:dev -f runtime/Dockerfile .
+	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
+	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
+	podman build -t kape-adapter-alertmanager:dev -f adapters/Dockerfile.alertmanager .
+	podman build -t kape-adapter-audit:dev -f adapters/Dockerfile.audit .
+
+playground-up: ## Start the playground stack (copies example configs if absent)
 	@if [ ! -f playground/runtime/settings.toml ]; then \
 	  cp playground/runtime/settings.toml.example playground/runtime/settings.toml; \
 	  echo "Created playground/runtime/settings.toml from example — edit before firing events."; \
@@ -46,15 +68,23 @@ playground-up:
 	fi
 	podman compose -f playground/docker-compose.playground.yml --env-file playground/.env up -d --build
 
-playground-down:
+playground-down: ## Tear down the playground stack and remove volumes
 	podman compose -f playground/docker-compose.playground.yml down -v
 
-playground-operator:
+playground-operator: ## Run the operator locally against the playground cluster
 	go run ./operator/cmd/playground/...
 
-playground-logs:
+playground-logs: ## Follow logs from the playground stack
 	podman compose -f playground/docker-compose.playground.yml logs -f
 
-fire-adapter:
+fire-adapter: ## Fire a test event via an adapter — usage: make fire-adapter ADAPTER=alertmanager
 	@test -n "$(ADAPTER)" || (echo "Usage: make fire-adapter ADAPTER=alertmanager" && exit 1)
 	go run ./adapters/cmd/$(ADAPTER)/... --playground
+
+clean: ## Remove compiled Go binaries
+	@rm -f ./cmd
+	@rm -f ./operator/cmd/cmd
+	@rm -f ./task-service/task-service
+	@rm -f ./examples/sre-alertmanager/src/mock-api/mock-api
+	@rm -f ./examples/sre-alertmanager/src/mock-webhook/mock-webhook
+	@echo "Cleaned compiled binaries."
