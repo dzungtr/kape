@@ -1,7 +1,7 @@
-FROM node:22-alpine
+FROM oven/bun:1.3.12-alpine
 WORKDIR /app
-COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci
+COPY dashboard/package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY dashboard/ .
 EXPOSE 3000
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+CMD ["bun", "run", "dev", "--", "--host", "0.0.0.0"]
