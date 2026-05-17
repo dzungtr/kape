@@ -31,6 +31,7 @@ sbom/
 
 # Compiled binaries
 task-service/task-service
+/alertmanager
 
 # ignore binary build
 cmd
@@ -43,6 +44,14 @@ operator/cmd/cmd
 
 examples/sre-alertmanager/src/mock-api/mock-api
 examples/sre-alertmanager/src/mock-webhook/mock-webhook
+
+# Go test binaries and coverage artifacts
+*.test
+coverage.out
+*.prof
+
+# macOS
+.DS_Store
 
 # Playground
 kubeconfig.playground
