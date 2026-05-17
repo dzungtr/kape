@@ -119,10 +119,13 @@ both of which want `*v1alpha1.KapeHandler`. Nothing else dereferences it.
 | References | `SkillRefs() []string` | names from `spec.skills[].ref`, declaration order |
 | Validation | `ValidateScaling() error` | replaces inline `scaleToZero ∧ minReplicas≥1` check |
 | Derivation | `HasLazySkills() bool` | derived from skills (passed in or precomputed) |
+| Derivation | `LazySkills(skills []*Skill) []*Skill` | filters to lazy-only; needed by TOMLRenderer + skillConfigMaps |
 | Derivation | `ConsumerName() string` | `strings.ReplaceAll(spec.trigger.type, ".", "-")` |
-| Composition | `SystemPrompt(eager, lazy []*Skill) string` | replaces `AssembleSystemPrompt` |
-| Composition | `RolloutHash(*Schema, ToolSet, []*Skill) (string, error)` | replaces `computeRolloutHash` |
-| Composition | `DesiredLabels(ToolSet) map[string]string` | replaces inline label-build in step 10 |
+| Resolution | `ResolveSkills(fetched []*Skill) ([]*Skill, SkillGate)` | walks `h.SkillRefs()`, validates Ready, returns assembled list or first-failure gate |
+| Resolution | `ResolveTools(handlerTools []*Tool, skills []*Skill, skillTools [][]*Tool) (*ToolSet, ToolGate)` | validates handler-direct + skill-pulled tools all Ready, unions into a ToolSet |
+| Composition | `SystemPrompt(skills []*Skill) string` | replaces `AssembleSystemPrompt`; partitions eager/lazy internally |
+| Composition | `RolloutHash(*Schema, *ToolSet, []*Skill) (string, error)` | replaces `computeRolloutHash`; hashes full skill set, eager/lazy split irrelevant |
+| Composition | `DesiredLabels(*ToolSet) map[string]string` | replaces inline label-build in step 10 |
 | Status | `EvaluateDeploymentAvailable(*appsv1.DeploymentStatus, found bool) Condition` | replaces `buildHandlerConditions` body |
 | Status | `SetCondition(Condition)` | upsert into `inner.Status.Conditions` |
 | Status | `RecomputeReady()` | runs the negative-form rollup; updates Ready in place |
@@ -140,6 +143,7 @@ either works.
 | Type | Method | Purpose |
 |---|---|---|
 | `Schema` | `Name()`, `IsReady()`, `ReadyMessage()` | identity + Ready predicate |
+| `Schema` | `CheckReady() (bool, SchemaGate)` | gate-returning readiness; reconciler dispatches the gate when not OK |
 | `Schema` | `Validate() error` | replaces `validateJSONSchema` |
 | `Schema` | `Hash() (string, error)` | replaces `computeSchemaHash` |
 | `Tool` | `Name()`, `Type()`, `IsReady()`, `ReadyMessage()` | identity + Ready predicate |
@@ -190,38 +194,24 @@ without buying isolation that matters.
 will be deleted from `tool.go`; the four reconcilers import
 `domain.ConditionSet` instead).
 
-### Three named pure functions
+### Resolution lives on the aggregate roots
 
-These do not belong on any single type — they coordinate across types — so
-they live as exported package functions, not methods.
+`Handler` is the aggregate root being reconciled; `Schema` is a self-contained
+sub-aggregate. Resolution, derivation, and gating are *their* responsibilities.
+`Skill`, `Tool`, and `Schema` (when consumed by `Handler`) are inputs that
+arrive as arguments — never injected through a shared receiver. The reconciler
+only ever talks to `h.<verb>(...)` and `schema.<verb>(...)`; there are no
+standalone `domain.Resolve*` / `domain.Check*` functions on the public surface.
 
-```go
-// Step A. Walks h.SkillRefs(), validates that every fetched element is
-// non-nil and Ready, returns the assembled list in handler declaration
-// order. On any not-ready / missing skill, returns nil + a SkillGate
-// describing the first failure.
-func ResolveSkills(h *Handler, fetched []*Skill) ([]*Skill, SkillGate)
+The `Handler` resolution methods (`ResolveSkills`, `ResolveTools`) are declared
+in the Handler methods table above. `Schema.CheckReady` is declared in the
+Schema methods table above. Any internal helpers (e.g. partitioning skills
+into eager/lazy buckets) are unexported package-locals inside `domain/`,
+invoked only by other domain methods (`SystemPrompt`); they never appear on
+the reconciler surface.
 
-// Step B. Validates handler-direct tools and skill-pulled tools all Ready,
-// then unions them into a ToolSet (handler-direct first, skill-pulled
-// after; later inserts of the same Name are no-ops per spec D13).
-//   - handlerTools: parallel to h.ToolRefs()
-//   - skills:       already-ready skills (output of ResolveSkills)
-//   - skillTools:   outer slice parallel to skills; inner slice parallel
-//                   to that skill's ToolRefs()
-func ResolveTools(
-    h *Handler,
-    handlerTools []*Tool,
-    skills []*Skill,
-    skillTools [][]*Tool,
-) (*ToolSet, ToolGate)
-
-// Schema readiness check — single fetch, single predicate. Trivial,
-// but exposed here so all gating policy lives in one package.
-func CheckSchemaReady(s *Schema) SchemaGate
-```
-
-Three distinct gate types because they have distinct reasons:
+The three methods return distinct gate types because they have distinct
+reasons:
 
 ```go
 type SkillGate  struct { OK bool; Reason, Message string }   // KapeSkillNotFound | KapeSkillNotReady
@@ -233,10 +223,20 @@ func (g ToolGate)   AsCondition() Condition
 func (g SchemaGate) AsCondition() Condition
 ```
 
+Gate types are plain value structs returned by the entity methods. The
+reconciler is what actually writes them to status via `recordGateAndRequeue` —
+gating *policy* (what's a failure, what's the reason) lives in the domain;
+gating *I/O* (status patch + requeue) lives in the shell.
+
 `AsCondition()` builds the `DependenciesReady=False` condition with the
 correct `Reason` and `Message`, replacing the four `setCondition(...,
 metav1.Condition{Type: "DependenciesReady", Status: False, Reason: ..., ...})`
 sites currently scattered through `Reconcile`.
+
+If a domain method needs a dependency that isn't part of the aggregate it
+owns (e.g. a future `Schema.CheckReady` that needs to consult a registry),
+the dependency is passed in as a method argument — never stored on the
+wrapper. The signature extends; the encapsulation principle holds.
 
 ## Reconciler shape
 
@@ -250,7 +250,7 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
     // ── Step A: resolve skills ─────────────────────────────────────────
     fetchedSkills, err := r.fetchSkillsFor(ctx, h)
     if err != nil { return ctrl.Result{}, err }
-    skills, skillGate := domain.ResolveSkills(h, fetchedSkills)
+    skills, skillGate := h.ResolveSkills(fetchedSkills)
     if !skillGate.OK { return r.recordGateAndRequeue(ctx, h, skillGate.AsCondition()) }
 
     // ── Step B: resolve & union tools ──────────────────────────────────
@@ -258,14 +258,14 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
     if err != nil { return ctrl.Result{}, err }
     skillTools, err := r.fetchToolsForSkills(ctx, skills)
     if err != nil { return ctrl.Result{}, err }
-    tools, toolGate := domain.ResolveTools(h, handlerTools, skills, skillTools)
+    tools, toolGate := h.ResolveTools(handlerTools, skills, skillTools)
     if !toolGate.OK { return r.recordGateAndRequeue(ctx, h, toolGate.AsCondition()) }
 
     // ── Schema check ───────────────────────────────────────────────────
     rawSchema, err := r.schemas.Get(ctx, h.SchemaKey())
     if err != nil { return ctrl.Result{}, fmt.Errorf("fetching KapeSchema: %w", err) }
     schema := domain.NewSchema(rawSchema)
-    if g := domain.CheckSchemaReady(schema); !g.OK {
+    if ready, g := schema.CheckReady(); !ready {
         return r.recordGateAndRequeue(ctx, h, g.AsCondition())
     }
 
@@ -279,20 +279,17 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
     }
 
     // ── Pure derivations ───────────────────────────────────────────────
-    eager, lazy := domain.PartitionSkills(skills)  // small helper, returns (eager, lazy)
     hash, err := h.RolloutHash(schema, tools, skills)
     if err != nil { return ctrl.Result{}, err }
-    prompt := h.SystemPrompt(eager, lazy)
+    prompt := h.SystemPrompt(skills)   // partitions eager/lazy internally
     labels := h.DesiredLabels(tools)
 
     cfg, err := r.kapeConfig.Load(ctx)
     if err != nil { return ctrl.Result{}, err }
 
     // ── Direct port calls (one per resource, in spec order) ────────────
-    toml, err := r.tomlRenderer.Render(h.Raw(), schema.Raw(), tools.Sorted(), eager, lazy, cfg)
-    // Note: tomlRenderer.Render currently rebuilds the prompt internally —
-    // post-refactor, it should accept the prompt as a parameter so the
-    // domain owns it. Tracked as a TOMLRenderer-port shape change below.
+    lazy := h.LazySkills(skills)
+    toml, err := r.tomlRenderer.Render(h.Raw(), schema.Raw(), tools.Sorted(), prompt, lazy, cfg)
     if err != nil { return ctrl.Result{}, err }
     if err := r.configMaps.Ensure(ctx, h.Raw(), toml); err != nil { return ctrl.Result{}, err }
 
@@ -382,9 +379,11 @@ The work is mechanically reversible at every step. Order matters.
 8. **Move `AssembleSystemPrompt` from `reconcile/system_prompt.go`** into
    `Handler.SystemPrompt`. Delete `reconcile/system_prompt.go` (and tests
    move to `domain/handler_test.go`).
-9. **Add `ResolveSkills`, `ResolveTools`, `CheckSchemaReady`,
-   `PartitionSkills` package functions** to `domain/`. Tests cover every
-   gate path.
+9. **Add `Handler.ResolveSkills`, `Handler.ResolveTools`, `Handler.LazySkills`,
+   `Schema.CheckReady` methods** to the respective wrappers. Add the unexported
+   `partitionSkills` helper inside `domain/` (used by `Handler.SystemPrompt`
+   and `Handler.LazySkills`; not exported). Tests cover every gate path and
+   every partition edge.
 10. **Rewrite `reconcile/handler.go.Reconcile`** to the shape above. Extract
     `fetchSkillsFor`, `fetchHandlerToolsFor`, `fetchToolsForSkills`,
     `recordGateAndRequeue`, `ensureScaledObjectFor` as small unexported
