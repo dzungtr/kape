@@ -1,0 +1,30 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kape-task-service-ingress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 4 — kape-task-service ingress (Cilium variant).
+spec:
+  endpointSelector:
+    matchLabels:
+      kape.io/component: task-service
+  ingress:
+    # Handler pods
+    - fromEndpoints:
+        - matchLabels:
+            kape.io/component: handler
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Dashboard pods
+    - fromEndpoints:
+        - matchLabels:
+            kape.io/component: dashboard
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

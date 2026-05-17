@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-task-service-ingress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 4 — kape-task-service ingress.
+      Accepts connections from handler pods (task writes) and dashboard pods
+      (task reads). All other ingress — including direct database clients and
+      operator pods — is denied. This policy is load-bearing for audit log
+      isolation: the REST API surface is the complete audit boundary.
+spec:
+  podSelector:
+    matchLabels:
+      kape.io/component: task-service
+  policyTypes:
+    - Ingress
+  ingress:
+    # Handler pods — task status writes and schema output persistence
+    - from:
+        - podSelector:
+            matchLabels:
+              kape.io/component: handler
+      ports:
+        - port: 8080
+          protocol: TCP
+
+    # Dashboard pods — task reads and status queries
+    - from:
+        - podSelector:
+            matchLabels:
+              kape.io/component: dashboard
+      ports:
+        - port: 8080
+          protocol: TCP

@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-mcp-ingress
+  namespace: kape-system   # adjust to the namespace where your MCP server is deployed
+  annotations:
+    kape.io/doc: >
+      Boundary 3 — MCP server ingress.
+      Permits inbound connections only from kape.io/component: handler pods
+      in the kape-system namespace. The namespaceSelector + podSelector
+      combination uses AND semantics — both conditions must match.
+      Engineer must set kape.io/mcp-server: <server-name> on MCP server pods.
+      Adjust the podSelector.matchLabels to match your MCP server's label.
+spec:
+  podSelector:
+    matchLabels:
+      kape.io/mcp-server: k8s-mcp   # engineer sets this on their MCP server pods
+  policyTypes:
+    - Ingress
+  ingress:
+    # Accept connections only from handler pods in kape-system.
+    # namespaceSelector + podSelector in the same 'from' entry = AND semantics.
+    - from:
+        - podSelector:
+            matchLabels:
+              kape.io/component: handler
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kape-system
+      ports:
+        - port: 8080
+          protocol: TCP   # SSE transport
+        - port: 8081
+          protocol: TCP   # Streamable HTTP transport
