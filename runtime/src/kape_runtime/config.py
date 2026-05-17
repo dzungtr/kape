@@ -17,6 +17,11 @@ class KapeConfig:
     max_iterations: int
     schema_name: str
     max_event_age_seconds: int
+    actions: list[dict[str, Any]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.actions is None:
+            self.actions = []
 
 
 @dataclass
@@ -92,6 +97,10 @@ def load_config(settings_file: str | None = None) -> Config:
         env_switcher="KAPE_ENV",
     )
 
+    raw_actions = _dynabox_to_dict(raw.get("kape", {}).get("actions", []))
+    if not isinstance(raw_actions, list):
+        raw_actions = []
+
     return Config(
         kape=KapeConfig(
             handler_name=raw.kape.handler_name,
@@ -101,6 +110,7 @@ def load_config(settings_file: str | None = None) -> Config:
             max_iterations=raw.kape.max_iterations,
             schema_name=raw.kape.schema_name,
             max_event_age_seconds=raw.kape.max_event_age_seconds,
+            actions=raw_actions,
         ),
         llm=LLMConfig(
             provider=raw.llm.provider,

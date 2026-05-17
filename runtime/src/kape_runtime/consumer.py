@@ -12,6 +12,7 @@ import nats
 import tenacity
 from ulid import ULID
 
+from kape_runtime.actions.router import run_actions
 from kape_runtime.config import KapeConfig, NatsConfig
 from kape_runtime.dlq import publish_dlq
 from kape_runtime.metrics import (
@@ -54,10 +55,12 @@ class ConsumerLoop:
         task_svc: TaskServiceClient,
         graph: Any,
         kape_cfg: KapeConfig,
+        qdrant_client: Any = None,
     ) -> None:
         self._task_svc = task_svc
         self._graph = graph
         self._kape_cfg = kape_cfg
+        self._qdrant_client = qdrant_client
         self._nc: Any = None  # set in run() so process_message() can publish to DLQ
 
     async def process_message(self, msg: Any) -> None:
@@ -162,6 +165,35 @@ class ConsumerLoop:
                 }
 
             await self._task_svc.update_status(task["id"], **update_kwargs)
+
+            # 6. Run post-decision actions (event-publish, webhook, save_memory)
+            #    Only when schema_output is present and actions are configured.
+            if schema_output is not None and kape_cfg.actions:
+                parent_task_id: str = event.extensions.get("parent_task_id", "")
+                action_results = await run_actions(
+                    schema_output=schema_output,
+                    actions=kape_cfg.actions,
+                    nats_client=self._nc,
+                    qdrant_client=self._qdrant_client,
+                    handler_name=kape_cfg.handler_name,
+                    task_id=task["id"],
+                    parent_task_id=parent_task_id,
+                )
+                for result in action_results:
+                    log_fn = logger.warning if result["status"] == "error" else logger.info
+                    log_fn(
+                        "Action %r (%s): %s%s",
+                        result["name"],
+                        result["type"],
+                        result["status"],
+                        f" — {result.get('error')}" if result.get("error") else "",
+                    )
+                # Persist action results alongside the task record
+                await self._task_svc.update_status(
+                    task["id"],
+                    status=task_status.value,
+                    actions=action_results,
+                )
 
             metric_status = (
                 "failed" if task_status == TaskStatus.Failed else "processed"
