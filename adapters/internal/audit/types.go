@@ -23,8 +23,8 @@ type Event struct {
 	UserAgent                string      `json:"userAgent,omitempty"`
 	ObjectRef                *ObjectRef  `json:"objectRef,omitempty"`
 	ResponseStatus           *StatusInfo `json:"responseStatus,omitempty"`
-	RequestObject            *RawObject  `json:"requestObject,omitempty"`
-	ResponseObject           *RawObject  `json:"responseObject,omitempty"`
+	RequestObject            *json.RawMessage `json:"requestObject,omitempty"`
+	ResponseObject           *json.RawMessage `json:"responseObject,omitempty"`
 	RequestReceivedTimestamp time.Time   `json:"requestReceivedTimestamp"`
 	StageTimestamp           time.Time   `json:"stageTimestamp"`
 }
@@ -53,8 +53,3 @@ type StatusInfo struct {
 	Status string `json:"status,omitempty"`
 }
 
-// RawObject is an arbitrary JSON object (request/response body).
-// Stored as json.RawMessage to avoid re-encoding cost.
-type RawObject struct {
-	Raw json.RawMessage `json:"raw,omitempty"`
-}

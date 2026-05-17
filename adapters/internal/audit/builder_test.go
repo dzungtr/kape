@@ -30,8 +30,10 @@ func baseEvent(auditID, verb string) audit.Event {
 
 func TestBuildAudit_FullEvent(t *testing.T) {
 	ev := baseEvent("audit-uuid-1234", "create")
-	ev.RequestObject = &audit.RawObject{Raw: json.RawMessage(`{"key":"value"}`)}
-	ev.ResponseObject = &audit.RawObject{Raw: json.RawMessage(`{"status":"ok"}`)}
+	reqRaw := json.RawMessage(`{"key":"value"}`)
+	respRaw := json.RawMessage(`{"status":"ok"}`)
+	ev.RequestObject = &reqRaw
+	ev.ResponseObject = &respRaw
 
 	ce, err := audit.BuildAudit(ev, "prod-cluster")
 	require.NoError(t, err)

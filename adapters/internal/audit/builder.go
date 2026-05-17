@@ -43,11 +43,11 @@ func BuildAudit(ev Event, clusterName string) (ce.Event, error) {
 
 	reqObj := json.RawMessage("null")
 	if ev.RequestObject != nil {
-		reqObj = ev.RequestObject.Raw
+		reqObj = *ev.RequestObject
 	}
 	respObj := json.RawMessage("null")
 	if ev.ResponseObject != nil {
-		respObj = ev.ResponseObject.Raw
+		respObj = *ev.ResponseObject
 	}
 
 	data := EventData{
