@@ -48,6 +48,15 @@ adapters:
       repository: ghcr.io/kape-io/kape-adapter-audit
       tag: "0.1.0"
 
+# kapeproxy sidecar image used by operator-managed handler pods.
+# The release pin lives here (per D17), not in operator Go code or in
+# playground/Tilt dev tooling (which use :local per D18).
+kapeproxy:
+  image:
+    repository: kape/kapeproxy
+    tag: "0.7.0"
+    pullPolicy: IfNotPresent
+
 nats:
   replicaCount: 1
   storage: 10Gi
