@@ -3,7 +3,7 @@ WORKDIR /workspace
 COPY task-service/go.mod task-service/go.sum ./
 RUN go mod download
 COPY task-service/ .
-RUN go build -o /out/kape-task-service ./cmd/task-service/...
+RUN go build -o /out/kape-task-service ./cmd/main/...
 
 FROM alpine:3.20
 RUN apk add --no-cache wget
