@@ -55,30 +55,267 @@ func TestRouter_NamespacedNames_WithAllowlist(t *testing.T) {
 	assert.Equal(t, "query_dashboards", e.OriginalName)
 }
 
-func TestRouter_NoAllowlist_ExposesAllUpstreamTools(t *testing.T) {
+// TestRouterList_NilAllowlistExposesNothing pins D20: nil allowedTools is
+// deny-by-default — the upstream contributes nothing.
+func TestRouterList_NilAllowlistExposesNothing(t *testing.T) {
 	cfg := &proxy.Config{
 		Upstreams: map[string]*proxy.UpstreamConfig{
-			"basic-mcp": {URL: "http://basic:8080", Transport: "sse"}, // no AllowedTools
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: nil,
+			},
 		},
 	}
 	ups := map[string]proxy.Upstream{
-		"basic-mcp": &fakeUpstream{name: "basic-mcp", tools: []string{"a", "b"}, avail: true},
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "k8s_list_namespaces", "helm_install"},
+			avail: true,
+		},
 	}
 	r := proxy.NewRouter(cfg, ups)
-	assert.ElementsMatch(t, []string{"basic-mcp__a", "basic-mcp__b"}, r.List())
+
+	assert.Empty(t, r.List(),
+		"D20: nil allowedTools exposes zero tools (deny-by-default), regardless of what the upstream advertises")
 }
 
-func TestRouter_UnavailableUpstream_StillExposesNames(t *testing.T) {
+// TestRouterList_EmptyAllowlistExposesNothing pins D20: an explicitly-empty
+// allowedTools slice is equivalent to nil.
+func TestRouterList_EmptyAllowlistExposesNothing(t *testing.T) {
 	cfg := &proxy.Config{
 		Upstreams: map[string]*proxy.UpstreamConfig{
-			"down-mcp": {URL: "http://down:8080", Transport: "sse", AllowedTools: []string{"foo"}},
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: []string{},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	assert.Empty(t, r.List(),
+		"D20: empty allowedTools slice exposes zero tools (deny-by-default)")
+}
+
+// TestRouterList_StarAllowlistExposesAll pins D20 escape hatch: ["*"] is the
+// explicit opt-in to expose every upstream tool.
+func TestRouterList_StarAllowlistExposesAll(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: []string{"*"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "k8s_list_namespaces", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	assert.ElementsMatch(t,
+		[]string{"up__k8s_get_pods", "up__k8s_list_namespaces", "up__helm_install"},
+		r.List(),
+		"D20: [\"*\"] is the legacy 'expose all' opt-in; matches every flat tool name")
+}
+
+// TestRouterList_GlobIntersectsUpstream pins D16: glob patterns intersected
+// with upstream.ListTools().
+func TestRouterList_GlobIntersectsUpstream(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: []string{"k8s_*"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "k8s_list_namespaces", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	assert.ElementsMatch(t,
+		[]string{"up__k8s_get_pods", "up__k8s_list_namespaces"},
+		r.List(),
+		"only k8s_* tools that the upstream actually advertises should be exposed",
+	)
+}
+
+// TestRouterList_ExactNameNotOnUpstream_Dropped pins D16: exact-name entries
+// not on the upstream get silently dropped.
+func TestRouterList_ExactNameNotOnUpstream_Dropped(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "sse",
+				AllowedTools: []string{"k8s_get_pods", "nonexistent"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "k8s_list_namespaces", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	assert.ElementsMatch(t,
+		[]string{"up__k8s_get_pods"},
+		r.List(),
+		"exact-name allowlist entries that don't match any upstream tool are silently dropped",
+	)
+}
+
+// TestRouterRoute_NilAllowlistDenies pins D20: nil allowedTools → tools/call
+// is rejected for every namespaced name from this upstream.
+func TestRouterRoute_NilAllowlistDenies(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: nil,
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	_, ok := r.Route("up__k8s_get_pods")
+	assert.False(t, ok, "D20: nil allowedTools denies tools/call even when upstream has the tool")
+	_, ok = r.Route("up__anything")
+	assert.False(t, ok, "D20: nil allowedTools denies tools/call for every name on this upstream")
+}
+
+// TestRouterRoute_StarAllowlistAllows pins D20 escape hatch: ["*"] allows
+// every upstream tool through Route() as well as List().
+func TestRouterRoute_StarAllowlistAllows(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: []string{"*"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	e, ok := r.Route("up__k8s_get_pods")
+	require.True(t, ok)
+	assert.Equal(t, "k8s_get_pods", e.OriginalName)
+
+	e, ok = r.Route("up__helm_install")
+	require.True(t, ok)
+	assert.Equal(t, "helm_install", e.OriginalName)
+}
+
+// TestRouterRoute_GlobIntersectsUpstream pins D16: Route() requires both
+// (a) the original name is on upstream.ListTools(), and (b) it matches at
+// least one glob in allowedTools.
+func TestRouterRoute_GlobIntersectsUpstream(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "streamable-http",
+				AllowedTools: []string{"k8s_*"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{
+			name:  "up",
+			tools: []string{"k8s_get_pods", "k8s_list_namespaces", "helm_install"},
+			avail: true,
+		},
+	}
+	r := proxy.NewRouter(cfg, ups)
+
+	// Matches glob AND exists on upstream → routable.
+	e, ok := r.Route("up__k8s_get_pods")
+	require.True(t, ok)
+	assert.Equal(t, "k8s_get_pods", e.OriginalName)
+
+	// Exists on upstream but does NOT match any glob → not routable.
+	_, ok = r.Route("up__helm_install")
+	assert.False(t, ok, "helm_install is on the upstream but no glob matches it")
+
+	// Matches glob (vacuously) but does NOT exist on upstream → not routable.
+	_, ok = r.Route("up__k8s_nonexistent")
+	assert.False(t, ok, "k8s_nonexistent matches k8s_* but is not on the upstream")
+}
+
+// TestRouterRoute_MalformedGlob_DoesNotPanic pins the spec's error handling
+// for path.Match returning ErrBadPattern: skip the malformed pattern, do not
+// take the proxy offline.
+func TestRouterRoute_MalformedGlob_DoesNotPanic(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"up": {
+				URL: "http://up:8080", Transport: "sse",
+				AllowedTools: []string{"[bad"},
+			},
+		},
+	}
+	ups := map[string]proxy.Upstream{
+		"up": &fakeUpstream{name: "up", tools: []string{"anything"}, avail: true},
+	}
+	r := proxy.NewRouter(cfg, ups)
+	assert.Empty(t, r.List(), "malformed glob matches nothing; router must not panic")
+	_, ok := r.Route("up__anything")
+	assert.False(t, ok)
+}
+
+// TestRouter_UnavailableUpstream_ExposesNothing replaces the pre-D16
+// TestRouter_UnavailableUpstream_StillExposesNames. Under D16, the exposed
+// set is intersection(upstream.ListTools, globs). An unreachable upstream
+// has ListTools() == nil, so nothing can be exposed regardless of what's in
+// allowedTools.
+func TestRouter_UnavailableUpstream_ExposesNothing(t *testing.T) {
+	cfg := &proxy.Config{
+		Upstreams: map[string]*proxy.UpstreamConfig{
+			"down-mcp": {
+				URL: "http://down:8080", Transport: "sse",
+				AllowedTools: []string{"foo"},
+			},
 		},
 	}
 	ups := map[string]proxy.Upstream{
 		"down-mcp": &fakeUpstream{name: "down-mcp", tools: nil, avail: false},
 	}
 	r := proxy.NewRouter(cfg, ups)
-	assert.ElementsMatch(t, []string{"down-mcp__foo"}, r.List(), "allowedTools is the source of truth when set")
+	assert.Empty(t, r.List(),
+		"D16: unreachable upstream → empty ListTools → empty intersection → nothing exposed")
+	_, ok := r.Route("down-mcp__foo")
+	assert.False(t, ok)
 }
 
 func TestRouter_RouteMiss(t *testing.T) {
@@ -102,7 +339,8 @@ func TestRouter_RedactionAndAuditExposed(t *testing.T) {
 			},
 		},
 	}
-	ups := map[string]proxy.Upstream{"x": &fakeUpstream{name: "x", avail: true}}
+	// Upstream must advertise "t" under D16, otherwise Route() returns false.
+	ups := map[string]proxy.Upstream{"x": &fakeUpstream{name: "x", tools: []string{"t"}, avail: true}}
 	r := proxy.NewRouter(cfg, ups)
 	e, ok := r.Route("x__t")
 	require.True(t, ok)
