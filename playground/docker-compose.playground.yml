@@ -41,7 +41,7 @@ services:
     build:
       context: ../kapeproxy
       dockerfile: ../kapeproxy/Dockerfile
-    image: kape/kapeproxy:0.7.0
+    image: kape/kapeproxy:local
     profiles:
       - build-only
 
