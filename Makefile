@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: generate build test lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
+.PHONY: generate build build-dashboard test lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -16,7 +16,10 @@ build: ## Build all Go binaries, Python wheel, and dashboard
 	go build ./task-service/cmd/...
 	go build ./adapters/cmd/...
 	cd runtime && uv build
-	cd dashboard && npm run build
+	$(MAKE) build-dashboard
+
+build-dashboard: ## (WIP) Stub for dashboard build — see docs
+	@echo "[WIP] dashboard build is a no-op stub — see CONTRIBUTING.md (Dashboard build status)"
 
 test: ## Run all tests (Go, Python, dashboard)
 	go test ./operator/...
