@@ -83,7 +83,7 @@ Part C — Runtime file reads (runtime/src/kape_runtime/memory.py)
 |---|---|---|
 | Secret name | `kape-tool-<tool-name>-conn` | `kape-tool-order-memory-conn` |
 | Volume name | `kape-tool-<tool-name>-secrets` | `kape-tool-order-memory-secrets` |
-| Mount path | `/etc/kape/secrets/<tool-name>/` | `/etc/kape/secrets/order-memory/` |
+| Mount path | `/etc/kape/secrets/<tool-name>` | `/etc/kape/secrets/order-memory` |
 | Key: URL | `qdrant_url` | file: `…/qdrant_url` |
 | Key: collection | `qdrant_collection` | file: `…/qdrant_collection` |
 
