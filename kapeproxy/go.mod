@@ -1,6 +1,6 @@
 module github.com/kape-io/kape/kapeproxy
 
-go 1.25.9
+go 1.25.10
 
 require (
 	github.com/PaesslerAG/jsonpath v0.1.1
