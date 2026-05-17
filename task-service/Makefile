@@ -29,4 +29,4 @@ test-e2e:
 	go test ./test/e2e/... -tags e2e -v -timeout 120s
 
 migrate:
-	go run ./cmd/task-service --migrate-only
+	go run ./cmd/main --migrate-only

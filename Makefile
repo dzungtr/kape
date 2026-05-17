@@ -13,7 +13,7 @@ generate: ## Regenerate CRD manifests and TypeScript API types
 
 build: ## Build all Go binaries, Python wheel, and dashboard
 	go build ./operator/cmd/...
-	go build -o ./task-service/task-service ./task-service/cmd/task-service
+	go build -o ./task-service/task-service ./task-service/cmd/main
 	go build ./adapters/cmd/...
 	cd runtime && uv build
 	cd dashboard && bun run build
