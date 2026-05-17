@@ -1,0 +1,19 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kape-handler-cert
+  namespace: kape-system
+spec:
+  secretName: kape-handler-cert
+  commonName: kape-handler     # MUST match authorization.users[].user in NATS config
+  duration: 8760h
+  renewBefore: 720h
+  usages:
+    - client auth
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: kape-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

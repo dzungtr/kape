@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import ssl
 import traceback
 from datetime import datetime, timezone
 from typing import Any
@@ -45,6 +47,34 @@ _llm_retry = tenacity.retry(
     stop=tenacity.stop_after_attempt(5),
     reraise=True,
 )
+
+
+def _build_nats_tls_context() -> ssl.SSLContext | None:
+    """Build an SSL context for mTLS NATS connections.
+
+    Returns an SSLContext when NATS_TLS_CERT, NATS_TLS_KEY, and NATS_TLS_CA
+    are all set. Returns None when any variable is absent — caller connects
+    without TLS (local dev / CI only).
+    """
+    cert_file = os.environ.get("NATS_TLS_CERT")
+    key_file = os.environ.get("NATS_TLS_KEY")
+    ca_file = os.environ.get("NATS_TLS_CA")
+
+    if not all([cert_file, key_file, ca_file]):
+        logger.warning(
+            "NATS_TLS_CERT / NATS_TLS_KEY / NATS_TLS_CA not set — "
+            "connecting to NATS without mTLS (local dev only)"
+        )
+        return None
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_verify_locations(cafile=ca_file)
+    ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    logger.info(
+        "mTLS enabled for NATS connection (cert=%s ca=%s)", cert_file, ca_file
+    )
+    return ctx
 
 
 class ConsumerLoop:
@@ -235,7 +265,11 @@ class ConsumerLoop:
 
     async def run(self, nats_cfg: NatsConfig) -> None:
         """Connect to NATS and run the pull consumer loop indefinitely."""
-        nc = await nats.connect(nats_cfg.url)
+        tls_ctx = _build_nats_tls_context()
+        connect_kwargs: dict = {"servers": [nats_cfg.url]}
+        if tls_ctx is not None:
+            connect_kwargs["tls"] = tls_ctx
+        nc = await nats.connect(**connect_kwargs)
         self._nc = nc
         js = nc.jetstream()
         sub = await js.pull_subscribe(
