@@ -160,6 +160,46 @@ Before marking a PR ready for review:
 
 ---
 
+## Helm chart layout (WIP rename)
+
+### Current state
+
+The chart lives in a flat directory at the repo root:
+
+```
+helm/Chart.yaml
+helm/templates/
+helm/values.yaml
+helm/package.json
+```
+
+### Planned state
+
+The chart will move to a nested layout under `charts/`:
+
+```
+charts/kape/Chart.yaml
+charts/kape/templates/
+charts/kape/values.yaml
+charts/kape/package.json
+```
+
+### Rationale
+
+`charts/<name>/` is the standard Helm convention:
+
+- It matches the directory structure produced by `helm pull` and expected by `helm package` / OCI push defaults.
+- It mirrors how charts are organized in major repos (e.g. `prometheus-community/helm-charts`, `grafana/helm-charts`).
+- The `charts/` prefix leaves natural room for additional charts (`charts/kape-adapters/`, `charts/kape-runtime/`) without restructuring the top-level repo.
+
+### WIP status
+
+The rename is **not yet executed**. References in code (operator config, Tiltfile, CI workflows, README) still point at `helm/...`. A follow-up PR will execute the move atomically together with all reference updates, so that no intermediate commit leaves the repo in a broken state.
+
+**Do not update individual files to reference `charts/kape/` ahead of that PR.** Track progress in the `docs/helm-charts-rename-wip` branch.
+
+---
+
 ## Reporting issues & security disclosures
 
 For bugs and feature requests, open a GitHub issue with a clear title and reproduction steps.
