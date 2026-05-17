@@ -169,13 +169,37 @@ def test_env_var_fallback_when_tool_name_unset(monkeypatch):
     )
 
 
-def test_returns_none_when_no_values(monkeypatch):
-    monkeypatch.delenv("KAPE_TOOL_NAME", raising=False)
-    monkeypatch.delenv("KAPE_SECRETS_DIR", raising=False)
+def test_returns_none_when_no_values(monkeypatch, tmp_path):
+    """KAPE_TOOL_NAME set, secrets dir exists but is empty, no env-var fallback."""
+    monkeypatch.setenv("KAPE_TOOL_NAME", "my-tool")
+    monkeypatch.setenv("KAPE_SECRETS_DIR", str(tmp_path))
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_COLLECTION", raising=False)
 
     assert build_memory_tool() is None
+
+
+def test_env_fallback_when_secrets_dir_missing(monkeypatch):
+    """Secret volume not yet mounted — fall back to env vars without crashing."""
+    monkeypatch.setenv("KAPE_TOOL_NAME", "my-tool")
+    monkeypatch.setenv("KAPE_SECRETS_DIR", "/nonexistent/path/that/does/not/exist")
+    monkeypatch.setenv("QDRANT_URL", "http://from-env:6333")
+    monkeypatch.setenv("QDRANT_COLLECTION", "env-coll")
+
+    vstore_factory = _make_vstore_factory()
+    embedding_factory = MagicMock(return_value="embedding-instance")
+
+    tool = build_memory_tool(
+        vector_store_factory=vstore_factory,
+        embedding_factory=embedding_factory,
+    )
+
+    assert tool is not None
+    vstore_factory.assert_called_once_with(
+        url="http://from-env:6333",
+        collection_name="env-coll",
+        embedding="embedding-instance",
+    )
 
 
 def test_file_takes_precedence_over_env(monkeypatch, tmp_path):

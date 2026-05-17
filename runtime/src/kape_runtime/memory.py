@@ -33,9 +33,10 @@ def build_memory_tool(
 ) -> BaseTool | None:
     """Build a `search_memory` tool backed by a Qdrant vector store.
 
-    Read order for connection details:
-      1. File at $KAPE_SECRETS_DIR/<tool-name>/qdrant_url  (file mount from Secret)
-      2. Environment variable QDRANT_URL                   (local dev fallback)
+    Read order for each of url and collection:
+      1. File at $KAPE_SECRETS_DIR/<tool-name>/{qdrant_url,qdrant_collection}
+         (file mount from a per-tool Secret)
+      2. Environment variable QDRANT_URL or QDRANT_COLLECTION (local dev fallback)
 
     Returns None if either value cannot be resolved — handlers without a memory
     backend simply omit the tool from the graph.
