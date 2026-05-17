@@ -91,6 +91,22 @@ npm test -- --passWithNoTests
 npm run lint
 ```
 
+---
+
+## Dashboard build status (WIP)
+
+The dashboard build step in `make build` is currently a **no-op stub**.
+
+- Running `make build` (or `make build-dashboard`) prints a notice and exits 0 — it does **not** invoke `npm run build`.
+- The React Router scaffold under `dashboard/app/` is not yet production-buildable; wiring up a real build would block all contributors on a missing `node_modules` tree and a scaffold that doesn't compile cleanly.
+- To attempt the dashboard build manually (may not succeed yet):
+  ```bash
+  cd dashboard && npm install && npm run build
+  ```
+- This will be wired up as a proper build step when the dashboard slice lands. The work is tracked separately — watch the issue tracker for the relevant issue.
+
+---
+
 ### Container images (podman)
 
 The `Makefile` targets use `docker build` — substitute `podman build` locally:
