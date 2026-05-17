@@ -68,7 +68,7 @@ func (c KapeConfig) KapeproxyImageRef() string {
 	}
 	ver := c.KapeproxyImageVersion
 	if ver == "" {
-		ver = "0.7.0"
+		ver = "latest"
 	}
 	return fmt.Sprintf("%s:%s", img, ver)
 }
@@ -94,7 +94,7 @@ func (c KapeConfig) WithDefaults() KapeConfig {
 		c.KapeproxyImage = "kape/kapeproxy"
 	}
 	if c.KapeproxyImageVersion == "" {
-		c.KapeproxyImageVersion = "stub"
+		c.KapeproxyImageVersion = "latest"
 	}
 	if c.NATSMonitoringEndpoint == "" {
 		c.NATSMonitoringEndpoint = "http://nats.kape-system:8222"
