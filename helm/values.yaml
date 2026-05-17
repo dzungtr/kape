@@ -62,3 +62,4 @@ nats:
   storage: 10Gi
 
 namespace: kape-system
+clusterName: ""

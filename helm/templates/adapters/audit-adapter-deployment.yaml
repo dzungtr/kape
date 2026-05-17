@@ -1,0 +1,64 @@
+{{- if .Values.adapters.audit.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-audit-adapter
+  namespace: {{ .Values.namespace }}
+  annotations:
+    kape.io/cluster-name: {{ .Values.clusterName | quote }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kape-audit-adapter
+  template:
+    metadata:
+      labels:
+        app: kape-audit-adapter
+      annotations:
+        kape.io/cluster-name: {{ .Values.clusterName | quote }}
+    spec:
+      containers:
+        - name: adapter
+          image: "{{ .Values.adapters.audit.image.repository }}:{{ .Values.adapters.audit.image.tag }}"
+          ports:
+            - containerPort: 8443
+              name: https
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: NATS_URL
+              value: "nats://nats.{{ .Values.namespace }}.svc:4222"
+            - name: CLUSTER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.annotations['kape.io/cluster-name']"
+            - name: PUBLISH_TIMEOUT_SECONDS
+              value: "60"
+            - name: TLS_CERT_FILE
+              value: /etc/kape/tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/kape/tls/tls.key
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/kape/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: kape-audit-adapter-tls
+{{- end }}
