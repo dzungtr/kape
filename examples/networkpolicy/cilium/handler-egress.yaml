@@ -1,0 +1,58 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kape-handler-egress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 1 — Handler pod egress (Cilium variant).
+      Stronger than standard: LLM egress is FQDN-restricted, not port-only.
+      The egressDeny to 'cluster' blocks all cluster-internal egress except
+      the explicit NATS and task-service rules below.
+spec:
+  endpointSelector:
+    matchLabels:
+      kape.io/component: handler
+  # Block all cluster-internal egress by default.
+  # MCP traffic must go through the kapetool sidecar on localhost (exempt from
+  # NetworkPolicy as a loopback interface).
+  egressDeny:
+    - toEntities:
+        - cluster
+  egress:
+    # NATS JetStream — whitelisted cluster-internal destination
+    - toEndpoints:
+        - matchLabels:
+            kape.io/component: nats
+      toPorts:
+        - ports:
+            - port: "4222"
+              protocol: TCP
+
+    # kape-task-service — whitelisted cluster-internal destination
+    - toEndpoints:
+        - matchLabels:
+            kape.io/component: task-service
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # LLM provider — FQDN-restricted internet egress.
+    # Only Anthropic and OpenAI endpoints are permitted.
+    # Add additional FQDNs here if your deployment uses other LLM providers.
+    - toFQDNs:
+        - matchName: "api.anthropic.com"
+        - matchName: "api.openai.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # DNS — required for FQDN resolution
+    - toEntities:
+        - kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP

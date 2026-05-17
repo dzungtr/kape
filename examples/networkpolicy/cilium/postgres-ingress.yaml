@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kape-postgres-ingress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 5 — postgres ingress (Cilium variant).
+spec:
+  endpointSelector:
+    matchLabels:
+      kape.io/component: postgres
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            kape.io/component: task-service
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kape-mcp-ingress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 3 — MCP server ingress (Cilium variant).
+      Permits inbound connections only from kape.io/component: handler pods
+      in kape-system. Cilium uses endpointSelector for the target pod and
+      fromEndpoints for the source constraint.
+spec:
+  endpointSelector:
+    matchLabels:
+      kape.io/mcp-server: k8s-mcp
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            kape.io/component: handler
+            k8s:io.kubernetes.pod.namespace: kape-system
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP

@@ -1,0 +1,25 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kape-kapetool-egress-k8s-mcp-read
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 2 — kapetool sidecar egress for k8s-mcp-read (Cilium variant).
+      Functionally equivalent to the standard variant. Uses Cilium endpoint
+      selectors for consistent policy model with the handler-egress policy.
+spec:
+  endpointSelector:
+    matchLabels:
+      kape.io/component: handler
+      kape.io/tool: k8s-mcp-read
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            kape.io/mcp-server: k8s-mcp
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8081"
+              protocol: TCP

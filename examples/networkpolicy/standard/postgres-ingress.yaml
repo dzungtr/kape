@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-postgres-ingress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 5 — postgres ingress.
+      Accepts connections only from kape-task-service. This enforces the v1
+      single-accessor model: no handler pod, dashboard pod, or operator pod
+      has a permitted network path to postgres. The REST API of task-service
+      is the complete audit boundary (spec 0007 section 9).
+spec:
+  podSelector:
+    matchLabels:
+      kape.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only kape-task-service may connect to postgres
+    - from:
+        - podSelector:
+            matchLabels:
+              kape.io/component: task-service
+      ports:
+        - port: 5432
+          protocol: TCP

@@ -1,0 +1,60 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-handler-egress
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 1 — Handler pod egress.
+      Permits NATS (4222), task-service (8080), and internet-only LLM API (443).
+      Private CIDR exclusions on the LLM rule are load-bearing: they force all
+      MCP traffic through the kapetool sidecar on localhost, not a direct
+      cluster-internal connection.
+spec:
+  podSelector:
+    matchLabels:
+      kape.io/component: handler
+  policyTypes:
+    - Egress
+  egress:
+    # NATS JetStream — event subscription and publication
+    - to:
+        - podSelector:
+            matchLabels:
+              kape.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+
+    # kape-task-service — task status writes and audit log
+    - to:
+        - podSelector:
+            matchLabels:
+              kape.io/component: task-service
+      ports:
+        - port: 8080
+          protocol: TCP
+
+    # LLM provider (Anthropic / OpenAI) — internet egress on 443 only.
+    # Private IP ranges are excluded. This is the load-bearing security clause:
+    # all cluster-internal addresses fall within these CIDRs, so MCP servers
+    # cannot be reached directly from handler pods on port 443. MCP traffic
+    # must go through the kapetool sidecar on localhost (127.0.0.1), which is
+    # not a network hop subject to NetworkPolicy.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+
+    # DNS — required for hostname resolution (NATS service name, task-service, etc.)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP

@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-kapetool-egress-k8s-mcp-read
+  namespace: kape-system
+  annotations:
+    kape.io/doc: >
+      Boundary 2 — kapetool sidecar egress for k8s-mcp-read.
+      One NetworkPolicy per KapeTool instance. The operator sets
+      kape.io/tool: <tool-name> on handler pods. Engineers label
+      their MCP server pods with kape.io/mcp-server: <server-name>.
+      Duplicate this manifest for each additional KapeTool, changing
+      the name, kape.io/tool selector, and kape.io/mcp-server selector.
+spec:
+  podSelector:
+    matchLabels:
+      kape.io/component: handler
+      kape.io/tool: k8s-mcp-read   # operator sets this on handler pods at Deployment creation
+  policyTypes:
+    - Egress
+  egress:
+    # MCP server — both SSE (:8080) and Streamable HTTP (:8081) transports.
+    # Engineers label MCP server pods with kape.io/mcp-server: <server-name>.
+    - to:
+        - podSelector:
+            matchLabels:
+              kape.io/mcp-server: k8s-mcp   # engineer sets this on MCP server pods
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8081
+          protocol: TCP
