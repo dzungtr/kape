@@ -26,6 +26,8 @@ func NewDeploymentAdapter(c client.Client) *DeploymentAdapter {
 	return &DeploymentAdapter{client: c}
 }
 
+const handlerCertSecretName = "kape-handler-cert"
+
 func deploymentName(handlerName string) string { return "kape-handler-" + handlerName }
 
 // Ensure creates or patches the handler Deployment with a single kapeproxy sidecar.
@@ -93,6 +95,11 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		{Name: "KAPE_HANDLER_NAME", Value: handler.Name},
 		{Name: "KAPE_NAMESPACE", Value: handler.Namespace},
 	}
+	envVars = append(envVars,
+		corev1.EnvVar{Name: "NATS_TLS_CERT", Value: "/etc/kape/nats-certs/tls.crt"},
+		corev1.EnvVar{Name: "NATS_TLS_KEY", Value: "/etc/kape/nats-certs/tls.key"},
+		corev1.EnvVar{Name: "NATS_TLS_CA", Value: "/etc/kape/nats-certs/ca.crt"},
+	)
 	envVars = append(envVars, handler.Spec.Envs...)
 
 	handlerVolumeMounts := []corev1.VolumeMount{{
@@ -100,6 +107,11 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		MountPath: "/etc/kape",
 		ReadOnly:  true,
 	}}
+	handlerVolumeMounts = append(handlerVolumeMounts, corev1.VolumeMount{
+		Name:      "nats-certs",
+		MountPath: "/etc/kape/nats-certs",
+		ReadOnly:  true,
+	})
 	volumes := []corev1.Volume{{
 		Name: "settings",
 		VolumeSource: corev1.VolumeSource{
@@ -108,6 +120,14 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 			},
 		},
 	}}
+	volumes = append(volumes, corev1.Volume{
+		Name: "nats-certs",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: handlerCertSecretName,
+			},
+		},
+	})
 
 	if lazySkillsPresent {
 		handlerVolumeMounts = append(handlerVolumeMounts, corev1.VolumeMount{
