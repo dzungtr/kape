@@ -235,15 +235,18 @@ upstreams:
 	cleanup := runKapeproxy(t, cfgPath, "127.0.0.1:18904")
 	defer cleanup()
 
-	// tools/list still works (returns the configured allowedTools).
+	// Under D16+D20, an unreachable upstream has ListTools() == nil, so the
+	// intersection of upstream.ListTools() with the allowedTools globs is
+	// empty — nothing is exposed via tools/list.
 	resp := callKapeproxy(t, "127.0.0.1:18904", "tools/list", nil)
 	result, ok := resp["result"].(map[string]any)
 	require.True(t, ok, "expected result object, got: %v", resp)
 	tools, _ := result["tools"].([]any)
-	require.Len(t, tools, 1)
-	assert.Equal(t, "ghost__x", tools[0].(map[string]any)["name"])
+	assert.Empty(t, tools, "D16: unreachable upstream contributes no tools to tools/list")
 
-	// tools/call returns an MCP error (server error) but does NOT panic.
+	// tools/call returns an MCP error (Route() returns false; server emits
+	// -32601) but does NOT panic. This proves the non-fatal-startup property
+	// — the proxy is healthy even when an upstream is down.
 	resp = callKapeproxy(t, "127.0.0.1:18904", "tools/call", map[string]any{"name": "ghost__x"})
-	require.NotNil(t, resp["error"], "unreachable upstream must surface as MCP error")
+	require.NotNil(t, resp["error"], "unreachable upstream must surface as MCP error, not panic")
 }
