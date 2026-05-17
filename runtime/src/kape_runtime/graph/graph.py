@@ -19,6 +19,7 @@ from kape_runtime.graph.nodes import (
 from kape_runtime.graph.state import AgentState
 from kape_runtime.memory import build_memory_tool
 from kape_runtime.schema_loader import make_structured_llm
+from kape_runtime.skills import make_load_skill_tool
 
 
 def build_graph(
@@ -44,7 +45,12 @@ def build_graph(
     tools: list[BaseTool] = list(mcp_tools)
     if (memory_tool := build_memory_tool()) is not None:
         tools.append(memory_tool)
-    # TODO(Phase 7.3): when kape_runtime.skills lands, append make_load_skill_tool(...)
+    render_ctx = {
+        "handler_name": kape_cfg.handler_name,
+        "cluster_name": kape_cfg.cluster_name,
+        "namespace": kape_cfg.handler_namespace,
+    }
+    tools.append(make_load_skill_tool(jinja_env, render_ctx))
 
     graph = StateGraph(AgentState)
 

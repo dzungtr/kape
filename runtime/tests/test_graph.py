@@ -366,7 +366,33 @@ async def test_build_graph_omits_memory_tool_when_qdrant_env_unset(monkeypatch):
     bound_tools = base_llm.bind_tools.call_args.args[0]
     tool_names = [t.name for t in bound_tools]
     assert "search_memory" not in tool_names
-    assert tool_names == ["fake_mcp_tool"]
+    assert "fake_mcp_tool" in tool_names
+    assert "load_skill" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_build_graph_always_registers_load_skill_tool(monkeypatch):
+    """load_skill must be registered unconditionally regardless of env vars."""
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.delenv("QDRANT_COLLECTION", raising=False)
+
+    kape_cfg = make_kape_config()
+    llm_cfg = make_llm_config()
+    schema_cfg = SchemaConfig(
+        name="test",
+        json_schema={"type": "object", "properties": {"decision": {"type": "string"}}},
+    )
+
+    base_llm, _ = _build_base_llm([AIMessage(content="ok")])
+    base_llm.with_structured_output = MagicMock(
+        return_value=MagicMock(ainvoke=AsyncMock(return_value={"decision": "ignore"}))
+    )
+
+    build_graph(base_llm, kape_cfg, llm_cfg, schema_cfg, mcp_tools=[])
+
+    bound_tools = base_llm.bind_tools.call_args.args[0]
+    tool_names = [t.name for t in bound_tools]
+    assert "load_skill" in tool_names
 
 
 @pytest.mark.asyncio
