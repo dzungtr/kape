@@ -46,7 +46,7 @@ These have observable triggers. Apply directly and report.
 | `kapeproxy/**`                   | `area/kapeproxy`   |
 | `runtime/**`                     | `area/runtime`     |
 | `dashboard/**`                   | `area/dashboard`   |
-| `helm/**`                        | `area/helm`        |
+| `charts/**`                      | `area/helm`        |
 | `crds/**`                        | `area/crds`        |
 | `docs/**` (excluding `docs/superpowers/specs/**`), `README.md`, `CONTRIBUTING.md` | `area/docs` |
 | `.github/**`, `tools/**`         | `area/ci`          |

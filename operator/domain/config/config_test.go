@@ -10,7 +10,7 @@ import (
 
 func TestKapeproxyImageRef_DefaultIsLatest(t *testing.T) {
 	// D17: in-code default for kapeproxy is :latest, not a release pin.
-	// Release pins live in helm/values.yaml, not in Go code.
+	// Release pins live in charts/kape/values.yaml, not in Go code.
 	c := domainconfig.KapeConfig{} // nothing set
 	assert.Equal(t, "kape/kapeproxy:latest", c.KapeproxyImageRef(),
 		"D17: in-code default for kapeproxy is :latest, not a release pin")

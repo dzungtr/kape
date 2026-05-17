@@ -27,13 +27,13 @@ Welcome! KAPE is an early-stage project; contributions in any form — bug repor
 
 ```
 adapters/       CloudEvents adapters (Falco, Alertmanager, K8s Audit)
+charts/kape/    Helm chart for cluster deployment
 cmd/            Shared CLI entrypoints (per module)
 config/         Operator configuration
 crds/           Generated CRD manifests (do not edit by hand)
 dashboard/      React frontend
 docs/           Architecture, CRD reference, design specs
 examples/       Reference KapeHandler/KapeTool/KapeSchema YAML
-helm/           Helm chart for cluster deployment
 operator/       Kubernetes operator (controller-gen, controller-runtime)
 runtime/        LangGraph ReAct agent runtime (Python)
 task-service/   Task tracking microservice
@@ -160,22 +160,9 @@ Before marking a PR ready for review:
 
 ---
 
-## Helm chart layout (WIP rename)
+## Helm chart layout
 
-### Current state
-
-The chart lives in a flat directory at the repo root:
-
-```
-helm/Chart.yaml
-helm/templates/
-helm/values.yaml
-helm/package.json
-```
-
-### Planned state
-
-The chart will move to a nested layout under `charts/`:
+The chart lives at:
 
 ```
 charts/kape/Chart.yaml
@@ -184,19 +171,13 @@ charts/kape/values.yaml
 charts/kape/package.json
 ```
 
-### Rationale
-
-`charts/<name>/` is the standard Helm convention:
+This follows the standard Helm convention (`charts/<name>/`):
 
 - It matches the directory structure produced by `helm pull` and expected by `helm package` / OCI push defaults.
 - It mirrors how charts are organized in major repos (e.g. `prometheus-community/helm-charts`, `grafana/helm-charts`).
 - The `charts/` prefix leaves natural room for additional charts (`charts/kape-adapters/`, `charts/kape-runtime/`) without restructuring the top-level repo.
 
-### WIP status
-
-The rename is **not yet executed**. References in code (operator config, Tiltfile, CI workflows, README) still point at `helm/...`. A follow-up PR will execute the move atomically together with all reference updates, so that no intermediate commit leaves the repo in a broken state.
-
-**Do not update individual files to reference `charts/kape/` ahead of that PR.** Track progress in the `docs/helm-charts-rename-wip` branch.
+> The chart previously lived at a flat `helm/` directory at the repo root; it was moved in the `docs/helm-charts-rename-wip` branch.
 
 ---
 
