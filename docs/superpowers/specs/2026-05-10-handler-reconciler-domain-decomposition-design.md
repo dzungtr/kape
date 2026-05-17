@@ -78,7 +78,7 @@ operator/
     skill.go                    SkillReconciler    (uses domain.NewSkill)
     tool.go                     ToolReconciler     (uses domain.NewTool)
     system_prompt.go            DELETED — moved to domain/skill or handler
-    testhelpers_test.go         shared findCondition (fixes DuplicateDecl)
+    (no testhelpers_test.go)    test sites call meta.FindStatusCondition directly
 ```
 
 ### Layout principle
@@ -118,11 +118,11 @@ both of which want `*v1alpha1.KapeHandler`. Nothing else dereferences it.
 | References | `ToolRefs() []string` | names from `spec.tools[].ref`, declaration order |
 | References | `SkillRefs() []string` | names from `spec.skills[].ref`, declaration order |
 | Validation | `ValidateScaling() error` | replaces inline `scaleToZero ∧ minReplicas≥1` check |
-| Derivation | `HasLazySkills() bool` | derived from skills (passed in or precomputed) |
+| Derivation | `HasLazySkills(skills []*Skill) bool` | true if any element of `skills` is lazy |
 | Derivation | `LazySkills(skills []*Skill) []*Skill` | filters to lazy-only; needed by TOMLRenderer + skillConfigMaps |
 | Derivation | `ConsumerName() string` | `strings.ReplaceAll(spec.trigger.type, ".", "-")` |
 | Resolution | `ResolveSkills(fetched []*Skill) ([]*Skill, SkillGate)` | walks `h.SkillRefs()`, validates Ready, returns assembled list or first-failure gate |
-| Resolution | `ResolveTools(handlerTools []*Tool, skills []*Skill, skillTools [][]*Tool) (*ToolSet, ToolGate)` | validates handler-direct + skill-pulled tools all Ready, unions into a ToolSet |
+| Resolution | `ResolveTools(handlerTools []*Tool, resolved []ResolvedSkill) (*ToolSet, ToolGate)` | validates handler-direct + skill-pulled tools all Ready, unions into a ToolSet. See `ResolvedSkill` below |
 | Composition | `SystemPrompt(skills []*Skill) string` | replaces `AssembleSystemPrompt`; partitions eager/lazy internally |
 | Composition | `RolloutHash(*Schema, *ToolSet, []*Skill) (string, error)` | replaces `computeRolloutHash`; hashes full skill set, eager/lazy split irrelevant |
 | Composition | `DesiredLabels(*ToolSet) map[string]string` | replaces inline label-build in step 10 |
@@ -131,12 +131,13 @@ both of which want `*v1alpha1.KapeHandler`. Nothing else dereferences it.
 | Status | `RecomputeReady()` | runs the negative-form rollup; updates Ready in place |
 | Status | `Conditions() ConditionSet` | view-only |
 
-`HasLazySkills` takes no argument because it's typically called *after*
-skills have been resolved — the wrapper holds them on a side-field after
-`Handler.AdoptResolvedSkills(skills)` (set by the reconciler once
-`ResolveSkills` returns ready). If we'd rather keep `Handler` immutable, the
-method takes `skills []*Skill` directly — choice deferred to implementation;
-either works.
+`HasLazySkills(skills)` takes the resolved skills as a parameter rather than
+holding them on a side-field. This matches the pattern of every other
+skill-consuming method on `Handler` (`LazySkills`, `SystemPrompt`,
+`RolloutHash`, `ResolveTools`) — resolution-time data flows through method
+arguments, never through hidden state. The `inner` field is reserved for
+CRD state that the reconciler mutates (e.g. status conditions). See
+[Resolved decisions](#resolved-decisions) #2 for the trade-off analysis.
 
 ### `domain.Schema` / `domain.Tool` / `domain.Skill` — methods
 
@@ -171,6 +172,21 @@ func (s *ToolSet) Len() int
 
 Replaces the `map[string]v1alpha1.KapeTool` + `unionToolMap` + `sortedToolsByName`
 trio in `handler.go:301-320`.
+
+### `domain.ResolvedSkill`
+
+```go
+type ResolvedSkill struct {
+    Skill *Skill
+    Tools []*Tool   // tools fetched for Skill.ToolRefs(), in declaration order
+}
+```
+
+A small value type that bundles a resolved skill with its fetched tools.
+Used as the input shape to `Handler.ResolveTools` — the reconciler builds
+`[]ResolvedSkill` from `fetchToolsForSkills`, eliminating the parallel-slice
+pattern (skills + skillTools side-by-side) that the type system can't
+protect from mis-zip bugs. See [Resolved decisions](#resolved-decisions) #3.
 
 ### `domain.Condition` / `domain.ConditionSet`
 
@@ -256,9 +272,9 @@ func (r *HandlerReconciler) Reconcile(ctx context.Context, key types.NamespacedN
     // ── Step B: resolve & union tools ──────────────────────────────────
     handlerTools, err := r.fetchHandlerToolsFor(ctx, h)
     if err != nil { return ctrl.Result{}, err }
-    skillTools, err := r.fetchToolsForSkills(ctx, skills)
+    resolved, err := r.fetchToolsForSkills(ctx, skills) // returns []domain.ResolvedSkill
     if err != nil { return ctrl.Result{}, err }
-    tools, toolGate := h.ResolveTools(handlerTools, skills, skillTools)
+    tools, toolGate := h.ResolveTools(handlerTools, resolved)
     if !toolGate.OK { return r.recordGateAndRequeue(ctx, h, toolGate.AsCondition()) }
 
     // ── Schema check ───────────────────────────────────────────────────
@@ -391,9 +407,11 @@ The work is mechanically reversible at every step. Order matters.
 11. **Update `ports.TOMLRenderer.Render`** signature to accept
     `systemPrompt string`. Update infra adapter. Update reconciler call
     site to pass the domain-derived prompt.
-12. **Add `testhelpers_test.go`** with shared `findCondition` (or replace
-    all test-side calls with `meta.FindStatusCondition` directly — author
-    discretion in step 12).
+12. **Replace every test-side call of the hand-rolled `findCondition` with
+    `meta.FindStatusCondition` inline.** Do not add a `testhelpers_test.go`
+    wrapper. Delete both pre-existing copies of `findCondition` from the
+    `reconcile/` test files (this resolves the `DuplicateDecl` linter
+    issue). See [Resolved decisions](#resolved-decisions) #4.
 13. **Delete the now-empty `domain/handler/`, `domain/schema/`,
     `domain/tool/` subdirectories** (and their `.gitkeep` files). The flat
     `domain/` package is now the only layout.
@@ -432,41 +450,95 @@ land with red tests.
 |---|---|
 | Wrapper surface (`NewHandler`/`Raw`) leaks through tests, making them harder to write | Domain tests use `NewHandler(&v1alpha1.KapeHandler{Spec: ...})` directly — same shape as today's tests build the raw object |
 | Forgetting to call `RecomputeReady()` after `SetCondition()` causes Ready drift | Add a single `domain/handler_test.go` test that asserts every public Handler method that mutates conditions also calls `RecomputeReady()` internally — or change `SetCondition` to recompute eagerly |
-| `Handler.HasLazySkills(skills)` API forces the caller to pass skills every time, awkward in deeply-nested helpers | Either (a) take the param explicitly (current proposal), or (b) add `Handler.AdoptResolvedSkills(skills)` to attach them to the wrapper. Defer choice to implementation; both compile and test cleanly |
-| `ResolveTools` signature with `[][]*Tool` is unfamiliar | Document with example in godoc; alternative is a `ResolvedSkill struct{ Skill *Skill; Tools []*Tool }` value type — defer to implementation review |
+| `Handler.HasLazySkills(skills)` callers may forget to pass the same `skills` slice consistently across `HasLazySkills` / `LazySkills` / `SystemPrompt` / `RolloutHash` calls in the same reconcile pass | The reconciler binds `skills` once after `ResolveSkills` returns and passes the same local everywhere — see reconciler shape. Domain tests cover the single-source pattern |
+| Caller of `ResolveTools` mis-pairs `ResolvedSkill.Skill` with its `Tools` slice (e.g. fetcher loop bug) | `fetchToolsForSkills` builds `[]ResolvedSkill` inside a single per-skill loop — there's no parallel-slice maintenance window. Unit test covers the fetcher's pairing directly |
 | `TOMLRenderer.Render` shape change touches infra/templates + tests | One contained change in step 11; renderer tests update once. No external-API surface — `Render` is internal to operator |
 | Status-only writebacks miss the gate-failure path's early `_ = r.handlers.UpdateStatus(...)` (current code's "best-effort" pattern) | Preserve exactly via `recordGateAndRequeue` helper — same `_ = ...` ignore semantics, same `RequeueAfter: 30 * time.Second` |
 
-## Open questions deferred to implementation
+## Resolved decisions
 
-These do not block spec approval; either choice satisfies the criteria. The
-implementing agent picks one and notes the reason in the PR.
+Decisions previously deferred to implementation, locked during spec review.
+Implementing agent follows these as-written; no further latitude.
 
-1. **Wrap vs. type-define for `Handler` etc.**
-   - `type Handler struct{ inner *v1alpha1.KapeHandler }` — explicit, clear
-     boundary, requires `.inner` everywhere.
-   - `type Handler v1alpha1.KapeHandler` — zero-cost conversion, methods
-     attach directly, but reading `(*domain.Handler)(raw)` looks unusual.
-   - **Default:** wrap (struct with `inner` + `Raw()`). Switch only if the
-     wrapper boilerplate causes friction during step 7.
+### 1. Handler is a wrapper struct, not a type-define
 
-2. **`Handler.HasLazySkills` — parameter or stateful**
-   - `func (h *Handler) HasLazySkills(skills []*Skill) bool` (functional)
-   - `func (h *Handler) AdoptResolvedSkills(skills []*Skill); HasLazySkills() bool` (stateful)
-   - **Default:** functional. Switch only if call sites pile up.
+```go
+type Handler struct{ inner *v1alpha1.KapeHandler }
+func NewHandler(raw *v1alpha1.KapeHandler) *Handler { return &Handler{inner: raw} }
+func (h *Handler) Raw() *v1alpha1.KapeHandler       { return h.inner }
+```
 
-3. **`ResolveTools` parallel-slice signature**
-   - Current proposal: `(handlerTools []*Tool, skills []*Skill, skillTools [][]*Tool)`
-   - Alternative: `(handlerTools []*Tool, resolved []ResolvedSkill)` where
-     `ResolvedSkill struct{ Skill *Skill; Tools []*Tool }`.
-   - **Default:** parallel slices. Switch if godoc examples become hard
-     to follow.
+Not `type Handler v1alpha1.KapeHandler`.
 
-4. **Test-side `findCondition` removal — shared helper or apimachinery direct**
-   - `testhelpers_test.go` with one shared `findCondition`.
-   - Replace every test call with `meta.FindStatusCondition` inline.
-   - **Default:** apimachinery direct. Removing the helper entirely removes
-     the future risk of someone re-adding a duplicate.
+**Why:** `type Handler v1alpha1.KapeHandler` would expose every underlying
+struct field (`h.Spec`, `h.Status`, `h.ObjectMeta`) directly, undermining
+the encapsulation boundary the `domain/` package exists to enforce. Callers
+could reach past methods at will, and there would be no single place to
+intercept access for future invariants (e.g. logging, audit). The wrap
+approach forces all access through `Raw()` (one named escape hatch) or
+methods (the intended path). The "zero-cost conversion" benefit of
+type-define is irrelevant — we wrap once per reconcile cycle, not in a
+hot loop. Apply the same wrap pattern to `Schema`, `Tool`, `Skill`.
+
+### 2. `Handler.HasLazySkills` is functional (takes `skills` parameter)
+
+```go
+func (h *Handler) HasLazySkills(skills []*Skill) bool
+```
+
+Not stateful (`AdoptResolvedSkills` + parameter-less `HasLazySkills`).
+
+**Why:** every other skill-consuming method on `Handler` — `LazySkills`,
+`SystemPrompt`, `RolloutHash`, `ResolveTools` — takes `skills` as a
+parameter. Making `HasLazySkills` the one stateful exception would break
+the pattern and introduce a hidden lifecycle ("must call `AdoptResolvedSkills`
+before this works") that is easy to forget and produces confusing test
+failures. The `inner` field is reserved for CRD state that the reconciler
+mutates for status writes; resolution-time data (skills, tools) flows
+through method arguments. Two call sites in the current reconciler shape
+is not "call sites piling up."
+
+### 3. `ResolveTools` takes `[]ResolvedSkill`, not parallel slices
+
+```go
+type ResolvedSkill struct {
+    Skill *Skill
+    Tools []*Tool
+}
+
+func (h *Handler) ResolveTools(handlerTools []*Tool, resolved []ResolvedSkill) (*ToolSet, ToolGate)
+```
+
+Not `ResolveTools(handlerTools []*Tool, skills []*Skill, skillTools [][]*Tool)`.
+
+**Why:** parallel slices are a recurring source of mis-zip bugs that the
+type system can't catch — a fetcher that drops a skill from one slice but
+not the other silently produces wrong tool resolutions. `[]ResolvedSkill`
+makes mis-pairing impossible by construction. The signature is also
+self-documenting (`handlerTools` + `resolved`-per-skill, bundled) rather
+than requiring godoc to learn that two of three parameters are coupled.
+Body code reads more naturally too — `for _, r := range resolved` instead
+of `for i := range skills { skill := skills[i]; tools := skillTools[i] }`.
+The standalone `skills` parameter is dropped because it's recoverable
+from `resolved` (`r.Skill for r in resolved`) — redundancy is what the
+new shape exists to eliminate.
+
+### 4. Test-side `findCondition` is replaced with `meta.FindStatusCondition` inline
+
+Every test call site uses `meta.FindStatusCondition(obj.Status.Conditions, "Ready")`
+directly. No `testhelpers_test.go`, no shared wrapper.
+
+**Why:** the spec already mandates `meta.FindStatusCondition` in production
+code (inside `domain.ConditionSet`). Tests using the same API as the code
+under test reduces context-switching. Removing the helper entirely (rather
+than centralising it) closes the door on the `DuplicateDecl` linter
+issue at its root — no helper means no future contributor can re-add a
+third copy by accident. The call-site length is identical
+(`meta.FindStatusCondition(conds, "Ready")` vs. `findCondition(conds, "Ready")`),
+so there is no ergonomic loss. If a future test pattern needs a different
+shape (e.g. `requireCondition` that fails the test on miss), that's a
+new helper with a different signature — adding it later doesn't depend
+on having a thin wrapper today.
 
 ## What this spec does not cover
 
