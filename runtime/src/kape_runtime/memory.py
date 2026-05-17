@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, Tool
@@ -32,14 +33,27 @@ def build_memory_tool(
 ) -> BaseTool | None:
     """Build a `search_memory` tool backed by a Qdrant vector store.
 
-    Reads `QDRANT_URL` and `QDRANT_COLLECTION` from the environment. Returns
-    None if either is missing — handlers without a memory backend simply omit
-    the tool from the graph.
+    Read order for each of url and collection:
+      1. File at $KAPE_SECRETS_DIR/<tool-name>/{qdrant_url,qdrant_collection}
+         (file mount from a per-tool Secret)
+      2. Environment variable QDRANT_URL or QDRANT_COLLECTION (local dev fallback)
 
-    The factories are injectable so tests do not need a live Qdrant instance.
+    Returns None if either value cannot be resolved — handlers without a memory
+    backend simply omit the tool from the graph.
     """
-    url = os.environ.get("QDRANT_URL")
-    collection = os.environ.get("QDRANT_COLLECTION")
+    secrets_dir = os.environ.get("KAPE_SECRETS_DIR", "/etc/kape/secrets")
+    tool_name   = os.environ.get("KAPE_TOOL_NAME")
+
+    def _read_secret(filename: str, env_fallback: str) -> str | None:
+        if tool_name:
+            path = os.path.join(secrets_dir, tool_name, filename)
+            if os.path.exists(path):
+                return pathlib.Path(path).read_text().strip()
+        return os.environ.get(env_fallback)
+
+    url        = _read_secret("qdrant_url", "QDRANT_URL")
+    collection = _read_secret("qdrant_collection", "QDRANT_COLLECTION")
+
     if not url or not collection:
         return None
 

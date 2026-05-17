@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -142,6 +143,48 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 					LocalObjectReference: corev1.LocalObjectReference{Name: SkillConfigMapName(handler.Name)},
 				},
 			},
+		})
+	}
+
+	// Collect memory-type tools and mount their connection Secrets as files.
+	// Sort by Name for determinism when selecting KAPE_TOOL_NAME.
+	var memoryTools []v1alpha1.KapeTool
+	for _, t := range tools {
+		if t.Spec.Type == "memory" {
+			memoryTools = append(memoryTools, t)
+		}
+	}
+	sort.Slice(memoryTools, func(i, j int) bool { return memoryTools[i].Name < memoryTools[j].Name })
+
+	for _, mt := range memoryTools {
+		secretName := "kape-tool-" + mt.Name + "-conn"
+		volName := "kape-tool-" + mt.Name + "-secrets"
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: secretName,
+				},
+			},
+		})
+	}
+
+	for _, mt := range memoryTools {
+		volName := "kape-tool-" + mt.Name + "-secrets"
+		mountPath := "/etc/kape/secrets/" + mt.Name
+		handlerVolumeMounts = append(handlerVolumeMounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		})
+	}
+
+	if len(memoryTools) > 0 {
+		// TODO(#79): emit warning condition on KapeHandler.status when len(memoryTools) > 1.
+		// For v1, the first tool's name (alphabetical — slice is sorted above) wins.
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "KAPE_TOOL_NAME",
+			Value: memoryTools[0].Name,
 		})
 	}
 
