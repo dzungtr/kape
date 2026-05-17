@@ -13,7 +13,27 @@ operator can mount them into handler Deployments.
   ServiceAccount must be bound to the Vault role named `kape-system`, and Vault
   must have Kubernetes auth enabled on `mountPath: "kubernetes"`.
 
+**Vault Kubernetes auth — ServiceAccount note:** The example `SecretStore` does
+not set `auth.kubernetes.serviceAccountRef`. ESO will use its own controller
+pod's ServiceAccount token to authenticate to Vault. The Vault Kubernetes role
+(`kape-system` in this example) must therefore be bound to the ESO controller's
+ServiceAccount (typically `external-secrets` in the `external-secrets` namespace
+— check `kubectl get sa -n external-secrets`). If you prefer a dedicated
+ServiceAccount, add `serviceAccountRef.name` under `auth.kubernetes` and create
+the SA in `kape-system`:
+
+```yaml
+auth:
+  kubernetes:
+    mountPath: "kubernetes"
+    role: "kape-system"
+    serviceAccountRef:
+      name: kape-eso-sa   # SA must exist in kape-system namespace
+```
+
 ## Apply the manifests
+
+> **Note:** All commands below must be run from the **repository root** (the directory containing `go.work`), unless otherwise stated.
 
 ```bash
 kubectl apply -f examples/eso/secretstore.yaml
