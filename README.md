@@ -3,7 +3,7 @@
 > Autonomous cluster monitoring, reasoning, and remediation — declared entirely in Kubernetes CRDs.
 
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
-![Go](https://img.shields.io/badge/go-1.23-00ADD8)
+![Go](https://img.shields.io/badge/go-1.25-00ADD8)
 ![Python](https://img.shields.io/badge/python-3.12-3776AB)
 
 ## Why KAPE?
