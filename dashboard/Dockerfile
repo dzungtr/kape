@@ -1,14 +1,14 @@
-FROM node:22-alpine AS builder
+FROM oven/bun:1.3.12-alpine AS builder
 WORKDIR /app
-COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci
+COPY dashboard/package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY dashboard/ .
-RUN npm run build
+RUN bun run build
 
-FROM node:22-alpine
+FROM oven/bun:1.3.12-alpine
 WORKDIR /app
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 EXPOSE 3000
-CMD ["node", "build/server/index.js"]
+CMD ["bun", "build/server/index.js"]

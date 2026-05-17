@@ -8,7 +8,7 @@ generate: ## Regenerate CRD manifests and TypeScript API types
 	controller-gen rbac:roleName=kape-operator crd:allowDangerousTypes=true webhook \
 		paths=./operator/infra/... \
 		output:crd:artifacts:config=./crds
-	npx openapi-typescript task-service/openapi/openapi.yaml \
+	bunx openapi-typescript task-service/openapi/openapi.yaml \
 		-o dashboard/app/types/generated/task-service.ts
 
 build: ## Build all Go binaries, Python wheel, and dashboard
@@ -16,19 +16,19 @@ build: ## Build all Go binaries, Python wheel, and dashboard
 	go build ./task-service/cmd/...
 	go build ./adapters/cmd/...
 	cd runtime && uv build
-	cd dashboard && npm run build
+	cd dashboard && bun run build
 
 test: ## Run all tests (Go, Python, dashboard)
 	go test ./operator/...
 	go test ./task-service/...
 	go test ./adapters/...
 	cd runtime && uv run pytest
-	cd dashboard && npm test -- --passWithNoTests
+	cd dashboard && bun run test -- --passWithNoTests
 
 lint: ## Run golangci-lint and ruff across all modules
 	golangci-lint run ./operator/... ./task-service/... ./adapters/...
 	cd runtime && uv run ruff check . && uv run ruff format --check .
-	cd dashboard && npm run lint
+	cd dashboard && bun run lint
 
 build-images: ## Build all container images with podman
 	podman build -t kape-operator:dev -f operator/Dockerfile .
