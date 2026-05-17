@@ -18,14 +18,14 @@ dc_resource('nats',     labels=['infra'])
 dc_resource('postgres', labels=['infra'])
 dc_resource('qdrant',   labels=['infra'])
 
-# ── kapeproxy stub (Go) ──────────────────────────────────────────────────────
-# Builds kape/kapeproxy:stub locally so the operator can deploy handler pods
+# ── kapeproxy (Go) ───────────────────────────────────────────────────────────
+# Builds kape/kapeproxy:local locally so the operator can deploy handler pods
 # without pulling from a remote registry.  No compose service — the image is
 # used by the operator-managed Deployment pods inside the k3d cluster.
 docker_build(
-    'kape/kapeproxy:stub',
+    'kape/kapeproxy:local',
     context='../kapeproxy',
-    dockerfile='../kapeproxy/Dockerfile.stub',
+    dockerfile='../kapeproxy/Dockerfile',
 )
 
 # ── stub-mcp (Python / FastMCP) ───────────────────────────────────────────────

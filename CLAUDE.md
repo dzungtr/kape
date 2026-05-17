@@ -8,8 +8,9 @@ Before creating any PR, run SBOM generation for all Go modules and post a summar
    - Path: `./adapters`
    - Path: `./operator`
    - Path: `./task-service`
+   - Path: `./kapeproxy`
 
-2. Post a single PR comment via `gh pr comment "$(gh pr view --json url --jq '.url')" --body "<markdown>"` with a markdown table summarising all three SBOMs:
+2. Post a single PR comment via `gh pr comment "$(gh pr view --json url --jq '.url')" --body "<markdown>"` with a markdown table summarising all four SBOMs:
 
    ```markdown
    ## SBOM Summary
@@ -19,6 +20,7 @@ Before creating any PR, run SBOM generation for all Go modules and post a summar
    | adapters | <count> | <count or "none"> |
    | operator | <count> | <count or "none"> |
    | task-service | <count> | <count or "none"> |
+   | kapeproxy | <count> | <count or "none"> |
 
    Generated via Snyk CycloneDX 1.4 — <ISO-8601 timestamp, e.g. 2026-04-18T10:00:00Z>
    
