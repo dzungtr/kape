@@ -159,14 +159,9 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		})
 	}
 
-	if len(memoryTools) == 1 {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "KAPE_TOOL_NAME",
-			Value: memoryTools[0].Name,
-		})
-	} else if len(memoryTools) > 1 {
-		// TODO(#79): emit warning condition when >1 memory tool attached to a single handler.
-		// For v1, use the first tool name (alphabetical order — slice is already sorted).
+	if len(memoryTools) > 0 {
+		// TODO(#79): emit warning condition on KapeHandler.status when len(memoryTools) > 1.
+		// For v1, the first tool's name (alphabetical — slice is sorted above) wins.
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "KAPE_TOOL_NAME",
 			Value: memoryTools[0].Name,

@@ -2,6 +2,7 @@ package k8s_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -252,7 +253,7 @@ func TestBuildDeployment_NoMemoryTool(t *testing.T) {
 
 	// No kape-tool- volumes
 	for _, v := range dep.Spec.Template.Spec.Volumes {
-		assert.False(t, len(v.Name) >= len("kape-tool-") && v.Name[:len("kape-tool-")] == "kape-tool-",
+		assert.False(t, strings.HasPrefix(v.Name, "kape-tool-"),
 			"unexpected kape-tool- volume: %s", v.Name)
 	}
 
@@ -268,7 +269,7 @@ func TestBuildDeployment_NoMemoryTool(t *testing.T) {
 
 	// No kape-tool- VolumeMounts
 	for _, vm := range handlerCtr.VolumeMounts {
-		assert.False(t, len(vm.Name) >= len("kape-tool-") && vm.Name[:len("kape-tool-")] == "kape-tool-",
+		assert.False(t, strings.HasPrefix(vm.Name, "kape-tool-"),
 			"unexpected kape-tool- VolumeMount: %s", vm.Name)
 	}
 
