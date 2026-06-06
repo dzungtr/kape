@@ -378,7 +378,7 @@ git -C /home/tony/projects/kape-io/.worktrees/docs-phase6-slice7-plan commit -m 
 - Create: `kapeproxy/internal/proxy/router.go`
 - Create: `kapeproxy/internal/proxy/router_test.go`
 
-> **Superseded 2026-05-17 by [`docs/superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md`](../../../../superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md) §3.A / D16+D20.** The rule below is the *original* slice-7 plan; the corrected rule is glob-intersect with `upstream.ListTools()`, deny-by-default for nil/empty `allowedTools`. Implementation lives under [`docs/superpowers/plans/2026-05-17-kapeproxy-slice7-fixup.md`](../../../../superpowers/plans/2026-05-17-kapeproxy-slice7-fixup.md).
+> **Superseded 2026-05-17 by [`docs/superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md`](../../../../superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md) §3.A / D16+D20.** The rule below is the *original* slice-7 plan; the corrected rule is glob-intersect with `upstream.ListTools()`, deny-by-default for nil/empty `allowedTools`. See the corrected design in [`docs/superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md`](../../../../superpowers/specs/2026-05-17-kapeproxy-slice7-fixup.md) §3.A / D16+D20.
 
 The router builds a flat lookup table from the config: `{upstreamName}__{toolname}` → `Entry{ Upstream, OriginalName, Redaction, Audit }`. `List()` enumerates everything filtered by `allowedTools` (nil → expose all). The router does NOT dial upstreams or fetch their tool catalogs — that work is in Task 4 (`Upstream`). For `List()`, the router reports the names from `allowedTools` when set, and asks the upstream's cached `Available()` tool list otherwise.
 
