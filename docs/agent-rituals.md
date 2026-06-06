@@ -1,7 +1,9 @@
 # Agent Rituals — Label Consumption Contracts
 
-This document is the consumer-side contract for the label taxonomy defined in
-[`docs/superpowers/specs/2026-05-16-github-label-system-design.md`](superpowers/specs/2026-05-16-github-label-system-design.md).
+This document is the live operational contract — the full label set, the GitHub
+colors, the mutability table, and the ritual state-machine. The decisions behind
+the taxonomy and *why* they were made are recorded in
+[ADR-0001 — GitHub label taxonomy](adr/0001-github-label-taxonomy.md).
 
 Every agent ritual that reads or writes labels MUST follow the rules here. The
 intent is that a new agent or maintainer can read this doc and behave
@@ -228,7 +230,8 @@ mutation, but must not apply them.
 
 ## Evolution
 
-Label additions, removals, or rule changes require a PR that updates both this
-file and `docs/superpowers/specs/2026-05-16-github-label-system-design.md`.
-Agent prompts and skill definitions reference both files; keeping them in sync
-prevents agents and humans drifting apart.
+Label additions, removals, or rule changes require a PR that updates this file
+and, if the change reflects a new decision or reverses an existing one,
+[ADR-0001](adr/0001-github-label-taxonomy.md). The Pocock vocabulary bridge in
+[`docs/agents/triage-labels.md`](agents/triage-labels.md) maps these labels to
+the canonical triage roles; keep it in sync so agents and humans don't drift.
