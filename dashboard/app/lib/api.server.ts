@@ -64,4 +64,12 @@ export async function listTasks(params: ListTasksParams = {}): Promise<TaskList>
   return apiFetch<TaskList>(path);
 }
 
+export async function fetchTask(id: string): Promise<Task> {
+  return apiFetch<Task>(`/tasks/${id}`);
+}
+
+export async function fetchTaskLineage(id: string): Promise<Task[]> {
+  return apiFetch<Task[]>(`/tasks/${id}/lineage`);
+}
+
 export type { Task, TaskList };
