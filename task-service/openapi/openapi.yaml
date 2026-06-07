@@ -270,10 +270,23 @@ paths:
     get:
       operationId: listHandlers
       tags: [handlers]
-      summary: Per-handler aggregates (stub — Prometheus integration pending per 0008 spec)
+      summary: Per-handler aggregates derived from the tasks table
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Lower bound for tasks included in the aggregate; defaults to 30 days ago
       responses:
-        "501":
-          description: Not implemented — handler aggregates are owned by Prometheus
+        "200":
+          description: List of per-handler aggregate objects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HandlerAggregate'
 
 components:
   schemas:
@@ -509,6 +522,25 @@ components:
           type: object
           additionalProperties:
             type: integer
+
+    HandlerAggregate:
+      type: object
+      required: [handler, namespace, tasks_24h, failures_24h, processing_count]
+      properties:
+        handler:
+          type: string
+        namespace:
+          type: string
+        last_task_at:
+          type: string
+          format: date-time
+          nullable: true
+        tasks_24h:
+          type: integer
+        failures_24h:
+          type: integer
+        processing_count:
+          type: integer
 
     ErrorResponse:
       type: object

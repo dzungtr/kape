@@ -30,6 +30,7 @@ func buildServer(t *testing.T) (*httpAdapter.Server, *mocks.Repository, *mocks.S
 		query.NewGetTaskQuery(repo),
 		query.NewListTasksQuery(repo),
 		query.NewTaskLineageQuery(repo),
+		repo,
 	)
 	return srv, repo, stream
 }
@@ -149,4 +150,56 @@ func TestServer_UpdateTaskStatus_409_TerminalState(t *testing.T) {
 	rec := httptest.NewRecorder()
 	chiRouter(srv).ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+func TestServer_ListHandlers_200(t *testing.T) {
+	srv, repo, _ := buildServer(t)
+	now := time.Now().UTC()
+	repo.On("ListHandlers", mock.Anything, mock.Anything).Return([]task.HandlerAggregate{
+		{Handler: "h1", Namespace: "kape-system", LastTaskAt: &now, Tasks24h: 5, Failures24h: 1, ProcessingCount: 2},
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/handlers", nil)
+	rec := httptest.NewRecorder()
+	chiRouter(srv).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp []map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, "h1", resp[0]["handler"])
+	assert.Equal(t, "kape-system", resp[0]["namespace"])
+	assert.Equal(t, float64(5), resp[0]["tasks_24h"])
+	assert.Equal(t, float64(1), resp[0]["failures_24h"])
+	assert.Equal(t, float64(2), resp[0]["processing_count"])
+}
+
+func TestServer_GetDecisions_200(t *testing.T) {
+	srv, repo, _ := buildServer(t)
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	repo.On("GetDecisionDistribution", mock.Anything, "h1", mock.Anything).Return(&task.DecisionDistribution{
+		Handler:      "h1",
+		Since:        since,
+		Distribution: map[string]int{"allow": 3, "deny": 1},
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/decisions?handler=h1&since="+since.Format(time.RFC3339), nil)
+	rec := httptest.NewRecorder()
+	chiRouter(srv).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "h1", resp["handler"])
+	dist, ok := resp["distribution"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(3), dist["allow"])
+	assert.Equal(t, float64(1), dist["deny"])
+}
+
+func TestServer_GetDecisions_400_MissingSince(t *testing.T) {
+	srv, _, _ := buildServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/tasks/decisions?handler=h1", nil)
+	rec := httptest.NewRecorder()
+	chiRouter(srv).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }

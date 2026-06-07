@@ -70,7 +70,7 @@ func main() {
 	// HTTP adapter
 	srv := httpAdapter.NewServer(
 		createTask, updateStatus, deleteTask, bulkTimeout,
-		getTask, listTasks, taskLineage,
+		getTask, listTasks, taskLineage, repo,
 	)
 	sseHandler := httpAdapter.NewSSEHandler(hub)
 

@@ -23,6 +23,7 @@ type Server struct {
 	getTask      *query.GetTaskQuery
 	listTasks    *query.ListTasksQuery
 	taskLineage  *query.TaskLineageQuery
+	repo         task.Repository
 }
 
 func NewServer(
@@ -33,12 +34,14 @@ func NewServer(
 	getTask *query.GetTaskQuery,
 	listTasks *query.ListTasksQuery,
 	taskLineage *query.TaskLineageQuery,
+	repo task.Repository,
 ) *Server {
 	return &Server{
 		createTask: createTask, updateStatus: updateStatus,
 		deleteTask: deleteTask, bulkTimeout: bulkTimeout,
 		getTask: getTask, listTasks: listTasks,
 		taskLineage: taskLineage,
+		repo:        repo,
 	}
 }
 
@@ -251,9 +254,44 @@ func (s *Server) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gen.BulkUpdateStatusResponse{AffectedIds: ids})
 }
 
-// ListHandlers handles GET /handlers — stubbed until Prometheus integration (per 0008 spec, handler aggregates are owned by Prometheus)
+// ListHandlers handles GET /handlers — returns per-handler aggregates from the tasks table.
 func (s *Server) ListHandlers(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+	sinceStr := r.URL.Query().Get("since")
+	var since time.Time
+	if sinceStr != "" {
+		var err error
+		since, err = time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid since parameter")
+			return
+		}
+	} else {
+		since = time.Now().UTC().Add(-30 * 24 * time.Hour)
+	}
+
+	aggregates, err := s.repo.ListHandlers(r.Context(), since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	result := make([]gen.HandlerAggregate, len(aggregates))
+	for i, a := range aggregates {
+		var lastTaskAt *time.Time
+		if a.LastTaskAt != nil {
+			t := *a.LastTaskAt
+			lastTaskAt = &t
+		}
+		result[i] = gen.HandlerAggregate{
+			Handler:         a.Handler,
+			Namespace:       a.Namespace,
+			LastTaskAt:      lastTaskAt,
+			Tasks24H:        int32(a.Tasks24h),
+			Failures24H:     int32(a.Failures24h),
+			ProcessingCount: int32(a.ProcessingCount),
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // GetDecisions handles GET /tasks/decisions
@@ -266,28 +304,20 @@ func (s *Server) GetDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	handler := r.URL.Query().Get("handler")
 
-	result, err := s.listTasks.Execute(r.Context(), task.ListFilter{
-		Handler: handler,
-		Since:   since,
-		Limit:   1000,
-	})
+	dist, err := s.repo.GetDecisionDistribution(r.Context(), handler, since)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	distribution := map[string]int32{}
-	for _, t := range result.Tasks {
-		if t.SchemaOutput != nil {
-			if decision, ok := (*t.SchemaOutput)["decision"].(string); ok {
-				distribution[decision]++
-			}
-		}
+	genDist := make(map[string]int32, len(dist.Distribution))
+	for k, v := range dist.Distribution {
+		genDist[k] = int32(v)
 	}
 	writeJSON(w, http.StatusOK, gen.DecisionDistribution{
-		Handler:      handler,
-		Since:        since,
-		Distribution: distribution,
+		Handler:      dist.Handler,
+		Since:        dist.Since,
+		Distribution: genDist,
 	})
 }
 

@@ -14,6 +14,25 @@ type Repository interface {
 	List(ctx context.Context, f ListFilter) ([]*Task, int, error)
 	Lineage(ctx context.Context, id string) ([]*Task, error)
 	BulkUpdateStatus(ctx context.Context, ids []string, status TaskStatus) ([]string, error)
+	ListHandlers(ctx context.Context, since time.Time) ([]HandlerAggregate, error)
+	GetDecisionDistribution(ctx context.Context, handler string, since time.Time) (*DecisionDistribution, error)
+}
+
+// HandlerAggregate is a per-handler summary derived from the tasks table.
+type HandlerAggregate struct {
+	Handler         string
+	Namespace       string
+	LastTaskAt      *time.Time
+	Tasks24h        int
+	Failures24h     int
+	ProcessingCount int
+}
+
+// DecisionDistribution is the breakdown of LLM decision values for a handler over a time window.
+type DecisionDistribution struct {
+	Handler      string
+	Since        time.Time
+	Distribution map[string]int
 }
 
 // UpdateFields carries optional columns to update alongside status.
