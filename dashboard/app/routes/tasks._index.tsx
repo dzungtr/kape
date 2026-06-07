@@ -6,7 +6,6 @@ import {
   useNavigate,
   useRevalidator,
 } from "react-router";
-import { listTasks } from "~/lib/api.server";
 import type { Task, TaskList } from "~/lib/api.server";
 import { shortId, canTimeout, canRetry } from "~/lib/utils";
 import { StatusBadge } from "~/components/StatusBadge";
@@ -182,14 +181,15 @@ export default function TasksIndex() {
       const status = params.get("status") ?? undefined;
       const since = params.get("since") ?? undefined;
 
-      const data = await listTasks({
-        handler: handler ?? undefined,
-        status: status ?? undefined,
-        since: since ?? undefined,
-        sort: "received_at:desc",
-        limit: 50,
-        cursor: nextCursor,
-      });
+      const qs = new URLSearchParams();
+      if (handler) qs.set("handler", handler);
+      if (status) qs.set("status", status);
+      if (since) qs.set("since", since);
+      qs.set("sort", "received_at:desc");
+      qs.set("limit", "50");
+      qs.set("cursor", nextCursor);
+      const res = await fetch(`/tasks?${qs.toString()}`);
+      const { data } = (await res.json()) as { data: TaskList };
 
       // Merge into map (de-dup by ID)
       const map = taskMapRef.current;
