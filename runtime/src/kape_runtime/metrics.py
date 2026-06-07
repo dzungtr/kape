@@ -21,11 +21,8 @@ kape_tool_calls_total = Counter(
     labelnames=["handler", "tool"],
 )
 
-# Population deferred: KapeSchema is user-defined per handler, so the runtime cannot assume
-# a "decision" key exists in schema_output. A follow-up issue will introduce a
-# KapeHandler-level pointer (or KapeSchema annotation) naming the field to source from.
-kape_decisions_total = Counter(
-    "kape_decisions_total",
-    "Total schema-output decisions emitted by the runtime, partitioned by handler and decision.",
-    labelnames=["handler", "decision"],
+kape_action_results_total = Counter(
+    "kape_action_results_total",
+    "Total action results emitted by the runtime, partitioned by handler, action, type, and status.",
+    labelnames=["handler", "action", "type", "status"],
 )

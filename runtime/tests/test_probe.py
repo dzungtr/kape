@@ -45,4 +45,4 @@ async def test_metrics_endpoint_returns_prometheus_text():
     assert "kape_events_total" in body
     assert "kape_llm_latency_seconds" in body
     assert "kape_tool_calls_total" in body
-    assert "kape_decisions_total" in body
+    assert "kape_action_results_total" in body

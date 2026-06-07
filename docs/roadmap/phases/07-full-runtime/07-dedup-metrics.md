@@ -7,7 +7,7 @@
 
 ## Goal
 
-Add a sliding-window dedup cache to discard duplicate CloudEvent IDs within a 60-second window. Add Prometheus metrics for events, LLM latency, tool calls, and decisions.
+Add a sliding-window dedup cache to discard duplicate CloudEvent IDs within a 60-second window. Add Prometheus metrics for events, LLM latency, tool calls, and action results.
 
 ## Work
 
@@ -23,7 +23,7 @@ Add a sliding-window dedup cache to discard duplicate CloudEvent IDs within a 60
   - `kape_events_total` — Counter, labels: `handler`, `status` (`processed`, `deduplicated`, `failed`)
   - `kape_llm_latency_seconds` — Histogram, labels: `handler`
   - `kape_tool_calls_total` — Counter, labels: `handler`, `tool`
-  - `kape_decisions_total` — Counter, labels: `handler`, `decision`
+  - `kape_action_results_total` — Counter, labels: `handler`, `action`, `type`, `status` (`success`, `error`, `skipped`)
 - Expose via existing FastAPI `/metrics` endpoint in `probe.py` using `prometheus_client.generate_latest()`
 
 ## Acceptance Criteria
