@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-dashboard
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.dashboard.replicaCount }}
+  selector:
+    matchLabels:
+      app: kape-dashboard
+  template:
+    metadata:
+      labels:
+        app: kape-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: TASK_SERVICE_URL
+              value: "http://kape-task-service.{{ .Values.namespace }}.svc"
+            {{- if .Values.dashboard.traceUrlTemplate }}
+            - name: TRACE_URL_TEMPLATE
+              value: {{ .Values.dashboard.traceUrlTemplate | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30

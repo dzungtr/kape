@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-operator
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      app: kape-operator
+  template:
+    metadata:
+      labels:
+        app: kape-operator
+    spec:
+      serviceAccountName: kape-operator
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - --leader-elect={{ .Values.operator.leaderElect }}
+          env:
+            - name: NATS_URL
+              value: "nats://nats.{{ .Values.namespace }}.svc:4222"
+            - name: KAPEPROXY_IMAGE
+              value: "{{ .Values.kapeproxy.image.repository }}:{{ .Values.kapeproxy.image.tag }}"
+            - name: RUNTIME_IMAGE
+              value: "{{ .Values.runtime.image.repository }}:{{ .Values.runtime.image.tag }}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 30

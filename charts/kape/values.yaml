@@ -64,3 +64,15 @@ nats:
 
 namespace: kape-system
 clusterName: ""
+
+oauth2Proxy:
+  enabled: false
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: "v7.6.0"
+    pullPolicy: IfNotPresent
+  provider: google
+  emailDomain: "*"
+  secretName: kape-oauth2-proxy
+  ingress:
+    host: ""

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kape-task-service
+  namespace: {{ .Values.namespace }}
+data:
+  DATABASE_SECRET_NAME: {{ .Values.taskService.database.secretName | quote }}
