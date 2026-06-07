@@ -33,11 +33,11 @@ func main() {
 	port := envOr("PORT", "8080")
 	publishTTL := envDuration("PUBLISH_TIMEOUT_SECONDS", 60)
 
-	nc, err := natsgo.Connect(natsURL,
-		natsgo.Name("kape-alertmanager-adapter"),
-		natsgo.MaxReconnects(-1),
-		natsgo.ReconnectWait(2*time.Second),
-	)
+	tlsCert := os.Getenv("NATS_TLS_CERT")
+	tlsKey := os.Getenv("NATS_TLS_KEY")
+	tlsCA := os.Getenv("NATS_TLS_CA")
+
+	nc, err := natspkg.Connect(natsURL, "kape-alertmanager-adapter", tlsCert, tlsKey, tlsCA)
 	if err != nil {
 		log.Fatal().Err(err).Str("nats_url", natsURL).Msg("failed to connect to NATS")
 	}

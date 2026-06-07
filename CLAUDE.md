@@ -1,31 +1,15 @@
 # kape-io Project Instructions
 
-## PR Checklist
+## Agent skills
 
-Before creating any PR, run SBOM generation for all Go modules and post a summary comment:
+### Issue tracker
 
-1. Run `snyk_sbom_scan` MCP tool on each Go module with format `cyclonedx1.4+json`:
-   - Path: `./adapters`
-   - Path: `./operator`
-   - Path: `./task-service`
-   - Path: `./kapeproxy`
+Issues and PRDs live as GitHub issues on `dzungtr/kape` (use the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
-2. Post a single PR comment via `gh pr comment "$(gh pr view --json url --jq '.url')" --body "<markdown>"` with a markdown table summarising all four SBOMs:
+### Triage labels
 
-   ```markdown
-   ## SBOM Summary
+The kape-io label taxonomy maps to the five canonical Pocock triage roles; `ready` is derived and audience is encoded via assignee. See `docs/agents/triage-labels.md`, the decision in `docs/adr/0001-github-label-taxonomy.md`, and the operational contract in `docs/agent-rituals.md`.
 
-   | Module | Components | Flagged |
-   |---|---|---|
-   | adapters | <count> | <count or "none"> |
-   | operator | <count> | <count or "none"> |
-   | task-service | <count> | <count or "none"> |
-   | kapeproxy | <count> | <count or "none"> |
+### Domain docs
 
-   Generated via Snyk CycloneDX 1.4 — <ISO-8601 timestamp, e.g. 2026-04-18T10:00:00Z>
-   
-   *Note: Compute the current UTC timestamp and insert it literally before posting.*
-   ```
-
-   If `snyk_sbom_scan` returns no component count, write "N/A".
-   If any module scan fails, write "FAILED: <error message>" in the Components column and "N/A" in the Flagged column for that module row.
+Single-context: `CONTEXT.md` (glossary) and `docs/adr/` (decisions) at the repo root. See `docs/agents/domain.md`.

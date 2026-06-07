@@ -39,6 +39,7 @@ cmd
 !**/cmd/**/TODO.md
 # ignore binary build — matches the compiled binary named "cmd" at repo root level
 /cmd
+alertmanager
 operator/cmd/cmd
 
 examples/sre-alertmanager/src/mock-api/mock-api

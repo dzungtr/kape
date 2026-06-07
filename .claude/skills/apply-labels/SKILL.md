@@ -1,6 +1,6 @@
 ---
 name: apply-labels
-description: Apply the kape-io label taxonomy (defined in docs/superpowers/specs/2026-05-16-github-label-system-design.md, consumed per docs/agent-rituals.md) to a GitHub issue or PR. Use when the user asks to label an issue/PR, when a new issue or PR lacks the required dimensions (area/*, category, commitment for issues), or as part of a triage pass. Reads context, derives labels deterministically where possible, and asks the user before applying ambiguous labels. Never sets commitment, urgent, or blocked without an observable trigger and human confirmation.
+description: Apply the kape-io label taxonomy (decision in docs/adr/0001-github-label-taxonomy.md, operational contract in docs/agent-rituals.md) to a GitHub issue or PR. Use when the user asks to label an issue/PR, when a new issue or PR lacks the required dimensions (area/*, category, commitment for issues), or as part of a triage pass. Reads context, derives labels deterministically where possible, and asks the user before applying ambiguous labels. Never sets commitment, urgent, or blocked without an observable trigger and human confirmation.
 ---
 
 # Apply labels skill
@@ -122,7 +122,7 @@ The spec defines these labels as agent-only-with-cause. Always require the user 
 ## Reference
 
 Full rules and the rationale for each label live in:
-- `docs/superpowers/specs/2026-05-16-github-label-system-design.md` (spec)
+- `docs/adr/0001-github-label-taxonomy.md` (the taxonomy decision and rationale)
 - `docs/agent-rituals.md` (rituals — read before adding new label-application logic)
 
 Update both files if rules change, then update this skill in lockstep.

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Config
+clusters:
+  - name: kape-audit
+    cluster:
+      server: https://kape-audit-adapter.kape-system.svc/webhook
+      certificate-authority: /etc/kubernetes/pki/kape-ca.crt
+users:
+  - name: kape-audit
+    user: {}
+contexts:
+  - name: kape-audit
+    context:
+      cluster: kape-audit
+      user: kape-audit
+current-context: kape-audit

@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kape-nats-server-cert
+  namespace: kape-system
+spec:
+  secretName: kape-nats-server-cert
+  commonName: nats-server
+  dnsNames:
+    - nats.kape-system.svc
+    - nats.kape-system.svc.cluster.local
+    - "*.nats-headless.kape-system.svc.cluster.local"  # StatefulSet pod DNS
+  duration: 8760h    # 1 year
+  renewBefore: 720h  # renew 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: kape-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

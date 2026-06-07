@@ -1,0 +1,14 @@
+{{- if .Values.adapters.audit.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kape-audit-adapter
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    app: kape-audit-adapter
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+{{- end }}
