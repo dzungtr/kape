@@ -54,6 +54,32 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, key types.NamespacedName
 }
 
 func (r *ToolReconciler) reconcileMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	if tool.Spec.Memory != nil && tool.Spec.Memory.External != nil {
+		return r.reconcileExternalMemory(ctx, tool)
+	}
+	return r.reconcileProvisionedMemory(ctx, tool)
+}
+
+// reconcileExternalMemory handles memory tools that point at a user-managed database.
+// It skips Qdrant provisioning and publishes the external URL into status.QdrantEndpoint
+// so downstream consumers (TOML renderer, handler env injection) can find it in the
+// same field they already read.
+func (r *ToolReconciler) reconcileExternalMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	ext := tool.Spec.Memory.External
+	tool.Status.QdrantEndpoint = ext.URL
+	tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "ExternalDatabase",
+		Message: "Using external database; provisioning skipped",
+	})
+	if err := r.tools.UpdateStatus(ctx, tool); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
 	cfg, err := r.kapeConfig.Load(ctx)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("loading kape-config: %w", err)
