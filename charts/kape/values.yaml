@@ -27,6 +27,7 @@ dashboard:
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   replicaCount: 1
+  traceUrlTemplate: ""
   ingress:
     enabled: false
     host: ""
