@@ -53,22 +53,22 @@ All reads and writes are mediated by `kape-task-service`. The dashboard never co
 
 ### 2.1 Framework: React Router v7 (Framework Mode)
 
-React Router v7 in framework mode is a server-side React application. Every request is handled by a Node.js server process. Route loaders run server-side — data fetching, session validation, and `kape-task-service` proxying all happen on the server before the response reaches the browser.
+React Router v7 in framework mode is a server-side React application. Every request is handled by a Bun server process. Route loaders run server-side — data fetching, session validation, and `kape-task-service` proxying all happen on the server before the response reaches the browser.
 
 This resolves both the backend question and the CORS question simultaneously:
 
 ```
 Browser
-  → React Router v7 Node.js server  (kape-dashboard Pod in kape-system)
+  → React Router v7 Bun server  (kape-dashboard Pod in kape-system)
       loaders  → kape-task-service over cluster DNS (no CORS, no token exposure)
       actions  → kape-task-service write endpoints
       SSE      → proxied task stream from kape-task-service
   ← HTML + minimal JS hydration
 ```
 
-There is no separate backend service. The React Router server is the backend. One Deployment, one container, one `node server.js`.
+There is no separate backend service. The React Router server is the backend. One Deployment, one container, one `bun run server.js`.
 
-**Why not Next.js:** Next.js is Vercel-optimised. KAPE deploys inside `kape-system` on arbitrary Kubernetes clusters — Vercel infrastructure assumptions are actively hostile in this context. React Router v7 is deployment-agnostic by design and runs on a plain Node.js server with no platform-specific configuration.
+**Why not Next.js:** Next.js is Vercel-optimised. KAPE deploys inside `kape-system` on arbitrary Kubernetes clusters — Vercel infrastructure assumptions are actively hostile in this context. React Router v7 is deployment-agnostic by design and runs on a plain Bun server with no platform-specific configuration.
 
 **Why not Astro:** Astro is explicitly not designed for dashboards or real-time applications. The live Task feed, SSE updates, and interactive mutation flows fight Astro's islands architecture.
 
@@ -163,7 +163,7 @@ Engineers who need direct `kape-task-service` access for debugging must use `kub
 │  ┌──────────────▼──────────────┐                                    │
 │  │  kape-dashboard             │                                    │
 │  │  Deployment (1 replica)     │                                    │
-│  │  React Router v7 / Node.js  │                                    │
+│  │  React Router v7 / Bun  │                                    │
 │  │  (zero auth code)           │                                    │
 │  │                             │   ┌────────────────────────────┐  │
 │  │  Route loaders (GET)    ────┼──▶│  kape-task-service         │  │
@@ -391,7 +391,7 @@ Panel is hidden entirely when `error` is null (i.e. `Completed` tasks).
 **Footer:**
 
 ```
-OTEL Trace: 4bf92f3577b34da6a8...    [ Open in SigNoz ↗ ]
+OTEL Trace: 4bf92f3577b34da6a8...    [ Open in Arize ↗ ]
 
 Retry of: 01JKWWW...    [ View chain ]
 ```
@@ -632,6 +632,8 @@ spec:
           env:
             - name: TASK_SERVICE_URL
               value: "http://kape-task-service.kape-system:8080"
+            - name: TRACE_URL_TEMPLATE
+              value: "{{ .Values.dashboard.traceUrlTemplate }}"
 ```
 
 The dashboard has no auth-related environment variables. Identity is read from `X-Forwarded-User` and `X-Forwarded-Email` headers injected by OAuth2 Proxy on every forwarded request.
@@ -767,7 +769,7 @@ This table makes explicit what the dashboard owns vs what it delegates.
 | LLM decision output (`schema_output`) | PostgreSQL via `kape-task-service` | Rendered in Task Detail Panel 2   |
 | Action outcomes                       | PostgreSQL via `kape-task-service` | Rendered in Task Detail Panel 3   |
 | Triggering event (raw CloudEvent)     | PostgreSQL via `kape-task-service` | Rendered in Task Detail Panel 1   |
-| Every MCP tool call during ReAct loop | OTEL backend (SigNoz / Tempo)      | External link via `otel_trace_id` |
+| Every MCP tool call during ReAct loop | OTEL backend (Arize)      | External link via `otel_trace_id` |
 | LLM prompt and response text          | OTEL backend                       | External link via `otel_trace_id` |
 | LLM token counts, iteration count     | OTEL backend                       | External link via `otel_trace_id` |
 | Handler throughput, latency p99       | Prometheus                         | Grafana (not surfaced here)       |
