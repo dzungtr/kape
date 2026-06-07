@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,24 @@ var enqueueScheme = func() *runtime.Scheme {
 	return s
 }()
 
+// watchesNoopScaledObjectAdapter stubs out KEDA for the watches envtest.
+// KEDA CRDs are not installed in the envtest cluster, so ScaledObject calls
+// would fail with a "no kind registered" error.
+type watchesNoopScaledObjectAdapter struct{}
+
+func (n *watchesNoopScaledObjectAdapter) Ensure(_ context.Context, _ *v1alpha1.KapeHandler, _ string, _ domainconfig.KapeConfig) error {
+	return nil
+}
+func (n *watchesNoopScaledObjectAdapter) GetConsumerName(_ context.Context, _ types.NamespacedName) (string, bool, error) {
+	return "", false, nil
+}
+func (n *watchesNoopScaledObjectAdapter) Delete(_ context.Context, _ types.NamespacedName) error {
+	return nil
+}
+
+// TestSkillWatch_SpecChange_TriggersHandlerReconcile verifies that editing a KapeSkill's spec
+// triggers re-reconciliation of every KapeHandler that references it (via kape.io/skill-ref-* label),
+// observable as a rollout-hash annotation change on the handler's Deployment.
 func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 	env := &envtest.Environment{
 		CRDDirectoryPaths: []string{"../../crds"},
@@ -63,7 +82,6 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 		ClusterName:         "envtest",
 		HandlerImage:        "kape-runtime",
 		HandlerImageVersion: "dev",
-		NatsURL:             "nats://localhost:4222",
 	}
 	cfgLoader := &envtestConfigLoader{cfg: platformCfg}
 
@@ -71,10 +89,13 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 		k8sadapters.NewHandlerRepository(k8sClient),
 		k8sadapters.NewSchemaRepository(k8sClient),
 		k8sadapters.NewToolRepository(k8sClient),
+		k8sadapters.NewSkillRepository(k8sClient),
 		k8sadapters.NewConfigMapAdapter(k8sClient),
+		k8sadapters.NewKapeproxyConfigAdapter(k8sClient),
+		k8sadapters.NewSkillConfigMapAdapter(k8sClient),
 		k8sadapters.NewServiceAccountAdapter(k8sClient),
 		k8sadapters.NewDeploymentAdapter(k8sClient),
-		k8sadapters.NewScaledObjectAdapter(k8sClient),
+		&watchesNoopScaledObjectAdapter{},
 		tomlrenderer.NewRenderer(),
 		cfgLoader,
 	)
@@ -86,6 +107,7 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 	ns := "default"
 
 	// 1. Apply a Ready KapeSchema.
+	addlProps := false
 	schema := &v1alpha1.KapeSchema{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schema", Namespace: ns},
 		Spec: v1alpha1.KapeSchemaSpec{
@@ -93,16 +115,23 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 			JSONSchema: v1alpha1.JSONSchemaObject{
 				Type:     "object",
 				Required: []string{"msg"},
+				Properties: map[string]apiextensionsv1.JSON{
+					"msg": {Raw: []byte(`{"type":"string"}`)},
+				},
+				AdditionalProperties: &addlProps,
 			},
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, schema))
 	schema.Status.Conditions = []metav1.Condition{{
-		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Valid",
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Valid",
+		LastTransitionTime: metav1.Now(),
 	}}
 	require.NoError(t, k8sClient.Status().Update(ctx, schema))
 
-	// 2. Apply a KapeSkill.
+	// 2. Apply a KapeSkill and mark it Ready so the handler dependency gate passes.
 	skill := &v1alpha1.KapeSkill{
 		ObjectMeta: metav1.ObjectMeta{Name: "analyst", Namespace: ns},
 		Spec: v1alpha1.KapeSkillSpec{
@@ -111,19 +140,26 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, skill))
+	skill.Status.Conditions = []metav1.Condition{{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Ready",
+		LastTransitionTime: metav1.Now(),
+	}}
+	require.NoError(t, k8sClient.Status().Update(ctx, skill))
 
-	// 3. Apply a KapeHandler with the skill-ref label pre-set.
-	// Slice 3 writes this label during reconcile; here we pre-apply it to exercise the watch.
+	// 3. Apply a KapeHandler that references the skill in Spec.Skills.
+	// The reconciler will write kape.io/skill-ref-analyst=true after the first reconcile.
 	h := &v1alpha1.KapeHandler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-handler",
 			Namespace: ns,
-			Labels:    map[string]string{"kape.io/skill-ref-analyst": "true"},
 		},
 		Spec: v1alpha1.KapeHandlerSpec{
 			Trigger:   v1alpha1.TriggerSpec{Source: "alertmanager", Type: "kape.events.test"},
 			LLM:       v1alpha1.LLMSpec{Provider: "anthropic", Model: "claude-3", SystemPrompt: "test"},
 			SchemaRef: "test-schema",
+			Skills:    []v1alpha1.SkillRef{{Ref: "analyst"}},
 			Tools:     []v1alpha1.ToolRef{},
 			Actions:   []v1alpha1.ActionSpec{},
 		},
@@ -141,6 +177,7 @@ func TestSkillWatch_SpecChange_TriggersHandlerReconcile(t *testing.T) {
 	initialHash := initialDep.Annotations["kape.io/rollout-hash"]
 
 	// 5. Patch the KapeSkill spec — this triggers MapSkillToHandlers via the secondary watch.
+	// The handler must now have kape.io/skill-ref-analyst=true label (set by step 4's reconcile).
 	patch := client.MergeFrom(skill.DeepCopy())
 	skill.Spec.Instruction = "You are an expert analyst with domain expertise."
 	require.NoError(t, k8sClient.Patch(ctx, skill, patch))

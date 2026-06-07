@@ -1,0 +1,40 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - "operator/**"
+      - "crds/**"
+      - ".github/workflows/integration-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  integration-test:
+    name: Operator envtest suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: operator/go.mod
+          cache-dependency-path: operator/go.sum
+
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        working-directory: operator
+
+      - name: Download envtest binaries
+        id: envtest
+        run: |
+          ASSETS=$(setup-envtest use 1.32.0 --bin-dir /tmp/envtest-bins -p path)
+          echo "assets=${ASSETS}" >> "$GITHUB_OUTPUT"
+
+      - name: Run integration tests
+        env:
+          KUBEBUILDER_ASSETS: ${{ steps.envtest.outputs.assets }}
+        run: go test -tags envtest -v -count=1 ./test/integration/...
+        working-directory: operator
