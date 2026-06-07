@@ -1,0 +1,66 @@
+{{- if .Values.certManager.enabled }}
+{{- if .Values.certManager.clusterIssuer.staging }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ .Values.certManager.issuerEmail | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+{{- end }}
+{{- if .Values.certManager.clusterIssuer.production }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ .Values.certManager.issuerEmail | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: kape-ca
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kape-nats-tls
+  namespace: {{ .Values.namespace }}
+spec:
+  secretName: kape-nats-tls
+  issuerRef:
+    name: kape-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - nats.{{ .Values.namespace }}.svc
+    - nats.{{ .Values.namespace }}.svc.cluster.local
+    - nats-headless.{{ .Values.namespace }}.svc
+    - nats-headless.{{ .Values.namespace }}.svc.cluster.local
+    {{- $ns := .Values.namespace }}
+    {{- $replicas := int .Values.nats.replicaCount }}
+    {{- range $i := until $replicas }}
+    - nats-{{ $i }}.nats-headless.{{ $ns }}.svc
+    - nats-{{ $i }}.nats-headless.{{ $ns }}.svc.cluster.local
+    {{- end }}
+  duration: 8760h
+  renewBefore: 720h
+{{- end }}

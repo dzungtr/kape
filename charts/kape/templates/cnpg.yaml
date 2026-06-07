@@ -1,0 +1,21 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: kape-postgres
+  namespace: {{ .Values.namespace }}
+spec:
+  instances: {{ .Values.postgres.instances }}
+  imageName: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+  storage:
+    size: {{ .Values.postgres.storage }}
+  resources:
+    {{- toYaml .Values.postgres.resources | nindent 4 }}
+  postgresql:
+    parameters:
+      max_connections: "200"
+  bootstrap:
+    initdb:
+      database: kape
+      owner: kape
+  managed:
+    roles: []

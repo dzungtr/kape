@@ -59,8 +59,42 @@ kapeproxy:
     pullPolicy: IfNotPresent
 
 nats:
-  replicaCount: 1
+  replicaCount: 3
   storage: 10Gi
+  image:
+    repository: nats
+    tag: "2.10-alpine"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    retain: false
+
+postgres:
+  instances: 2
+  storage: 10Gi
+  image:
+    repository: ghcr.io/cloudnative-pg/postgresql
+    tag: "16.3"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+certManager:
+  enabled: true
+  issuerEmail: ""
+  clusterIssuer:
+    staging: true
+    production: false
 
 namespace: kape-system
 clusterName: ""
