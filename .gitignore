@@ -50,4 +50,3 @@ kubeconfig.playground
 playground/.env
 playground/runtime/settings.toml
 .claude/standups/
-.memsearch.toml
