@@ -108,7 +108,8 @@ func main() {
 	renderer             := tomlrenderer.NewRenderer()
 	qdrantClusterAdapt   := qdrantadapter.NewQdrantClusterAdapter(k8sClient, discoveryClient)
 
-	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt)
+	toolRecorder := mgr.GetEventRecorderFor("kapetool-controller")
+	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt, toolRecorder)
 	if err := kapecontroller.SetupToolReconciler(mgr, toolRec, 3); err != nil {
 		log.Error(err, "setting up KapeTool controller")
 		os.Exit(1)

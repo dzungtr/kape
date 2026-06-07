@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 )
@@ -45,6 +46,32 @@ func (r *ToolRepository) UpdateStatus(ctx context.Context, tool *v1alpha1.KapeTo
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("updating KapeTool %s/%s status: %w", tool.Namespace, tool.Name, err)
+	}
+	return nil
+}
+
+// AddFinalizer adds the given finalizer to the tool if not already present.
+func (r *ToolRepository) AddFinalizer(ctx context.Context, tool *v1alpha1.KapeTool, finalizer string) error {
+	if controllerutil.ContainsFinalizer(tool, finalizer) {
+		return nil
+	}
+	patch := client.MergeFrom(tool.DeepCopy())
+	controllerutil.AddFinalizer(tool, finalizer)
+	if err := r.client.Patch(ctx, tool, patch); err != nil {
+		return fmt.Errorf("adding finalizer to KapeTool %s/%s: %w", tool.Namespace, tool.Name, err)
+	}
+	return nil
+}
+
+// RemoveFinalizer removes the given finalizer from the tool.
+func (r *ToolRepository) RemoveFinalizer(ctx context.Context, tool *v1alpha1.KapeTool, finalizer string) error {
+	if !controllerutil.ContainsFinalizer(tool, finalizer) {
+		return nil
+	}
+	patch := client.MergeFrom(tool.DeepCopy())
+	controllerutil.RemoveFinalizer(tool, finalizer)
+	if err := r.client.Patch(ctx, tool, patch); err != nil {
+		return fmt.Errorf("removing finalizer from KapeTool %s/%s: %w", tool.Namespace, tool.Name, err)
 	}
 	return nil
 }
