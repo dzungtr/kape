@@ -59,12 +59,12 @@ Rituals as skills: `/standup`, `/triage`, `/to-issues`, `/to-prd`, `/apply-label
 
 ## Domain docs
 
-Before exploring any area of the codebase, read `CONTEXT.md` (glossary) and the relevant `docs/adr/` files — see `docs/agents/domain.md`.
-
-**memsearch:** before starting a task, run:
+Before starting any task, run memsearch to orient:
 
 ```
 memsearch search "<terms>" -c kape_io --top-k 5
 ```
 
-or use `/memsearch-search`. Indexed sources: `docs/`, `CONTEXT.md`, Go modules (see `.memsearch.toml`). After editing docs, re-index with `/memsearch-index`.
+or `/memsearch-search`. Indexed sources: `docs/`, `CONTEXT.md`, Go modules (see `.memsearch.toml`). After editing docs, re-index with `/memsearch-index`.
+
+For deeper context on specific areas: `CONTEXT.md` (glossary) and `docs/adr/` — see `docs/agents/domain.md`.
