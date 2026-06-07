@@ -8,7 +8,7 @@ Welcome! KAPE is an early-stage project; contributions in any form — bug repor
 
 | Tool | Version | Notes |
 |---|---|---|
-| Go | 1.24+ | Workspace modules under `go.work` |
+| Go | 1.25+ | Workspace modules under `go.work` |
 | [golangci-lint](https://golangci-lint.run/) | latest | Go linting |
 | [controller-gen](https://github.com/kubernetes-sigs/controller-tools) | latest | CRD/RBAC code generation |
 | Python | 3.12+ | `runtime/` only; managed via [uv](https://docs.astral.sh/uv/) |
