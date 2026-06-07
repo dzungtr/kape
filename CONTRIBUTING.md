@@ -11,9 +11,9 @@ Welcome! KAPE is an early-stage project; contributions in any form — bug repor
 | Go | 1.25+ | Workspace modules under `go.work` |
 | [golangci-lint](https://golangci-lint.run/) | latest | Go linting |
 | [controller-gen](https://github.com/kubernetes-sigs/controller-tools) | latest | CRD/RBAC code generation |
-| Python | 3.12+ | `runtime/` only; managed via [uv](https://docs.astral.sh/uv/) |
-| [uv](https://docs.astral.sh/uv/) | latest | Python package manager (replaces pip/venv) |
-| Node.js | 20+ | `dashboard/` only |
+| Python | 3.12+ | `runtime/` only; managed via [conda](https://docs.conda.io/) (`kape-runtime` env) |
+| [uv](https://docs.astral.sh/uv/) | latest | Python package manager for wheel builds and linting |
+| [bun](https://bun.sh/) | latest | `dashboard/` only |
 | podman | latest | Container builds — **do not use docker** |
 | kubectl | latest | Operator integration testing |
 | [kind](https://kind.sigs.k8s.io/) | latest | Recommended local cluster |
@@ -34,6 +34,7 @@ crds/           Generated CRD manifests (do not edit by hand)
 dashboard/      React frontend
 docs/           Architecture, CRD reference, design specs
 examples/       Reference KapeHandler/KapeTool/KapeSchema YAML
+kapeproxy/      Reverse proxy / ingress gateway module
 operator/       Kubernetes operator (controller-gen, controller-runtime)
 runtime/        LangGraph ReAct agent runtime (Python)
 task-service/   Task tracking microservice
@@ -67,13 +68,14 @@ You can also target a single module directly:
 go test ./operator/...
 go test ./task-service/...
 go test ./adapters/...
+go test ./kapeproxy/...
 ```
 
 ### Python runtime
 
 ```bash
 # Run tests
-cd runtime && uv run pytest
+cd runtime && conda run -n kape-runtime pytest
 
 # Lint + format check
 cd runtime && uv run ruff check . && uv run ruff format --check .
@@ -85,15 +87,21 @@ cd runtime && uv build
 ### Dashboard
 
 ```bash
-cd dashboard && npm install
-npm run build
-npm test -- --passWithNoTests
-npm run lint
+cd dashboard && bun install
+bun run build
+bun run test -- --passWithNoTests
+bun run lint
 ```
 
 ### Container images (podman)
 
-The `Makefile` targets use `docker build` — substitute `podman build` locally:
+All `Makefile` targets already use `podman build`. Run `make build-images` to build all images:
+
+```bash
+make build-images
+```
+
+Or build a single image directly:
 
 ```bash
 podman build -t kape-operator:dev -f operator/Dockerfile .
