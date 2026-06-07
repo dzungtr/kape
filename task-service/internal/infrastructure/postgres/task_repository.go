@@ -57,6 +57,16 @@ func fromRow(r *taskRow) *task.Task {
 	}
 }
 
+
+// isTerminalViolation returns true when err is a PostgreSQL integrity-constraint
+// violation raised by the prevent_terminal_update trigger.
+func isTerminalViolation(err error) bool {
+	if pgErr, ok := err.(pg.Error); ok {
+		return pgErr.IntegrityViolation()
+	}
+	return false
+}
+
 // TaskRepository implements domain.Repository using go-pg.
 type TaskRepository struct {
 	db *pg.DB
@@ -103,6 +113,9 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, id string, status tas
 		Where("id = ?", id).
 		Update()
 	if err != nil {
+		if isTerminalViolation(err) {
+			return task.ErrTerminalState
+		}
 		return err
 	}
 	if res.RowsAffected() == 0 {
@@ -241,6 +254,9 @@ func (r *TaskRepository) BulkUpdateStatus(ctx context.Context, ids []string, sta
 	}
 	_, err := r.db.QueryContext(ctx, &rows, query, status, pg.In(ids))
 	if err != nil {
+		if isTerminalViolation(err) {
+			return nil, task.ErrTerminalState
+		}
 		return nil, err
 	}
 	result := make([]string, len(rows))

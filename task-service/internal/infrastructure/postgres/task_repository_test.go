@@ -47,6 +47,12 @@ func setupDB(t *testing.T) (*gopg.DB, func()) {
 		Database: "testdb",
 	})
 
+	repo := postgres.NewTaskRepository(db)
+	now := time.Now().UTC()
+	for _, month := range []time.Time{now, now.AddDate(0, 1, 0)} {
+		require.NoError(t, repo.EnsurePartition(ctx, month))
+	}
+
 	return db, func() {
 		db.Close()
 		container.Terminate(ctx)
@@ -311,3 +317,36 @@ func TestTaskRepository_EnsurePartition_Idempotent(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestTaskRepository_UpdateStatus_TerminalStatePreventsUpdate(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Create(ctx, fixedTask("01TERM")))
+
+	now := time.Now().UTC()
+	require.NoError(t, repo.UpdateStatus(ctx, "01TERM", task.StatusCompleted, task.UpdateFields{CompletedAt: &now}))
+
+	// A second update on the same (now-terminal) row must return ErrTerminalState.
+	err := repo.UpdateStatus(ctx, "01TERM", task.StatusFailed, task.UpdateFields{})
+	assert.ErrorIs(t, err, task.ErrTerminalState)
+}
+
+func TestTaskRepository_BulkUpdateStatus_TerminalStatePreventsUpdate(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Create(ctx, fixedTask("01BTERM")))
+
+	_, err := repo.BulkUpdateStatus(ctx, []string{"01BTERM"}, task.StatusCompleted)
+	require.NoError(t, err)
+
+	_, err = repo.BulkUpdateStatus(ctx, []string{"01BTERM"}, task.StatusFailed)
+	assert.ErrorIs(t, err, task.ErrTerminalState)
+}

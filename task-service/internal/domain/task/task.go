@@ -127,3 +127,6 @@ var ErrNotFound = fmt.Errorf("task not found")
 
 // ErrInvalidTransition is returned when a status transition is not allowed.
 var ErrInvalidTransition = fmt.Errorf("invalid status transition")
+
+// ErrTerminalState is returned when an UPDATE is attempted on a task in a terminal state.
+var ErrTerminalState = fmt.Errorf("task is in terminal state and cannot be updated")
