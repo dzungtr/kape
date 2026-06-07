@@ -8,7 +8,7 @@ Issues and PRDs live as GitHub issues on `dzungtr/kape` (use the `gh` CLI). See 
 
 ### Triage labels
 
-The kape-io label taxonomy maps to the five canonical Pocock triage roles; `ready` is derived and audience is encoded via assignee. See `docs/agents/triage-labels.md`, the decision in `docs/adr/0001-github-label-taxonomy.md`, and the operational contract in `docs/agent-rituals.md`.
+The kape-io label taxonomy adopts the five canonical Pocock triage roles directly: the triage state is a single-label enum (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), and the agent-vs-human audience is a decided state set in `/triage`, not inferred from the assignee. See `docs/agents/triage-labels.md`, the decision in `docs/adr/0001-github-label-taxonomy.md`, and the operational contract in `docs/agent-rituals.md`.
 
 ### Domain docs
 

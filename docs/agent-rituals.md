@@ -15,8 +15,8 @@ bodies.
 | Role               | Reads labels                              | Writes labels                          |
 |--------------------|-------------------------------------------|----------------------------------------|
 | `/standup`         | all                                       | none                                   |
-| Planning           | `committed`, `stretch`, `backlog`, `ready`, `phase/*` | `committed` ⇄ `stretch`, `needs-triage` |
-| Triage             | `needs/*`, category, area, commitment     | category, area, commitment, `ready`, `needs-triage` |
+| Planning           | `committed`, `stretch`, `backlog`, `ready-for-agent`, `ready-for-human`, `phase/*` | `committed` ⇄ `stretch`, `needs-triage` |
+| Triage             | `needs-info`, category, area, commitment  | category, area, commitment, `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` |
 | Bug intake         | (Snyk MCP output, new-issue events)       | `bug`, `security`, `urgent`, `snyk-finding`, `area/*`, `backlog` |
 | `apply-labels` skill | target issue/PR labels, body, title, changed files | `area/*`, category, `phase/*`; proposes commitment but never applies without user confirmation |
 | State validator    | all                                       | none (reports only)                    |
@@ -26,7 +26,7 @@ not write.
 
 ## `/standup` consumption order
 
-The `/standup` skill reads open issues and ranks them into five buckets. Order
+The `/standup` skill reads open issues and ranks them into six buckets. Order
 matters — an issue surfaces in the first bucket it matches and not subsequent
 ones.
 
@@ -34,10 +34,16 @@ ones.
 1. ACT NOW         urgent + open
 2. STUCK           blocked + open + age_days(blocked) > 3
 3. IN FLIGHT       committed + (assignee OR linked open PR)
-4. PICK NEXT       committed + ready + no assignee
-5. PROGRESS CHECK  stretch + ready + assignee
+4. PICK NEXT       committed + ready-for-agent + NOT blocked + no assignee
+5. HUMAN QUEUE     committed + ready-for-human + no assignee
+6. PROGRESS CHECK  stretch + (ready-for-agent OR ready-for-human) + assignee
    (anything not matched: not shown)
 ```
+
+`PICK NEXT` is exactly what an AFK agent grabs next: triaged for an agent,
+unblocked, unclaimed. `HUMAN QUEUE` surfaces committed work that triage reserved
+for a human and that nobody has picked up yet — work that was invisible under the
+old single-`ready` model.
 
 `age_days(blocked)` is computed from the timestamp at which the `blocked` label
 was last applied. `/standup` retrieves this from the issue events API and
@@ -46,8 +52,8 @@ caches it for the run.
 ### Bucket display
 
 Each bucket shows: issue number, title, area, commitment, age (in bucket), and
-any `needs/*` labels. `urgent` issues additionally show the "Reason:" line from
-the body verbatim.
+the triage state (`needs-info` in particular). `urgent` issues additionally show
+the "Reason:" line from the body verbatim.
 
 ## Planning ritual
 
@@ -95,6 +101,10 @@ the maintainer to set it before mutating any labels.
 
 Runs on every new issue and on every issue label change.
 
+The triage **state** is a single-label enum: every open issue carries exactly one
+of `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
+The ready states are *decided*, never derived — see the gate below.
+
 ```
 On new issue:
   set needs-triage
@@ -102,20 +112,28 @@ On new issue:
     set security + urgent
   derive area/* from title keywords (see mapping below); if unambiguous, set it
   default commitment = backlog
-  do NOT set ready (triage is not complete until a maintainer or agent confirms category)
+  do NOT set any ready state (triage is not complete until a maintainer confirms)
 
-On issue update or label change:
-  preconditions =
-    has exactly one category label
-    AND has exactly one area/* label
-    AND has exactly one commitment label
-    AND has no needs/* labels
-    AND is not labelled needs-triage
+Precondition gate (must ALL hold before EITHER ready state may be set):
+  has exactly one category label
+  AND has exactly one area/* label
+  AND has exactly one commitment label
+  AND has no needs-info label
 
-  if preconditions hold:
-    set ready, clear needs-triage
-  else:
-    clear ready (do not touch needs-triage — that is set by triage logic above)
+Moving to a ready state (decided in /triage, not auto-applied):
+  the gate must hold; then choose the audience:
+    ready-for-human  if the work needs human judgment, external access,
+                     design decisions, or manual testing — OR if the call is
+                     genuinely ambiguous (default fail-safe)
+    ready-for-agent  otherwise (fully specified, an AFK agent may pick it up)
+  an agent RECOMMENDS the audience and a human CONFIRMS before the label is set;
+  an explicit maintainer override ("move #42 to ready-for-agent") applies directly.
+  setting a ready state clears needs-triage.
+
+Re-triage triggers (move the issue OFF a ready state, back to needs-triage or
+needs-info):
+  the gate breaks (a category/area/commitment is removed, or needs-info is set)
+  OR blocked is applied to a ready-for-agent issue (it is no longer pickable)
 ```
 
 ### Title-keyword → `area/*` mapping (initial)
@@ -173,19 +191,30 @@ An on-demand agent (see "Where it runs" below) checks open issues for
 inconsistent label state and reports violations. The validator never mutates
 labels — it only reports.
 
+`state` = the set of labels in {`needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`}. `ready` below means `ready-for-agent` OR
+`ready-for-human`.
+
 ```
 For each open issue:
   if count(commitment labels) > 1:                          report ERROR "multiple commitments"
+  if count(state labels) == 0:                              report ERROR "no triage state"
+  if count(state labels) > 1:                               report ERROR "conflicting triage state"
   if ready AND missing category:                            report ERROR "ready without category"
   if ready AND missing area:                                report ERROR "ready without area"
   if ready AND missing commitment:                          report ERROR "ready without commitment"
-  if ready AND any needs/* label:                           report ERROR "ready with open needs/*"
+  if ready AND needs-info:                                  report ERROR "ready with open needs-info"
   if urgent AND body has no "Reason:" line:                 report WARN  "urgent without reason"
   if blocked AND body has no "Blocked by:" line:            report WARN  "blocked without reference"
-  if needs-triage AND ready:                                report ERROR "both needs-triage and ready"
+  if ready-for-agent AND blocked:                           report WARN  "ready-for-agent but blocked — re-triage off ready-for-agent"
+  if wontfix AND issue is open:                             report WARN  "wontfix but still open — close it"
   if has phase/* AND no milestone:                          report WARN  "phase/* without matching milestone"
   if has milestone AND no phase/*:                          report WARN  "milestone without phase/*"
 ```
+
+The `count(state labels)` checks subsume the old "both needs-triage and ready"
+and "ready-for-agent + ready-for-human" cases — any two state labels at once is a
+conflicting-state ERROR.
 
 ### Where it runs
 
@@ -217,9 +246,11 @@ maintainer can trigger any time it's actually useful.
 | `backlog`               | Triage, bug intake, human                     | Planning (→ stretch / committed), human   |
 | `urgent`                | Triage (security only), bug intake, human     | Human (or auto-clear when issue closes)   |
 | `blocked`               | Triage, human, automation (PR conflict)       | Triage, human, automation                 |
-| `ready`                 | Triage (auto from preconditions)              | Triage (auto when preconditions break)    |
-| `needs-triage`          | Triage (default on new), planning             | Triage (auto when ready set)              |
-| `needs/*`               | Triage, human                                 | Triage, human                             |
+| `ready-for-agent`       | Triage (agent recommends, human confirms; or maintainer override) | Triage (when gate breaks or blocked), human |
+| `ready-for-human`       | Triage (decided; default when audience ambiguous) | Triage (when gate breaks), human          |
+| `needs-triage`          | Triage (default on new), planning             | Triage (when a ready state or wontfix is set) |
+| `needs-info`            | Triage, human                                 | Triage, human                             |
+| `wontfix`               | Triage (issue then closed), human             | Human (on reopen)                         |
 | `snyk-finding`          | Bug intake                                    | Human only                                |
 | `good first issue`      | Human                                         | Human                                     |
 | `help wanted`           | Human                                         | Human                                     |

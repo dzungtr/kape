@@ -91,7 +91,7 @@ These require judgment. Propose and confirm.
 
 - **Ambiguous area** — when multiple area buckets match a PR's files (e.g., a PR touching both `operator/` and `crds/`). List the matches, recommend the dominant one, ask.
 - **Category** — for issues (which have no file paths) and PRs that span code. Look at title/body, propose one of `bug`, `enhancement`, `feature`, `refactor`, `redesign`, `security`, `chore`. Confirm.
-- **`needs-triage` / `ready`** — for issues. If category + area + commitment all present and no open `needs/*`, propose `ready`. Otherwise propose `needs-triage`.
+- **Triage state** — for issues. The state is a single label from `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. The precondition gate for either ready state is: category + area + commitment all present and no `needs-info`. If the gate holds, recommend a ready state and ask which audience (default `ready-for-human` when the call needs human judgment, external access, design decisions, manual testing, or is genuinely ambiguous; `ready-for-agent` only when fully specified for a hands-off agent). If the gate does not hold, propose `needs-triage`. Never set a ready state without user confirmation.
 
 ### Never apply autonomously
 
