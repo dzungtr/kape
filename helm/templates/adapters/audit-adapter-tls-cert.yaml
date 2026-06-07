@@ -1,0 +1,17 @@
+{{- if .Values.adapters.audit.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kape-audit-adapter-tls
+  namespace: {{ .Values.namespace }}
+spec:
+  secretName: kape-audit-adapter-tls
+  issuerRef:
+    name: kape-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - kape-audit-adapter.{{ .Values.namespace }}.svc
+    - kape-audit-adapter.{{ .Values.namespace }}.svc.cluster.local
+  duration: 8760h
+  renewBefore: 720h
+{{- end }}
