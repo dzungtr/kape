@@ -20,7 +20,7 @@ KAPE does both.
 ## Quick Start
 
 ```bash
-helm install kape ./helm/kape --namespace kape-system --create-namespace
+helm install kape ./charts/kape --namespace kape-system --create-namespace
 ```
 
 Then declare your first agent:

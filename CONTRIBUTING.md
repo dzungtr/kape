@@ -27,13 +27,13 @@ Welcome! KAPE is an early-stage project; contributions in any form — bug repor
 
 ```
 adapters/       CloudEvents adapters (Falco, Alertmanager, K8s Audit)
+charts/kape/    Helm chart for cluster deployment
 cmd/            Shared CLI entrypoints (per module)
 config/         Operator configuration
 crds/           Generated CRD manifests (do not edit by hand)
 dashboard/      React frontend
 docs/           Architecture, CRD reference, design specs
 examples/       Reference KapeHandler/KapeTool/KapeSchema YAML
-helm/           Helm chart for cluster deployment
 operator/       Kubernetes operator (controller-gen, controller-runtime)
 runtime/        LangGraph ReAct agent runtime (Python)
 task-service/   Task tracking microservice
@@ -157,6 +157,27 @@ Before marking a PR ready for review:
 **Python:** [`ruff`](https://docs.astral.sh/ruff/) for linting and formatting, configured in `runtime/pyproject.toml` (`line-length = 100`, `target-version = py312`).
 
 **TypeScript/React:** ESLint as configured in `dashboard/`.
+
+---
+
+## Helm chart layout
+
+The chart lives at:
+
+```
+charts/kape/Chart.yaml
+charts/kape/templates/
+charts/kape/values.yaml
+charts/kape/package.json
+```
+
+This follows the standard Helm convention (`charts/<name>/`):
+
+- It matches the directory structure produced by `helm pull` and expected by `helm package` / OCI push defaults.
+- It mirrors how charts are organized in major repos (e.g. `prometheus-community/helm-charts`, `grafana/helm-charts`).
+- The `charts/` prefix leaves natural room for additional charts (`charts/kape-adapters/`, `charts/kape-runtime/`) without restructuring the top-level repo.
+
+> The chart previously lived at a flat `helm/` directory at the repo root; it was moved in the `docs/helm-charts-rename-wip` branch.
 
 ---
 

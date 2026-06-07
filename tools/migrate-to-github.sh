@@ -573,7 +573,7 @@ create_issue \
 
 ## Description
 
-Helm templates for: NATS JetStream StatefulSet, CloudNativePG cluster, CRDs, cert-manager Issuer + Certificate. \`helm/values.yaml\` with all configurable defaults.
+Helm templates for: NATS JetStream StatefulSet, CloudNativePG cluster, CRDs, cert-manager Issuer + Certificate. \`charts/kape/values.yaml\` with all configurable defaults.
 
 *This issue was created by the roadmap→GitHub migration script.*" \
   "$M6" \
@@ -587,7 +587,7 @@ create_issue \
 
 ## Description
 
-Helm templates for: KAPE operator, task-service, AlertManager adapter, K8s Audit adapter, Dashboard, OAuth2 Proxy. \`helm/values.yaml\`: image tags, resource requests, LLM provider, NATS retention, replicas.
+Helm templates for: KAPE operator, task-service, AlertManager adapter, K8s Audit adapter, Dashboard, OAuth2 Proxy. \`charts/kape/values.yaml\`: image tags, resource requests, LLM provider, NATS retention, replicas.
 
 *This issue was created by the roadmap→GitHub migration script.*" \
   "$M6" \
