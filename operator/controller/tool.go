@@ -3,8 +3,6 @@ package controller
 import (
 	"context"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -29,12 +27,12 @@ func (r *KapeToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // SetupToolReconciler registers the KapeTool reconciler with the controller manager.
+// StatefulSet and Service are no longer owned by KAPE — the upstream database operator
+// manages those objects. KAPE only owns the QdrantCluster CRD via owner references.
 func SetupToolReconciler(mgr manager.Manager, inner *reconcile.ToolReconciler, maxConcurrent int) error {
 	r := NewKapeToolReconciler(inner)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.KapeTool{}).
-		Owns(&appsv1.StatefulSet{}).
-		Owns(&corev1.Service{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)
 }

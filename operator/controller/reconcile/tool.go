@@ -18,18 +18,16 @@ import (
 
 // ToolReconciler performs the full reconcile logic for KapeTool.
 type ToolReconciler struct {
-	tools       ports.ToolRepository
-	statefulSet ports.StatefulSetPort
-	kapeConfig  ports.KapeConfigLoader
+	tools          ports.ToolRepository
+	qdrantCluster  ports.QdrantClusterPort
 }
 
 // NewToolReconciler creates a ToolReconciler.
 func NewToolReconciler(
 	tools ports.ToolRepository,
-	statefulSet ports.StatefulSetPort,
-	kapeConfig ports.KapeConfigLoader,
+	qdrantCluster ports.QdrantClusterPort,
 ) *ToolReconciler {
-	return &ToolReconciler{tools: tools, statefulSet: statefulSet, kapeConfig: kapeConfig}
+	return &ToolReconciler{tools: tools, qdrantCluster: qdrantCluster}
 }
 
 // Reconcile dispatches on spec.type.
@@ -93,28 +91,57 @@ func (r *ToolReconciler) reconcileExternalMemory(ctx context.Context, tool *v1al
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
+// reconcileProvisionedMemory delegates Qdrant provisioning to the upstream
+// qdrant-operator by creating a QdrantCluster CRD object, then polls its
+// status for readiness. If the operator CRD is not installed, it surfaces a
+// MemoryReady=False/OperatorNotInstalled condition.
 func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
-	cfg, err := r.kapeConfig.Load(ctx)
+	installed, err := r.qdrantCluster.IsCRDInstalled(ctx)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("loading kape-config: %w", err)
+		return ctrl.Result{}, fmt.Errorf("checking QdrantCluster CRD: %w", err)
 	}
-
-	if err := r.statefulSet.EnsureQdrant(ctx, tool, cfg); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring Qdrant: %w", err)
-	}
-
-	stsKey := types.NamespacedName{Name: "kape-memory-" + tool.Name, Namespace: tool.Namespace}
-	readyReplicas, found, err := r.statefulSet.GetQdrantReadyReplicas(ctx, stsKey)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reading Qdrant status: %w", err)
-	}
-
-	if !found || readyReplicas < 1 {
+	if !installed {
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "MemoryReady",
+			Status:  metav1.ConditionFalse,
+			Reason:  "OperatorNotInstalled",
+			Message: "QdrantCluster.qdrant.io CRD not found — install the qdrant-operator",
+		})
 		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
 			Type:    "Ready",
 			Status:  metav1.ConditionFalse,
-			Reason:  "QdrantNotReady",
-			Message: "StatefulSet has no ready replicas",
+			Reason:  "OperatorNotInstalled",
+			Message: "QdrantCluster.qdrant.io CRD not found — install the qdrant-operator",
+		})
+		tool.Status.QdrantEndpoint = ""
+		if err := r.tools.UpdateStatus(ctx, tool); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if err := r.qdrantCluster.EnsureQdrantCluster(ctx, tool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring QdrantCluster: %w", err)
+	}
+
+	clusterKey := types.NamespacedName{Name: "kape-memory-" + tool.Name, Namespace: tool.Namespace}
+	ready, url, found, err := r.qdrantCluster.GetQdrantClusterStatus(ctx, clusterKey)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reading QdrantCluster status: %w", err)
+	}
+
+	if !found || !ready {
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "MemoryReady",
+			Status:  metav1.ConditionFalse,
+			Reason:  "QdrantClusterNotReady",
+			Message: "QdrantCluster has not reached Ready=True",
+		})
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "QdrantClusterNotReady",
+			Message: "QdrantCluster has not reached Ready=True",
 		})
 		tool.Status.QdrantEndpoint = ""
 		if err := r.tools.UpdateStatus(ctx, tool); err != nil {
@@ -123,13 +150,18 @@ func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	endpoint := fmt.Sprintf("http://kape-memory-%s.%s:6333", tool.Name, tool.Namespace)
-	tool.Status.QdrantEndpoint = endpoint
+	tool.Status.QdrantEndpoint = url
+	tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+		Type:    "MemoryReady",
+		Status:  metav1.ConditionTrue,
+		Reason:  "Ready",
+		Message: "QdrantCluster ready",
+	})
 	tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
 		Type:    "Ready",
 		Status:  metav1.ConditionTrue,
 		Reason:  "Ready",
-		Message: "Qdrant StatefulSet ready",
+		Message: "QdrantCluster ready",
 	})
 	if err := r.tools.UpdateStatus(ctx, tool); err != nil {
 		return ctrl.Result{}, err

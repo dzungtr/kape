@@ -150,8 +150,7 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		})
 	}
 
-	// Collect memory-type tools and mount their connection Secrets as files.
-	// Sort by Name for determinism when selecting KAPE_TOOL_NAME.
+	// Collect memory-type tools, sort by Name for determinism.
 	var memoryTools []v1alpha1.KapeTool
 	for _, t := range tools {
 		if t.Spec.Type == "memory" {
@@ -186,10 +185,22 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 	if len(memoryTools) > 0 {
 		// TODO(#79): emit warning condition on KapeHandler.status when len(memoryTools) > 1.
 		// For v1, the first tool's name (alphabetical — slice is sorted above) wins.
+		primary := memoryTools[0]
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  "KAPE_TOOL_NAME",
-			Value: memoryTools[0].Name,
+			Value: primary.Name,
 		})
+
+		// Inject the Qdrant connection URL resolved by the ToolReconciler from the
+		// upstream QdrantCluster CRD status (or from an external user-managed URL).
+		// Empty when the cluster is not yet ready; the handler deployment will be
+		// re-patched on the next reconcile cycle.
+		if primary.Status.QdrantEndpoint != "" {
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  "QDRANT_URL",
+				Value: primary.Status.QdrantEndpoint,
+			})
+		}
 
 		// When the chosen memory tool points at an external database with a
 		// SecretRef, inject the referenced Secret key as QDRANT_API_KEY so the
@@ -197,15 +208,15 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 		// LocalObjectReference carries only the Secret name, so the key defaults
 		// to "apiKey" (the conventional key the operator writes for provisioned
 		// connection Secrets).
-		if memoryTools[0].Spec.Memory != nil &&
-			memoryTools[0].Spec.Memory.External != nil &&
-			memoryTools[0].Spec.Memory.External.SecretRef != nil {
+		if primary.Spec.Memory != nil &&
+			primary.Spec.Memory.External != nil &&
+			primary.Spec.Memory.External.SecretRef != nil {
 			envVars = append(envVars, corev1.EnvVar{
 				Name: "QDRANT_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{
-							Name: memoryTools[0].Spec.Memory.External.SecretRef.Name,
+							Name: primary.Spec.Memory.External.SecretRef.Name,
 						},
 						Key: externalAPIKeySecretKey,
 					},
