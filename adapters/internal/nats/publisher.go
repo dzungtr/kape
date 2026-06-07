@@ -19,8 +19,10 @@ type Publisher struct {
 	js jetstream.JetStream
 }
 
-// NewPublisher connects to JetStream, provisions the KAPE_EVENTS stream if it
-// does not exist, and returns a ready Publisher.
+// NewPublisher connects to JetStream, looks up the KAPE_EVENTS stream that
+// must already exist, and returns a ready Publisher.
+// If the stream is absent, it returns an actionable error directing the
+// operator to apply the nats.stream Helm values or the NACK Stream CR.
 // The caller is responsible for managing context deadlines when calling Publish.
 func NewPublisher(nc *natsgo.Conn) (*Publisher, error) {
 	js, err := jetstream.New(nc)
@@ -31,16 +33,12 @@ func NewPublisher(nc *natsgo.Conn) (*Publisher, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     streamName,
-		Subjects: []string{"kape.events.>"},
-		MaxAge:   24 * time.Hour,
-		Storage:  jetstream.FileStorage,
-		Replicas: 1, // Helm overrides to 3 in production
-		Discard:  jetstream.DiscardOld,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("provisioning stream %s: %w", streamName, err)
+	if _, err = js.Stream(ctx, streamName); err != nil {
+		return nil, fmt.Errorf(
+			"stream %s not found — ensure the Helm chart nats.stream job has run "+
+				"or set nack.enabled=true to provision via NACK Stream CR: %w",
+			streamName, err,
+		)
 	}
 
 	return &Publisher{js: js}, nil

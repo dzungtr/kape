@@ -1,0 +1,17 @@
+{{- if .Values.nack.enabled }}
+apiVersion: jetstream.nats.io/v1beta2
+kind: Stream
+metadata:
+  name: kape-events
+  namespace: {{ .Values.namespace }}
+spec:
+  name: KAPE_EVENTS
+  subjects:
+    - "kape.events.>"
+  retention: limits
+  maxAge: 24h
+  storage: file
+  replicas: {{ .Values.nats.replicaCount }}
+  discard: old
+  duplicateWindow: {{ .Values.nats.stream.duplicateWindow }}
+{{- end }}

@@ -26,6 +26,24 @@ func startNATS(t *testing.T) (url string, cleanup func()) {
 	return connStr, func() { _ = container.Terminate(ctx) }
 }
 
+// provisionStream creates the KAPE_EVENTS stream out-of-band, as infra would do.
+func provisionStream(t *testing.T, nc *natsgo.Conn) {
+	t.Helper()
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:       "KAPE_EVENTS",
+		Subjects:   []string{"kape.events.>"},
+		MaxAge:     24 * time.Hour,
+		Storage:    jetstream.FileStorage,
+		Replicas:   1,
+		Discard:    jetstream.DiscardOld,
+		Duplicates: 60 * time.Second,
+	})
+	require.NoError(t, err)
+}
+
 func TestPublisher_PublishAndConsume(t *testing.T) {
 	url, cleanup := startNATS(t)
 	defer cleanup()
@@ -33,6 +51,8 @@ func TestPublisher_PublishAndConsume(t *testing.T) {
 	nc, err := natsgo.Connect(url)
 	require.NoError(t, err)
 	defer nc.Drain()
+
+	provisionStream(t, nc)
 
 	publisher, err := natspkg.NewPublisher(nc)
 	require.NoError(t, err)
@@ -67,7 +87,7 @@ func TestPublisher_PublishAndConsume(t *testing.T) {
 	assert.Equal(t, "kape.events.security.cilium", received.Type())
 }
 
-func TestPublisher_StreamAlreadyExists(t *testing.T) {
+func TestPublisher_StreamAbsentReturnsError(t *testing.T) {
 	url, cleanup := startNATS(t)
 	defer cleanup()
 
@@ -75,10 +95,11 @@ func TestPublisher_StreamAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Drain()
 
+	// Do NOT provision the stream — NewPublisher must fail with an actionable error.
 	_, err = natspkg.NewPublisher(nc)
-	require.NoError(t, err)
-	_, err = natspkg.NewPublisher(nc)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "KAPE_EVENTS")
+	assert.Contains(t, err.Error(), "nats.stream")
 }
 
 // TestPublisher_DuplicatePublishDeduplicatedByJetStream verifies that
@@ -86,10 +107,8 @@ func TestPublisher_StreamAlreadyExists(t *testing.T) {
 // publisher-side deduplication discards the second publish of the same
 // event id within the stream's Duplicates window.
 //
-// The Duplicates window is set out-of-band on the stream after NewPublisher,
-// because this test guards #27 (header) — the stream-side window is owned
-// by infra (#26) once that lands. Until then this test sets the field
-// directly so the assertion works.
+// The stream is provisioned out-of-band with duplicateWindow=60s, matching
+// what the Helm chart job sets in production.
 func TestPublisher_DuplicatePublishDeduplicatedByJetStream(t *testing.T) {
 	url, cleanup := startNATS(t)
 	defer cleanup()
@@ -98,23 +117,12 @@ func TestPublisher_DuplicatePublishDeduplicatedByJetStream(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Drain()
 
+	provisionStream(t, nc)
+
 	publisher, err := natspkg.NewPublisher(nc)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	js, err := jetstream.New(nc)
-	require.NoError(t, err)
-
-	_, err = js.UpdateStream(ctx, jetstream.StreamConfig{
-		Name:       "KAPE_EVENTS",
-		Subjects:   []string{"kape.events.>"},
-		MaxAge:     24 * time.Hour,
-		Storage:    jetstream.FileStorage,
-		Replicas:   1,
-		Discard:    jetstream.DiscardOld,
-		Duplicates: 60 * time.Second,
-	})
-	require.NoError(t, err)
 
 	event := ce.NewEvent()
 	event.SetSpecVersion("1.0")
@@ -128,6 +136,8 @@ func TestPublisher_DuplicatePublishDeduplicatedByJetStream(t *testing.T) {
 	require.NoError(t, publisher.Publish(ctx, "kape.events.security.cilium", event))
 	require.NoError(t, publisher.Publish(ctx, "kape.events.security.cilium", event))
 
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
 	stream, err := js.Stream(ctx, "KAPE_EVENTS")
 	require.NoError(t, err)
 	info, err := stream.Info(ctx)
