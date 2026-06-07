@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-status-processing: #3b82f6;
+  --color-status-completed: #22c55e;
+  --color-status-action-error: #f59e0b;
+  --color-status-failed: #ef4444;
+  --color-status-schema-validation-failed: #ef4444;
+  --color-status-unprocessable-event: #ef4444;
+  --color-status-timeout: #6b7280;
+  --color-status-retried: #6b7280;
+  --color-status-pending-approval: #a855f7;
+}
+
+@keyframes pulse-blue {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.status-pulsing {
+  animation: pulse-blue 2s ease-in-out infinite;
+}
+
+.status-strikethrough {
+  text-decoration: line-through;
+}
