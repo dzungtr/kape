@@ -1,0 +1,16 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeTool
+metadata:
+  name: kubectl-mcp
+  namespace: kape-system
+spec:
+  description: "Read-only kubectl access via MCP for inspecting Kubernetes resources during audit review"
+  type: mcp
+  mcp:
+    upstream:
+      url: "http://kubectl-mcp-svc.kape-system:8080"
+      transport: sse
+    allowedTools:
+      - get_resource
+      - list_resources
+      - get_resource_logs

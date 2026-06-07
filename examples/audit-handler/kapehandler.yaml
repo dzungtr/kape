@@ -1,0 +1,56 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeHandler
+metadata:
+  name: audit-handler
+  namespace: kape-system
+spec:
+  schemaRef: audit-decision
+  trigger:
+    source: kape.events.k8s.audit
+    type: kape.events.k8s.audit.warning
+    maxEventAgeSeconds: 600
+  tools:
+    - ref: kubectl-mcp
+  skills:
+    - ref: audit-review
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    maxIterations: 15
+    systemPrompt: |
+      You are a Kubernetes security audit agent reviewing API server audit events.
+
+      When you receive an audit event, follow this procedure:
+
+      1. Examine the audit event: note the verb (create/delete/patch/get), resource kind,
+         namespace, username, and userAgent.
+
+      2. Use kubectl-mcp to inspect the affected resource or namespace if additional
+         context is needed (e.g. fetch resource labels, check RBAC bindings).
+
+      3. Assess the event and determine:
+         - risk_level: "none", "low", "medium", or "high" based on the sensitivity of
+           the operation and the identity performing it
+         - action: "allow", "monitor", "alert", or "block"
+         - justification: a 1-2 sentence explanation of the risk assessment and
+           the recommended action
+
+      Flag privileged operations, cluster-admin usage, and modifications to
+      security-sensitive resources (Secrets, ClusterRoles, NetworkPolicies).
+      Always populate all three fields. Be concise and factual.
+  actions:
+    - name: emit-security-alert
+      type: event-emitter
+      condition: "decision.risk_level == 'high'"
+      data:
+        subject: "kape.events.security.audit-alert"
+        payload:
+          resource: "{{ event.data.objectRef.resource }}"
+          namespace: "{{ event.data.objectRef.namespace }}"
+          user: "{{ event.data.user.username }}"
+          risk_level: "{{ decision.risk_level }}"
+          justification: "{{ decision.justification }}"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 10
+    natsLagThreshold: 20

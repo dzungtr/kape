@@ -1,0 +1,11 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeTool
+metadata:
+  name: alert-memory
+  namespace: kape-system
+spec:
+  description: "Vector memory store for AlertManager alert context and runbook entries"
+  type: memory
+  memory:
+    backend: qdrant
+    distanceMetric: cosine
