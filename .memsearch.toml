@@ -1,0 +1,7 @@
+collection = "kape_io"
+paths = ["docs/", "CONTEXT.md", "kapeproxy/", "operator/", "task-service/", "adapters/"]
+
+[embedding]
+provider = "ollama"
+model = "nomic-embed-text-v2-moe"
+base_url = "http://localhost:11434"
