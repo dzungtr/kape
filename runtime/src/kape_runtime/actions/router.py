@@ -9,6 +9,7 @@ from jsonpath_ng.ext import parse as jsonpath_parse
 from kape_runtime.actions.event_emitter import emit_event
 from kape_runtime.actions.save_memory import save_memory
 from kape_runtime.actions.webhook import post_webhook
+from kape_runtime.metrics import kape_action_results_total
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,11 @@ async def run_actions(
         action_type = action.get("type", "")
 
         if not _condition_matches(action.get("condition"), schema_output):
-            results.append({"name": name, "type": action_type, "status": "skipped"})
+            result = {"name": name, "type": action_type, "status": "skipped"}
+            results.append(result)
+            kape_action_results_total.labels(
+                handler=handler_name, action=name, type=action_type, status="skipped"
+            ).inc()
             continue
 
         try:
@@ -65,26 +70,33 @@ async def run_actions(
                     task_id=task_id,
                 )
             else:
-                results.append(
-                    {
-                        "name": name,
-                        "type": action_type,
-                        "status": "error",
-                        "error": f"unknown action type: {action_type!r}",
-                    }
-                )
-                continue
-
-            results.append({"name": name, "type": action_type, "status": "success"})
-        except Exception as exc:
-            logger.exception("Action %r (%s) failed", name, action_type)
-            results.append(
-                {
+                result = {
                     "name": name,
                     "type": action_type,
                     "status": "error",
-                    "error": str(exc),
+                    "error": f"unknown action type: {action_type!r}",
                 }
-            )
+                results.append(result)
+                kape_action_results_total.labels(
+                    handler=handler_name, action=name, type=action_type, status="error"
+                ).inc()
+                continue
+
+            results.append({"name": name, "type": action_type, "status": "success"})
+            kape_action_results_total.labels(
+                handler=handler_name, action=name, type=action_type, status="success"
+            ).inc()
+        except Exception as exc:
+            logger.exception("Action %r (%s) failed", name, action_type)
+            result = {
+                "name": name,
+                "type": action_type,
+                "status": "error",
+                "error": str(exc),
+            }
+            results.append(result)
+            kape_action_results_total.labels(
+                handler=handler_name, action=name, type=action_type, status="error"
+            ).inc()
 
     return results

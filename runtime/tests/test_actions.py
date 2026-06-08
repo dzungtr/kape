@@ -174,3 +174,158 @@ async def test_jsonpath_condition_false_skips_action():
 
     assert len(results) == 1
     assert results[0]["status"] == "skipped"
+
+
+
+
+@pytest.mark.asyncio
+async def test_action_result_metric_success(respx_mock):
+    from prometheus_client import REGISTRY
+
+    schema_output = {"value": 1}
+    action = {
+        "name": "my-webhook",
+        "type": "webhook",
+        "url": "http://example.test/ok",
+        "body_template": "{}",
+    }
+    respx_mock.post("http://example.test/ok").mock(return_value=httpx.Response(200))
+
+    await run_actions(
+        schema_output=schema_output,
+        actions=[action],
+        nats_client=None,
+        qdrant_client=None,
+        handler_name="test-handler",
+        task_id="t1",
+        parent_task_id="p1",
+    )
+
+    samples = {
+        (s.labels.get("handler"), s.labels.get("action"), s.labels.get("type"), s.labels.get("status")): s.value
+        for mf in REGISTRY.collect()
+        if mf.name == "kape_action_results"
+        for s in mf.samples
+        if s.name == "kape_action_results_total"
+    }
+    assert samples.get(("test-handler", "my-webhook", "webhook", "success"), 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_action_result_metric_error(respx_mock):
+    from prometheus_client import REGISTRY
+
+    schema_output = {"value": 1}
+    action = {
+        "name": "fail-webhook",
+        "type": "webhook",
+        "url": "http://example.test/fail",
+        "body_template": "{}",
+    }
+    respx_mock.post("http://example.test/fail").mock(return_value=httpx.Response(500, text="boom"))
+
+    await run_actions(
+        schema_output=schema_output,
+        actions=[action],
+        nats_client=None,
+        qdrant_client=None,
+        handler_name="test-handler",
+        task_id="t2",
+        parent_task_id="p2",
+    )
+
+    samples = {
+        (s.labels.get("handler"), s.labels.get("action"), s.labels.get("type"), s.labels.get("status")): s.value
+        for mf in REGISTRY.collect()
+        if mf.name == "kape_action_results"
+        for s in mf.samples
+        if s.name == "kape_action_results_total"
+    }
+    assert samples.get(("test-handler", "fail-webhook", "webhook", "error"), 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_action_result_metric_skipped():
+    from prometheus_client import REGISTRY
+
+    schema_output = {"decision": "ignore"}
+    action = {
+        "name": "skip-me",
+        "type": "webhook",
+        "condition": "$.decision[?(@ == 'change-required')]",
+        "url": "http://example.test/never",
+        "body_template": "{}",
+    }
+
+    await run_actions(
+        schema_output=schema_output,
+        actions=[action],
+        nats_client=None,
+        qdrant_client=None,
+        handler_name="test-handler",
+        task_id="t3",
+        parent_task_id="p3",
+    )
+
+    samples = {
+        (s.labels.get("handler"), s.labels.get("action"), s.labels.get("type"), s.labels.get("status")): s.value
+        for mf in REGISTRY.collect()
+        if mf.name == "kape_action_results"
+        for s in mf.samples
+        if s.name == "kape_action_results_total"
+    }
+    assert samples.get(("test-handler", "skip-me", "webhook", "skipped"), 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_actions_each_get_own_increment(respx_mock):
+    from prometheus_client import REGISTRY
+
+    schema_output = {"value": 1}
+    actions = [
+        {
+            "name": "action-a",
+            "type": "webhook",
+            "url": "http://example.test/a",
+            "body_template": "{}",
+        },
+        {
+            "name": "action-b",
+            "type": "webhook",
+            "url": "http://example.test/b",
+            "body_template": "{}",
+        },
+    ]
+    respx_mock.post("http://example.test/a").mock(return_value=httpx.Response(200))
+    respx_mock.post("http://example.test/b").mock(return_value=httpx.Response(200))
+
+    before = {
+        (s.labels.get("handler"), s.labels.get("action"), s.labels.get("type"), s.labels.get("status")): s.value
+        for mf in REGISTRY.collect()
+        if mf.name == "kape_action_results"
+        for s in mf.samples
+        if s.name == "kape_action_results_total"
+    }
+
+    await run_actions(
+        schema_output=schema_output,
+        actions=actions,
+        nats_client=None,
+        qdrant_client=None,
+        handler_name="multi-handler",
+        task_id="t4",
+        parent_task_id="p4",
+    )
+
+    after = {
+        (s.labels.get("handler"), s.labels.get("action"), s.labels.get("type"), s.labels.get("status")): s.value
+        for mf in REGISTRY.collect()
+        if mf.name == "kape_action_results"
+        for s in mf.samples
+        if s.name == "kape_action_results_total"
+    }
+
+    key_a = ("multi-handler", "action-a", "webhook", "success")
+    key_b = ("multi-handler", "action-b", "webhook", "success")
+    assert after.get(key_a, 0) - before.get(key_a, 0) == 1
+    assert after.get(key_b, 0) - before.get(key_b, 0) == 1
