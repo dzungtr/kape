@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: generate build test lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
+.PHONY: generate build test test-integration lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -92,3 +92,10 @@ clean: ## Remove compiled Go binaries
 	@rm -f ./examples/sre-alertmanager/src/mock-api/mock-api
 	@rm -f ./examples/sre-alertmanager/src/mock-webhook/mock-webhook
 	@echo "Cleaned compiled binaries."
+
+ENVTEST_K8S_VERSION ?= 1.32.0
+ENVTEST_BIN_DIR     ?= /tmp/envtest-bins
+
+test-integration: ## Run operator envtest integration suite (requires setup-envtest)
+	KUBEBUILDER_ASSETS=$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_BIN_DIR) -p path) \
+		go test -tags envtest -v -count=1 ./operator/test/integration/...
