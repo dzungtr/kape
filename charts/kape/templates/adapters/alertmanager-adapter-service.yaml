@@ -1,0 +1,14 @@
+{{- if .Values.adapters.alertmanager.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kape-alertmanager-adapter
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    app: kape-alertmanager-adapter
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+{{- end }}

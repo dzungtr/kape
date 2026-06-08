@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-task-service
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.taskService.replicaCount }}
+  selector:
+    matchLabels:
+      app: kape-task-service
+  template:
+    metadata:
+      labels:
+        app: kape-task-service
+    spec:
+      containers:
+        - name: task-service
+          image: "{{ .Values.taskService.image.repository }}:{{ .Values.taskService.image.tag }}"
+          imagePullPolicy: {{ .Values.taskService.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.taskService.database.secretName | quote }}
+                  key: uri
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30

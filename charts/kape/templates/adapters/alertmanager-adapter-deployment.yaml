@@ -1,0 +1,48 @@
+{{- if .Values.adapters.alertmanager.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-alertmanager-adapter
+  namespace: {{ .Values.namespace }}
+  annotations:
+    kape.io/cluster-name: {{ .Values.clusterName | quote }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kape-alertmanager-adapter
+  template:
+    metadata:
+      labels:
+        app: kape-alertmanager-adapter
+      annotations:
+        kape.io/cluster-name: {{ .Values.clusterName | quote }}
+    spec:
+      containers:
+        - name: adapter
+          image: "{{ .Values.adapters.alertmanager.image.repository }}:{{ .Values.adapters.alertmanager.image.tag }}"
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: NATS_URL
+              value: "nats://nats.{{ .Values.namespace }}.svc:4222"
+            - name: CLUSTER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.annotations['kape.io/cluster-name']"
+            - name: PUBLISH_TIMEOUT_SECONDS
+              value: "60"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+{{- end }}

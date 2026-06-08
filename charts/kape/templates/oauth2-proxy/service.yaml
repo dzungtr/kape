@@ -1,0 +1,14 @@
+{{- if .Values.oauth2Proxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kape-oauth2-proxy
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    app: kape-oauth2-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4180
+{{- end }}

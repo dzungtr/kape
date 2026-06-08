@@ -1,0 +1,19 @@
+{{- if .Values.dashboard.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kape-dashboard
+  namespace: {{ .Values.namespace }}
+spec:
+  rules:
+    - host: {{ .Values.dashboard.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kape-dashboard
+                port:
+                  name: http
+{{- end }}

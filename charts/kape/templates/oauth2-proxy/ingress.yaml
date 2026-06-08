@@ -1,0 +1,19 @@
+{{- if and .Values.oauth2Proxy.enabled .Values.oauth2Proxy.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kape-oauth2-proxy
+  namespace: {{ .Values.namespace }}
+spec:
+  rules:
+    - host: {{ .Values.oauth2Proxy.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kape-oauth2-proxy
+                port:
+                  name: http
+{{- end }}
