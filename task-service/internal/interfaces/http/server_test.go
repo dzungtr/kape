@@ -138,3 +138,15 @@ func TestServer_RetryTask_501(t *testing.T) {
 	chiRouter(srv).ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotImplemented, rec.Code)
 }
+func TestServer_UpdateTaskStatus_409_TerminalState(t *testing.T) {
+	srv, repo, _ := buildServer(t)
+	repo.On("FindByID", mock.Anything, "01T").Return(&task.Task{ID: "01T", Status: task.StatusProcessing}, nil)
+	repo.On("UpdateStatus", mock.Anything, "01T", mock.Anything, mock.Anything).Return(task.ErrTerminalState)
+
+	body, _ := json.Marshal(map[string]interface{}{"status": "Failed"})
+	req := httptest.NewRequest(http.MethodPatch, "/tasks/01T/status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	chiRouter(srv).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
