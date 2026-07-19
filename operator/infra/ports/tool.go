@@ -21,13 +21,18 @@ type ToolRepository interface {
 	ListHandlersByToolRef(ctx context.Context, toolName string) ([]v1alpha1.KapeHandler, error)
 }
 
-// StatefulSetPort manages the Qdrant StatefulSet and headless Service for memory-type KapeTools.
-type StatefulSetPort interface {
-	// EnsureQdrant creates or patches the Qdrant StatefulSet and headless Service.
-	EnsureQdrant(ctx context.Context, tool *v1alpha1.KapeTool, cfg domainconfig.KapeConfig) error
+// QdrantClusterPort delegates Qdrant provisioning to an upstream database operator
+// by creating/updating a QdrantCluster CRD and polling its status conditions.
+type QdrantClusterPort interface {
+	// IsCRDInstalled returns true when QdrantCluster.qdrant.io is registered in the cluster.
+	IsCRDInstalled(ctx context.Context) (bool, error)
 
-	// GetQdrantReadyReplicas returns the number of ready replicas. found=false when StatefulSet does not exist.
-	GetQdrantReadyReplicas(ctx context.Context, key types.NamespacedName) (readyReplicas int32, found bool, err error)
+	// EnsureQdrantCluster creates or updates a QdrantCluster owned by the KapeTool.
+	EnsureQdrantCluster(ctx context.Context, tool *v1alpha1.KapeTool) error
+
+	// GetQdrantClusterStatus returns readiness and the connection URL from the upstream CRD status.
+	// found=false when the QdrantCluster does not exist yet.
+	GetQdrantClusterStatus(ctx context.Context, key types.NamespacedName) (ready bool, connectionURL string, found bool, err error)
 }
 
 // ScaledObjectPort manages KEDA ScaledObject resources for KapeHandlers.

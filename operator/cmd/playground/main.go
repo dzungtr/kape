@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -29,6 +31,7 @@ import (
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
+	qdrantadapter "github.com/kape-io/kape/operator/infra/qdrant"
 	"github.com/kape-io/kape/operator/infra/ports"
 	tomlrenderer "github.com/kape-io/kape/operator/infra/toml"
 )
@@ -83,6 +86,15 @@ func main() {
 
 	cfgLoader := staticConfigLoader{cfg: platformCfg}
 
+	// Build a discovery client for CRD detection.
+	// In the playground the qdrant-operator is not installed, so
+	// IsCRDInstalled returns false and memory tools stay MemoryReady=False/OperatorNotInstalled.
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restCfg)
+	if err != nil {
+		log.Error(err, "creating discovery client")
+		os.Exit(1)
+	}
+
 	handlerRepo          := k8sadapters.NewHandlerRepository(k8sClient)
 	schemaRepo           := k8sadapters.NewSchemaRepository(k8sClient)
 	toolRepo             := k8sadapters.NewToolRepository(k8sClient)
@@ -94,9 +106,9 @@ func main() {
 	deployAdapt          := k8sadapters.NewDeploymentAdapter(k8sClient)
 	scaledObjAdapt       := k8sadapters.NewScaledObjectAdapter(k8sClient)
 	renderer             := tomlrenderer.NewRenderer()
-	statefulSetAdapt     := k8sadapters.NewStatefulSetAdapter(k8sClient)
+	qdrantClusterAdapt   := qdrantadapter.NewQdrantClusterAdapter(k8sClient, discoveryClient)
 
-	toolRec := reconcilehandler.NewToolReconciler(toolRepo, statefulSetAdapt, cfgLoader)
+	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt)
 	if err := kapecontroller.SetupToolReconciler(mgr, toolRec, 3); err != nil {
 		log.Error(err, "setting up KapeTool controller")
 		os.Exit(1)
@@ -105,6 +117,12 @@ func main() {
 	schemaRec := reconcilehandler.NewSchemaReconciler(schemaRepo, mgr.GetEventRecorderFor("kapeschema-controller"))
 	if err := kapecontroller.SetupSchemaReconciler(mgr, schemaRec, 3); err != nil {
 		log.Error(err, "setting up KapeSchema controller")
+		os.Exit(1)
+	}
+
+	skillRec := reconcilehandler.NewSkillReconciler(skillRepo, toolRepo)
+	if err := kapecontroller.SetupSkillReconciler(mgr, skillRec, 3); err != nil {
+		log.Error(err, "setting up KapeSkill controller")
 		os.Exit(1)
 	}
 
@@ -139,6 +157,9 @@ var _ ports.KapeConfigLoader = staticConfigLoader{}
 func (s staticConfigLoader) Load(_ context.Context) (domainconfig.KapeConfig, error) {
 	return s.cfg, nil
 }
+
+// Ensure unused imports compile.
+var _ = fmt.Sprintf
 
 func writeKubeconfig(host string, caData, certData, keyData []byte) error {
 	cluster := clientcmdapi.NewCluster()

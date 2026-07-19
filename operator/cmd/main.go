@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -19,6 +20,7 @@ import (
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
+	qdrantadapter "github.com/kape-io/kape/operator/infra/qdrant"
 	tomlrenderer "github.com/kape-io/kape/operator/infra/toml"
 	kapecontroller "github.com/kape-io/kape/operator/controller"
 	reconcilehandler "github.com/kape-io/kape/operator/controller/reconcile"
@@ -34,12 +36,12 @@ func init() {
 }
 
 type config struct {
-	MetricsAddr            string
-	HealthProbeAddr        string
-	LeaderElect            bool
+	MetricsAddr             string
+	HealthProbeAddr         string
+	LeaderElect             bool
 	MaxConcurrentReconciles int
-	KapeConfigNamespace    string
-	KapeConfigName         string
+	KapeConfigNamespace     string
+	KapeConfigName          string
 }
 
 func main() {
@@ -80,6 +82,13 @@ func main() {
 
 	k8sClient := mgr.GetClient()
 
+	// Build a discovery client from the manager's REST config for CRD discovery.
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		log.Error(err, "creating discovery client")
+		os.Exit(1)
+	}
+
 	// Adapters
 	handlerRepo          := k8sadapters.NewHandlerRepository(k8sClient)
 	schemaRepo           := k8sadapters.NewSchemaRepository(k8sClient)
@@ -93,11 +102,13 @@ func main() {
 	cfgLoader            := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
 	renderer             := tomlrenderer.NewRenderer()
 
-	statefulSetAdapt := k8sadapters.NewStatefulSetAdapter(k8sClient)
-	podReader        := k8sadapters.NewPodReaderAdapter(k8sClient)
+	// QdrantCluster adapter — delegates provisioning to the upstream qdrant-operator CRD.
+	qdrantClusterAdapt := qdrantadapter.NewQdrantClusterAdapter(k8sClient, discoveryClient)
+
+	podReader := k8sadapters.NewPodReaderAdapter(k8sClient)
 
 	// KapeToolReconciler
-	toolRec := reconcilehandler.NewToolReconciler(toolRepo, statefulSetAdapt, cfgLoader)
+	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt)
 	if err := kapecontroller.SetupToolReconciler(mgr, toolRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeTool controller")
 		os.Exit(1)

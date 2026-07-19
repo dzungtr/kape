@@ -120,7 +120,7 @@ These directories exist (with `.gitkeep`) for upcoming phases but are **not yet 
 | `domain/tool/`                | Pure-domain tool types.                                     |
 | `infra/metrics/`              | Operator-specific Prometheus metrics.                       |
 | `infra/probe/`                | Liveness/readiness probe builders for handler pods.         |
-| `infra/qdrant/`               | Future: Qdrant collection/user management (currently Qdrant StatefulSet provisioning lives in `infra/k8s/statefulset.go`).|
+
 
 If you contribute one of these, place it in the directory above and read the *Extending the operator* section for the wiring pattern.
 
@@ -131,7 +131,7 @@ If you contribute one of these, place it in the directory above and read the *Ex
 The operator runs three reconcilers:
 
 - **`HandlerReconciler`** (`controller/reconcile/handler.go`) — 12-step KapeHandler reconcile: validates dependencies, renders settings.toml, ensures Deployment, ensures KEDA ScaledObject, syncs labels, updates status.
-- **`ToolReconciler`** (`controller/reconcile/tool.go`) — KapeTool reconcile: dispatches on `spec.type` (`memory` → Qdrant StatefulSet; `mcp` → health probe; `event-publish` → type validation). Sets `Ready` status.
+- **`ToolReconciler`** (`controller/reconcile/tool.go`) — KapeTool reconcile: dispatches on `spec.type` (`memory` → delegates to upstream QdrantCluster CRD, polls readiness, surfaces `MemoryReady` condition; `mcp` → health probe; `event-publish` → type validation). Sets `Ready` and `MemoryReady` status.
 - **`SchemaReconciler`** (`controller/reconcile/schema.go`) — KapeSchema reconcile: validates JSON schema, manages a deletion-protection finalizer (`kape.io/schema-protection`), computes `schemaHash`, sets `Ready` status.
 
 Below is one full pass of the `HandlerReconciler`:
@@ -192,7 +192,7 @@ Below is one full pass of the `HandlerReconciler`:
 
 A few subtleties worth pointing out:
 
-- **Owner references** are set by `setOwnerRef` in `infra/k8s/configmap.go:81` and reused for the SA and Deployment. That is what makes child deletion automatic when the `KapeHandler` is deleted — *no finalizer is needed for handler cleanup*. Similarly, `setToolOwnerRef` (`infra/k8s/statefulset.go:159`) garbage-collects the Qdrant StatefulSet and Service when a `KapeTool` is deleted.
+- **Owner references** are set by `setOwnerRef` in `infra/k8s/configmap.go:81` and reused for the SA and Deployment. That is what makes child deletion automatic when the `KapeHandler` is deleted — *no finalizer is needed for handler cleanup*. Similarly, owner references in `infra/qdrant/adapter.go` point the `QdrantCluster` CRD back to the `KapeTool`, letting the upstream operator garbage-collect the cluster when the tool is deleted.
 - **The rollout hash** (`controller/reconcile/handler.go:245`) covers the full handler spec *plus* the resolved KapeSchema and KapeTool specs. Changing any of the three triggers a pod restart without manual action.
 - **Dependency gating** (Step 2) means a `KapeHandler` stays `DependenciesReady=False` until all referenced `KapeTool` and `KapeSchema` resources exist and have `Ready=True`. The handler requeues every 30 s while waiting.
 - **Cross-resource watches** (`controller/watches.go`) re-enqueue referencing `KapeHandler` objects when a `KapeTool` or `KapeSchema` changes. This is how a schema update propagates to all handlers that reference it.
@@ -226,7 +226,7 @@ Defined across `operator/infra/ports/`:
 | `TOMLRenderer`        | `ports/handler.go`| Render `settings.toml` from a handler spec + cluster config.    |
 | `SchemaRepository`    | `ports/schema.go` | Get / UpdateStatus / AddFinalizer / RemoveFinalizer / ListHandlersBySchemaRef. |
 | `ToolRepository`      | `ports/tool.go`   | Get / UpdateStatus / ListHandlersByToolRef for `KapeTool`.      |
-| `StatefulSetPort`     | `ports/tool.go`   | EnsureQdrant (StatefulSet + headless Service) + GetQdrantReadyReplicas. |
+| `QdrantClusterPort`   | `ports/tool.go`   | IsCRDInstalled + EnsureQdrantCluster + GetQdrantClusterStatus (delegates to upstream qdrant-operator CRD). |
 | `ScaledObjectPort`    | `ports/tool.go`   | Ensure / GetConsumerName / Delete for KEDA ScaledObjects.        |
 
 ### Adapters (concrete implementations)
@@ -241,7 +241,7 @@ Defined across `operator/infra/ports/`:
 | `Renderer`               | `operator/infra/toml/renderer.go:17`       | `ports.TOMLRenderer`   |
 | `SchemaRepository`       | `operator/infra/k8s/schema_repo.go`        | `ports.SchemaRepository` |
 | `ToolRepository`         | `operator/infra/k8s/tool_repo.go`          | `ports.ToolRepository` |
-| `StatefulSetAdapter`     | `operator/infra/k8s/statefulset.go:20`     | `ports.StatefulSetPort` |
+| `QdrantClusterAdapter`   | `operator/infra/qdrant/adapter.go`           | `ports.QdrantClusterPort` |
 | `ScaledObjectAdapter`    | `operator/infra/k8s/scaledobject.go:26`    | `ports.ScaledObjectPort` |
 
 ### Domain values
@@ -381,7 +381,7 @@ The pattern is: **algorithm → ports → adapters → controller adapter → wi
 | `infra/k8s/configmap.go` | 94 | `ConfigMapAdapter` + shared `setOwnerRef` helper. |
 | `infra/k8s/serviceaccount.go` | 66 | `ServiceAccountAdapter`. |
 | `infra/k8s/deployment.go` | 224 | `DeploymentAdapter` + `buildDeployment` (with MCP sidecar injection). |
-| `infra/k8s/statefulset.go` | 170 | `StatefulSetAdapter` — Qdrant StatefulSet + headless Service for memory tools. |
+| `infra/qdrant/adapter.go` | — | `QdrantClusterAdapter` — delegates Qdrant provisioning to the upstream qdrant-operator CRD. |
 | `infra/k8s/scaledobject.go` | 159 | `ScaledObjectAdapter` — KEDA ScaledObject via unstructured client. |
 | `infra/k8s/kapeconfig.go` | 58 | `KapeConfigLoader` (reads `kape-system/kape-config`). |
 | `infra/toml/renderer.go` | 221 | `Renderer` + private TOML struct tree. |

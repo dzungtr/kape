@@ -150,7 +150,7 @@ type KapeToolStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// QdrantEndpoint is the Qdrant HTTP endpoint for memory-type tools.
-	// Written after the StatefulSet reaches ReadyReplicas >= 1.
+	// Written after the upstream QdrantCluster CRD reaches Ready=True.
 	// +optional
 	QdrantEndpoint string `json:"qdrantEndpoint,omitempty"`
 }
