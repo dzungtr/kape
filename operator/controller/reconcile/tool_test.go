@@ -13,10 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
 	"github.com/kape-io/kape/operator/controller/reconcile"
@@ -161,23 +159,3 @@ func TestToolReconciler_EventPublish_ValidType_SetsReady(t *testing.T) {
 	require.NotNil(t, readyCond)
 	assert.Equal(t, metav1.ConditionTrue, readyCond.Status)
 }
-
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == condType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
-
-type fakeConfigLoader struct{}
-
-func (f *fakeConfigLoader) Load(_ context.Context) (domainconfig.KapeConfig, error) {
-	return domainconfig.KapeConfig{}, nil
-}
-
-// Ensure unused imports compile (ctrl is used in test file via result type)
-var _ ctrl.Result
