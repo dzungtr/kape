@@ -76,6 +76,7 @@ type MCPSpec struct {
 type ExternalMemorySpec struct {
 	// URL is the HTTP(S) endpoint of the external vector database.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://.+`
 	URL string `json:"url"`
 
 	// SecretRef names a Secret in the same namespace that holds the API key

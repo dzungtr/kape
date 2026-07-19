@@ -202,6 +202,7 @@ spec:
                         description: URL is the HTTP(S) endpoint of the external vector
                           database.
                         minLength: 1
+                        pattern: ^https?://.+
                         type: string
                     required:
                     - url
