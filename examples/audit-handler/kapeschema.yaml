@@ -1,0 +1,34 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeSchema
+metadata:
+  name: audit-decision
+  namespace: kape-system
+spec:
+  version: v1
+  jsonSchema:
+    type: object
+    additionalProperties: false
+    required:
+      - risk_level
+      - action
+      - justification
+    properties:
+      risk_level:
+        type: string
+        enum:
+          - none
+          - low
+          - medium
+          - high
+        description: "Assessed risk level of the audited API operation"
+      action:
+        type: string
+        enum:
+          - allow
+          - monitor
+          - alert
+          - block
+        description: "Recommended action in response to the audit event"
+      justification:
+        type: string
+        description: "Explanation of the risk assessment and recommended action"

@@ -1,0 +1,19 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeSkill
+metadata:
+  name: alert-triage
+  namespace: kape-system
+spec:
+  description: "Alert triage skill for analysing Prometheus AlertManager firing events"
+  instruction: |
+    When triaging an AlertManager alert:
+    - Check the alert's labels (alertname, severity, namespace, job) for context.
+    - Review the alert's annotations (summary, description, runbook_url) for remediation hints.
+    - Search memory for prior occurrences of the same alertname to detect recurring patterns.
+    - Classify severity as: low (informational, no immediate action), medium (degraded but not failing),
+      high (service impaired, action required soon), critical (full outage or data loss risk).
+    - Choose an action: investigate (gather more data), escalate (page an engineer), resolve (self-heal),
+      or ignore (noise / known false-positive).
+    - Write a concise summary covering: what fired, why it is significant, and what should happen next.
+  tools:
+    - ref: alert-memory

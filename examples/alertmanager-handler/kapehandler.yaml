@@ -1,0 +1,45 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeHandler
+metadata:
+  name: alertmanager-handler
+  namespace: kape-system
+spec:
+  schemaRef: alert-decision
+  trigger:
+    source: kape.events.alertmanager
+    type: kape.events.alertmanager.firing
+    maxEventAgeSeconds: 300
+  tools:
+    - ref: alert-memory
+  skills:
+    - ref: alert-triage
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    maxIterations: 10
+    systemPrompt: |
+      You are an on-call triage agent for Prometheus AlertManager alerts.
+
+      When you receive a firing alert, follow this procedure:
+
+      1. Read the alert metadata: note the alertname, severity label, and annotations.
+
+      2. Search alert-memory for any prior context or runbook entries related to this alertname.
+
+      3. Based on the alert details and any retrieved context, determine:
+         - severity: "low", "medium", "high", or "critical" based on the alert's impact
+         - action: "investigate", "escalate", "resolve", or "ignore"
+         - summary: a 1-2 sentence description of the alert and recommended next step
+
+      Always populate all three fields. Be concise and factual.
+  actions:
+    - name: save-alert-context
+      type: save-memory
+      condition: "true"
+      data:
+        tool: alert-memory
+        content: "Alert {{ event.data.labels.alertname }} ({{ decision.severity }}): {{ decision.summary }}"
+  scaling:
+    minReplicas: 1
+    maxReplicas: 5
+    natsLagThreshold: 10

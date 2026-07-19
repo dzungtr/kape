@@ -1,0 +1,32 @@
+apiVersion: kape.io/v1alpha1
+kind: KapeSkill
+metadata:
+  name: audit-review
+  namespace: kape-system
+spec:
+  description: "Security audit skill for reviewing Kubernetes API server audit events"
+  instruction: |
+    When reviewing a Kubernetes audit event:
+    - Identify the actor: username, groups, userAgent, and source IP.
+    - Identify the target: verb (create/delete/patch/get/watch/list), apiGroup, resource,
+      subresource, namespace, and resource name.
+    - Escalate risk for: cluster-scoped destructive operations, modifications to Secrets or
+      ClusterRoles/ClusterRoleBindings, privileged pod creation, use of cluster-admin or
+      system:masters groups, and anonymous or service-account operations outside their
+      expected namespace.
+    - Use kubectl-mcp to fetch additional context (e.g. existing RBAC bindings, resource
+      labels) when the operation is ambiguous.
+    - risk_level mapping:
+        none  — routine read (get/list/watch) by expected identities
+        low   — write by expected identity, low-sensitivity resource
+        medium — unexpected identity, or write to moderately sensitive resource
+        high  — privileged operation, sensitive resource (Secret/ClusterRole), or
+                 unknown/anonymous identity performing a write
+    - action mapping:
+        allow   — risk_level none or low, normal cluster activity
+        monitor — risk_level medium, log and watch for patterns
+        alert   — risk_level high, notify security team
+        block   — imminent threat requiring immediate intervention (rare)
+    - Write a justification that names the specific concern and explains the recommended action.
+  tools:
+    - ref: kubectl-mcp
