@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: nats
+spec:
+  serviceName: nats-headless
+  replicas: {{ .Values.nats.replicaCount }}
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: nats
+          image: "{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
+          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
+          command:
+            - nats-server
+            - --config=/etc/nats/nats.conf
+          env:
+            - name: SERVER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: cluster
+              containerPort: 6222
+            - name: monitor
+              containerPort: 8222
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz?js-enabled-only=true
+              port: monitor
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: nats-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- if .Values.nats.persistence.retain }}
+        annotations:
+          helm.sh/resource-policy: keep
+        {{- end }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.nats.storage }}

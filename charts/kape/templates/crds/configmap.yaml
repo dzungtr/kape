@@ -1,0 +1,18 @@
+{{- if .Values.crds.install }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kape-crds
+  namespace: {{ .Values.namespace }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-12"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+{{- $crdRoot := "/crds" }}
+{{- $files := .Files.Glob "files/crds/*.yaml" }}
+{{- range $path, $bytes := $files }}
+  {{ base $path }}: |-
+{{ $bytes | toString | indent 4 }}
+{{- end }}
+{{- end }}
