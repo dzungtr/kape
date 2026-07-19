@@ -47,6 +47,7 @@ func setupDB(t *testing.T) (*gopg.DB, func()) {
 		Database: "testdb",
 	})
 
+	// Ensure partitions exist for the current and next month so inserts succeed.
 	repo := postgres.NewTaskRepository(db)
 	now := time.Now().UTC()
 	for _, month := range []time.Time{now, now.AddDate(0, 1, 0)} {
@@ -349,4 +350,99 @@ func TestTaskRepository_BulkUpdateStatus_TerminalStatePreventsUpdate(t *testing.
 
 	_, err = repo.BulkUpdateStatus(ctx, []string{"01BTERM"}, task.StatusFailed)
 	assert.ErrorIs(t, err, task.ErrTerminalState)
+}
+func TestTaskRepository_ListHandlers_Aggregates(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	since := now.Add(-1 * time.Hour)
+
+	// Two tasks for handler-a in kape-system
+	ha1 := fixedTask("01HA1")
+	ha1.Handler = "handler-a"
+	ha1.Namespace = "kape-system"
+	ha1.ReceivedAt = now.Add(-30 * time.Minute)
+	require.NoError(t, repo.Create(ctx, ha1))
+
+	ha2 := fixedTask("01HA2")
+	ha2.Handler = "handler-a"
+	ha2.Namespace = "kape-system"
+	ha2.ReceivedAt = now.Add(-10 * time.Minute)
+	require.NoError(t, repo.Create(ctx, ha2))
+
+	// Mark one as failed
+	require.NoError(t, repo.UpdateStatus(ctx, "01HA2", task.StatusFailed, task.UpdateFields{CompletedAt: &now}))
+
+	// One task for handler-b
+	hb := fixedTask("01HB1")
+	hb.Handler = "handler-b"
+	hb.Namespace = "kape-system"
+	hb.ReceivedAt = now.Add(-5 * time.Minute)
+	require.NoError(t, repo.Create(ctx, hb))
+
+	aggregates, err := repo.ListHandlers(ctx, since)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(aggregates), 2)
+
+	byHandler := map[string]task.HandlerAggregate{}
+	for _, a := range aggregates {
+		byHandler[a.Handler] = a
+	}
+
+	agg := byHandler["handler-a"]
+	assert.Equal(t, "handler-a", agg.Handler)
+	assert.Equal(t, "kape-system", agg.Namespace)
+	assert.NotNil(t, agg.LastTaskAt)
+	assert.Equal(t, 2, agg.Tasks24h)
+	assert.Equal(t, 1, agg.Failures24h)
+	assert.Equal(t, 1, agg.ProcessingCount)
+
+	aggB := byHandler["handler-b"]
+	assert.Equal(t, 1, aggB.Tasks24h)
+	assert.Equal(t, 0, aggB.Failures24h)
+}
+
+func TestTaskRepository_GetDecisionDistribution(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	repo := postgres.NewTaskRepository(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	since := now.Add(-1 * time.Hour)
+
+	makeCompleted := func(id, decision string) {
+		tsk := fixedTask(id)
+		tsk.Handler = "handler-dec"
+		tsk.ReceivedAt = now.Add(-30 * time.Minute)
+		require.NoError(t, repo.Create(ctx, tsk))
+
+		so := task.SchemaOutput{"decision": decision}
+		require.NoError(t, repo.UpdateStatus(ctx, id, task.StatusCompleted, task.UpdateFields{
+			CompletedAt:  &now,
+			SchemaOutput: &so,
+		}))
+	}
+
+	makeCompleted("01DEC1", "allow")
+	makeCompleted("01DEC2", "allow")
+	makeCompleted("01DEC3", "deny")
+
+	// Task without decision — should not appear in distribution
+	tNoDecision := fixedTask("01DEC4")
+	tNoDecision.Handler = "handler-dec"
+	tNoDecision.ReceivedAt = now.Add(-30 * time.Minute)
+	require.NoError(t, repo.Create(ctx, tNoDecision))
+
+	dist, err := repo.GetDecisionDistribution(ctx, "handler-dec", since)
+	require.NoError(t, err)
+	assert.Equal(t, "handler-dec", dist.Handler)
+	assert.Equal(t, 2, dist.Distribution["allow"])
+	assert.Equal(t, 1, dist.Distribution["deny"])
+	assert.NotContains(t, dist.Distribution, "")
 }

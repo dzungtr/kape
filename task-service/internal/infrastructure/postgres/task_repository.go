@@ -277,3 +277,89 @@ func (r *TaskRepository) EnsurePartition(ctx context.Context, month time.Time) e
 	`, name, start.Format("2006-01-02"), end.Format("2006-01-02")))
 	return err
 }
+
+// failureStatuses are the non-Processing terminal statuses counted as failures in handler aggregates.
+var failureStatuses = []task.TaskStatus{
+	task.StatusFailed,
+	task.StatusSchemaValidationFailed,
+	task.StatusActionError,
+	task.StatusUnprocessableEvent,
+	task.StatusTimeout,
+}
+
+func (r *TaskRepository) ListHandlers(ctx context.Context, since time.Time) ([]task.HandlerAggregate, error) {
+	cutoff24h := time.Now().UTC().Add(-24 * time.Hour)
+
+	type row struct {
+		Handler         string     `pg:"handler"`
+		Namespace       string     `pg:"namespace"`
+		LastTaskAt      *time.Time `pg:"last_task_at"`
+		Tasks24h        int        `pg:"tasks_24h"`
+		Failures24h     int        `pg:"failures_24h"`
+		ProcessingCount int        `pg:"processing_count"`
+	}
+
+	var rows []row
+	_, err := r.db.QueryContext(ctx, &rows, `
+		SELECT
+			handler,
+			namespace,
+			MAX(received_at) AS last_task_at,
+			COUNT(*) FILTER (WHERE received_at >= ?) AS tasks_24h,
+			COUNT(*) FILTER (WHERE received_at >= ? AND status = ANY(?)) AS failures_24h,
+			COUNT(*) FILTER (WHERE status = ?) AS processing_count
+		FROM tasks
+		WHERE received_at >= ?
+		GROUP BY handler, namespace
+		ORDER BY handler, namespace
+	`, cutoff24h, cutoff24h, pg.Array(failureStatuses), task.StatusProcessing, since)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]task.HandlerAggregate, len(rows))
+	for i, r := range rows {
+		result[i] = task.HandlerAggregate{
+			Handler:         r.Handler,
+			Namespace:       r.Namespace,
+			LastTaskAt:      r.LastTaskAt,
+			Tasks24h:        r.Tasks24h,
+			Failures24h:     r.Failures24h,
+			ProcessingCount: r.ProcessingCount,
+		}
+	}
+	return result, nil
+}
+
+func (r *TaskRepository) GetDecisionDistribution(ctx context.Context, handler string, since time.Time) (*task.DecisionDistribution, error) {
+	type row struct {
+		Decision string `pg:"decision"`
+		Count    int    `pg:"count"`
+	}
+
+	var rows []row
+	q := r.db.ModelContext(ctx, (*taskRow)(nil)).
+		ColumnExpr("schema_output->>'decision' AS decision, COUNT(*) AS count").
+		Where("status = ?", task.StatusCompleted).
+		Where("received_at >= ?", since).
+		Where("schema_output->>'decision' IS NOT NULL").
+		GroupExpr("schema_output->>'decision'")
+
+	if handler != "" {
+		q = q.Where("handler = ?", handler)
+	}
+
+	if err := q.Select(&rows); err != nil {
+		return nil, err
+	}
+
+	dist := make(map[string]int, len(rows))
+	for _, r := range rows {
+		dist[r.Decision] = r.Count
+	}
+	return &task.DecisionDistribution{
+		Handler:      handler,
+		Since:        since,
+		Distribution: dist,
+	}, nil
+}

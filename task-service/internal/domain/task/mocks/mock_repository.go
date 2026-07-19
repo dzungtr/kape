@@ -4,6 +4,7 @@ package mocks
 
 import (
 	context "context"
+	time "time"
 
 	task "github.com/kape-io/kape/task-service/internal/domain/task"
 	mock "github.com/stretchr/testify/mock"
@@ -110,6 +111,36 @@ func (_m *Repository) FindByID(ctx context.Context, id string) (*task.Task, erro
 	return r0, r1
 }
 
+// GetDecisionDistribution provides a mock function with given fields: ctx, handler, since
+func (_m *Repository) GetDecisionDistribution(ctx context.Context, handler string, since time.Time) (*task.DecisionDistribution, error) {
+	ret := _m.Called(ctx, handler, since)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetDecisionDistribution")
+	}
+
+	var r0 *task.DecisionDistribution
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, time.Time) (*task.DecisionDistribution, error)); ok {
+		return rf(ctx, handler, since)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, time.Time) *task.DecisionDistribution); ok {
+		r0 = rf(ctx, handler, since)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*task.DecisionDistribution)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, time.Time) error); ok {
+		r1 = rf(ctx, handler, since)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // Lineage provides a mock function with given fields: ctx, id
 func (_m *Repository) Lineage(ctx context.Context, id string) ([]*task.Task, error) {
 	ret := _m.Called(ctx, id)
@@ -175,6 +206,36 @@ func (_m *Repository) List(ctx context.Context, f task.ListFilter) ([]*task.Task
 	}
 
 	return r0, r1, r2
+}
+
+// ListHandlers provides a mock function with given fields: ctx, since
+func (_m *Repository) ListHandlers(ctx context.Context, since time.Time) ([]task.HandlerAggregate, error) {
+	ret := _m.Called(ctx, since)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListHandlers")
+	}
+
+	var r0 []task.HandlerAggregate
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) ([]task.HandlerAggregate, error)); ok {
+		return rf(ctx, since)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) []task.HandlerAggregate); ok {
+		r0 = rf(ctx, since)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]task.HandlerAggregate)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, time.Time) error); ok {
+		r1 = rf(ctx, since)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
 }
 
 // UpdateStatus provides a mock function with given fields: ctx, id, status, fields
