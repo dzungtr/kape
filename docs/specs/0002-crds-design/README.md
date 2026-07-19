@@ -500,7 +500,7 @@ spec:
 
 ### 3.3 type: memory
 
-Declares a shared vector database. The operator automatically provisions the vector DB backend when this `KapeTool` is first applied. All `KapeHandler` instances referencing the same `KapeTool` share one collection — the isolation boundary is the `KapeTool` instance.
+Declares a shared vector database. By default the operator provisions a Qdrant StatefulSet/Service when this `KapeTool` is first applied. All `KapeHandler` instances referencing the same `KapeTool` share one collection — the isolation boundary is the `KapeTool` instance.
 
 Embedding model and dimensions are managed globally by `kape-config` — not declared per `KapeTool`.
 
@@ -519,6 +519,25 @@ spec:
     backend: qdrant # qdrant | pgvector | weaviate
     distanceMetric: cosine # cosine | dot | euclidean
 ```
+
+#### 3.3.1 External (user-managed) database
+
+Set `spec.memory.external` to point at a pre-existing Qdrant instance. The operator skips all provisioning and wires the handler pod's `QDRANT_URL` directly from the supplied URL.
+
+```yaml
+spec:
+  type: memory
+  memory:
+    backend: qdrant
+    distanceMetric: cosine
+    external:
+      url: "http://my-qdrant.internal:6333"
+      # secretRef names a Secret whose value is injected as QDRANT_API_KEY
+      secretRef:
+        name: my-qdrant-api-key   # optional
+```
+
+When `spec.memory.external` is absent the operator provisions Qdrant as usual (default path unchanged).
 
 ### 3.4 type: event-publish
 

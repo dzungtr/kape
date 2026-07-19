@@ -225,6 +225,92 @@ func TestBuildDeployment_MemoryToolVolume(t *testing.T) {
 	assert.Empty(t, qdrantCollection, "QDRANT_COLLECTION must not be injected")
 }
 
+func TestBuildDeployment_ExternalMemorySecretRef_InjectsAPIKeyEnv(t *testing.T) {
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "kape-system", UID: "uid-h"},
+		Spec:       v1alpha1.KapeHandlerSpec{Tools: []v1alpha1.ToolRef{{Ref: "ext-mem"}}},
+	}
+	tools := []v1alpha1.KapeTool{{
+		ObjectMeta: metav1.ObjectMeta{Name: "ext-mem"},
+		Spec: v1alpha1.KapeToolSpec{
+			Type: "memory",
+			Memory: &v1alpha1.MemorySpec{
+				Backend:        "qdrant",
+				DistanceMetric: "cosine",
+				External: &v1alpha1.ExternalMemorySpec{
+					URL:       "http://my-qdrant.example.com:6333",
+					SecretRef: &corev1.LocalObjectReference{Name: "my-qdrant-api-key"},
+				},
+			},
+		},
+	}}
+
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
+	require.NoError(t, k8sadapters.NewDeploymentAdapter(c).Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h1", tools, false))
+
+	var dep appsv1.Deployment
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Name: "kape-handler-h", Namespace: "kape-system"}, &dep))
+
+	var handlerCtr *corev1.Container
+	for i := range dep.Spec.Template.Spec.Containers {
+		if dep.Spec.Template.Spec.Containers[i].Name == "handler" {
+			handlerCtr = &dep.Spec.Template.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, handlerCtr, "handler container must exist")
+
+	var apiKeyEnv *corev1.EnvVar
+	for i := range handlerCtr.Env {
+		if handlerCtr.Env[i].Name == "QDRANT_API_KEY" {
+			apiKeyEnv = &handlerCtr.Env[i]
+			break
+		}
+	}
+	require.NotNil(t, apiKeyEnv, "QDRANT_API_KEY env var must be injected when external.secretRef is set")
+	require.NotNil(t, apiKeyEnv.ValueFrom, "QDRANT_API_KEY must use ValueFrom")
+	require.NotNil(t, apiKeyEnv.ValueFrom.SecretKeyRef, "QDRANT_API_KEY must reference a SecretKeySelector")
+	assert.Equal(t, "my-qdrant-api-key", apiKeyEnv.ValueFrom.SecretKeyRef.Name, "Secret name must match external.secretRef.name")
+	assert.Equal(t, "apiKey", apiKeyEnv.ValueFrom.SecretKeyRef.Key, "default Secret key must be apiKey")
+}
+
+func TestBuildDeployment_ExternalMemoryNoSecretRef_OmitsAPIKeyEnv(t *testing.T) {
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "kape-system", UID: "uid-h"},
+		Spec:       v1alpha1.KapeHandlerSpec{Tools: []v1alpha1.ToolRef{{Ref: "ext-mem"}}},
+	}
+	tools := []v1alpha1.KapeTool{{
+		ObjectMeta: metav1.ObjectMeta{Name: "ext-mem"},
+		Spec: v1alpha1.KapeToolSpec{
+			Type: "memory",
+			Memory: &v1alpha1.MemorySpec{
+				Backend:        "qdrant",
+				DistanceMetric: "cosine",
+				External:       &v1alpha1.ExternalMemorySpec{URL: "http://my-qdrant.example.com:6333"},
+			},
+		},
+	}}
+
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
+	require.NoError(t, k8sadapters.NewDeploymentAdapter(c).Ensure(context.Background(), handler, domainconfig.KapeConfig{}, "h1", tools, false))
+
+	var dep appsv1.Deployment
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Name: "kape-handler-h", Namespace: "kape-system"}, &dep))
+
+	var handlerCtr *corev1.Container
+	for i := range dep.Spec.Template.Spec.Containers {
+		if dep.Spec.Template.Spec.Containers[i].Name == "handler" {
+			handlerCtr = &dep.Spec.Template.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, handlerCtr, "handler container must exist")
+
+	for _, e := range handlerCtr.Env {
+		assert.NotEqual(t, "QDRANT_API_KEY", e.Name, "QDRANT_API_KEY must not be injected when external.secretRef is absent")
+	}
+}
+
 func TestBuildDeployment_NoMemoryTool(t *testing.T) {
 	handler := &v1alpha1.KapeHandler{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-handler", Namespace: "kape-system", UID: "uid-h"},

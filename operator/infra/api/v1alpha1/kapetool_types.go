@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -69,6 +70,22 @@ type MCPSpec struct {
 	SkipProbe bool `json:"skipProbe,omitempty"`
 }
 
+// ExternalMemorySpec points at a pre-existing, user-managed vector database.
+// When set, the operator skips Qdrant provisioning and injects the supplied
+// URL (and optional API key) directly into the handler pod environment.
+type ExternalMemorySpec struct {
+	// URL is the HTTP(S) endpoint of the external vector database.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://.+`
+	URL string `json:"url"`
+
+	// SecretRef names a Secret in the same namespace that holds the API key
+	// for the external database. The operator injects the key value as the
+	// QDRANT_API_KEY environment variable in the handler pod.
+	// +optional
+	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
+}
+
 // MemorySpec defines the configuration for a vector memory backend tool.
 type MemorySpec struct {
 	// Backend is the vector memory backend type.
@@ -78,6 +95,13 @@ type MemorySpec struct {
 	// DistanceMetric is the distance function used for vector similarity search.
 	// +kubebuilder:validation:Enum=cosine;dot;euclidean
 	DistanceMetric string `json:"distanceMetric"`
+
+	// External points at a pre-existing, user-managed database. When set, the
+	// operator skips Qdrant provisioning entirely and wires the handler pod
+	// environment from the supplied URL and optional SecretRef. When absent,
+	// the operator provisions a Qdrant StatefulSet as usual.
+	// +optional
+	External *ExternalMemorySpec `json:"external,omitempty"`
 }
 
 // EventPublishSpec defines the configuration for an event-publish contract tool.

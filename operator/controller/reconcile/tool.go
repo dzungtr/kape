@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -54,6 +55,45 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, key types.NamespacedName
 }
 
 func (r *ToolReconciler) reconcileMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	if tool.Spec.Memory != nil && tool.Spec.Memory.External != nil {
+		return r.reconcileExternalMemory(ctx, tool)
+	}
+	return r.reconcileProvisionedMemory(ctx, tool)
+}
+
+// reconcileExternalMemory handles memory tools that point at a user-managed database.
+// It skips Qdrant provisioning and publishes the external URL into status.QdrantEndpoint
+// so downstream consumers (TOML renderer, handler env injection) can find it in the
+// same field they already read.
+func (r *ToolReconciler) reconcileExternalMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	ext := tool.Spec.Memory.External
+	if !hasHTTPScheme(ext.URL) {
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "InvalidExternalURL",
+			Message: "spec.memory.external.url must start with http:// or https://",
+		})
+		tool.Status.QdrantEndpoint = ""
+		if err := r.tools.UpdateStatus(ctx, tool); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, fmt.Errorf("invalid external URL %q: must start with http:// or https://", ext.URL)
+	}
+	tool.Status.QdrantEndpoint = ext.URL
+	tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "ExternalDatabase",
+		Message: "Using external database; provisioning skipped",
+	})
+	if err := r.tools.UpdateStatus(ctx, tool); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
 	cfg, err := r.kapeConfig.Load(ctx)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("loading kape-config: %w", err)
@@ -193,4 +233,17 @@ func setCondition(conditions []metav1.Condition, c metav1.Condition) []metav1.Co
 		}
 	}
 	return append(conditions, c)
+}
+
+
+// hasHTTPScheme reports whether u has an http or https scheme. The CRD
+// enforces this via a validation pattern at admission; this check provides
+// defense in depth for tools that bypass admission (e.g. tests, direct API
+// writes) and produces a clear reconciler error.
+func hasHTTPScheme(u string) bool {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }

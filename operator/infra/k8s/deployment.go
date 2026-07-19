@@ -29,6 +29,10 @@ func NewDeploymentAdapter(c client.Client) *DeploymentAdapter {
 
 const handlerCertSecretName = "kape-handler-cert"
 
+// externalAPIKeySecretKey is the default Secret key the operator reads when an
+// external-memory KapeTool supplies a SecretRef without an explicit key.
+const externalAPIKeySecretKey = "apiKey"
+
 func deploymentName(handlerName string) string { return "kape-handler-" + handlerName }
 
 // Ensure creates or patches the handler Deployment with a single kapeproxy sidecar.
@@ -186,6 +190,28 @@ func buildDeployment(handler *v1alpha1.KapeHandler, cfg domainconfig.KapeConfig,
 			Name:  "KAPE_TOOL_NAME",
 			Value: memoryTools[0].Name,
 		})
+
+		// When the chosen memory tool points at an external database with a
+		// SecretRef, inject the referenced Secret key as QDRANT_API_KEY so the
+		// handler pod can authenticate against the user-managed Qdrant.
+		// LocalObjectReference carries only the Secret name, so the key defaults
+		// to "apiKey" (the conventional key the operator writes for provisioned
+		// connection Secrets).
+		if memoryTools[0].Spec.Memory != nil &&
+			memoryTools[0].Spec.Memory.External != nil &&
+			memoryTools[0].Spec.Memory.External.SecretRef != nil {
+			envVars = append(envVars, corev1.EnvVar{
+				Name: "QDRANT_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: memoryTools[0].Spec.Memory.External.SecretRef.Name,
+						},
+						Key: externalAPIKeySecretKey,
+					},
+				},
+			})
+		}
 	}
 
 	handlerContainer := corev1.Container{
