@@ -74,6 +74,10 @@ nats:
       memory: 512Mi
   persistence:
     retain: false
+  stream:
+    # duplicateWindow is the JetStream publisher-deduplication window for
+    # KAPE_EVENTS. Must match what adapters rely on for idempotent delivery.
+    duplicateWindow: 60s
 
 postgres:
   instances: 2
@@ -95,6 +99,11 @@ certManager:
   clusterIssuer:
     staging: true
     production: false
+
+# nack controls rendering of the NACK Stream CR for cluster deployments.
+# When enabled=false (default) the Helm job provisions the stream instead.
+nack:
+  enabled: false
 
 namespace: kape-system
 clusterName: ""
