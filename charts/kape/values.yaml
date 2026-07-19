@@ -110,3 +110,8 @@ oauth2Proxy:
   secretName: kape-oauth2-proxy
   ingress:
     host: ""
+
+# crds controls the pre-install hook that applies the kape.io CRDs and the
+# KapeHandler validating webhook configuration via a ConfigMap-backed Job.
+crds:
+  install: true
