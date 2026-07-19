@@ -17,6 +17,12 @@ type ToolRepository interface {
 	// UpdateStatus persists status sub-resource changes.
 	UpdateStatus(ctx context.Context, tool *v1alpha1.KapeTool) error
 
+	// AddFinalizer adds the given finalizer string to the tool if not already present.
+	AddFinalizer(ctx context.Context, tool *v1alpha1.KapeTool, finalizer string) error
+
+	// RemoveFinalizer removes the given finalizer string from the tool.
+	RemoveFinalizer(ctx context.Context, tool *v1alpha1.KapeTool, finalizer string) error
+
 	// ListHandlersByToolRef returns all KapeHandlers with label kape.io/tool-ref-{toolName}=true.
 	ListHandlersByToolRef(ctx context.Context, toolName string) ([]v1alpha1.KapeHandler, error)
 }

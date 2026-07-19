@@ -72,3 +72,24 @@ func TestToolRepository_ListHandlersByToolRef(t *testing.T) {
 	require.Len(t, handlers, 1)
 	assert.Equal(t, "my-handler", handlers[0].Name)
 }
+
+func TestToolRepository_AddRemoveFinalizer(t *testing.T) {
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{Name: "mem-tool", Namespace: "kape-system"},
+		Spec:       v1alpha1.KapeToolSpec{Type: "memory"},
+	}
+	c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(tool).Build()
+	repo := k8sadapters.NewToolRepository(c)
+
+	err := repo.AddFinalizer(context.Background(), tool, "kape.io/tool-protection")
+	require.NoError(t, err)
+
+	got, _ := repo.Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	assert.Contains(t, got.Finalizers, "kape.io/tool-protection")
+
+	err = repo.RemoveFinalizer(context.Background(), got, "kape.io/tool-protection")
+	require.NoError(t, err)
+
+	got2, _ := repo.Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	assert.NotContains(t, got2.Finalizers, "kape.io/tool-protection")
+}

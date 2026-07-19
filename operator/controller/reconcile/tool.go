@@ -8,26 +8,33 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	"github.com/kape-io/kape/operator/infra/ports"
+	"github.com/kape-io/kape/operator/infra/qdrant"
 )
+
+const toolFinalizer = "kape.io/tool-protection"
 
 // ToolReconciler performs the full reconcile logic for KapeTool.
 type ToolReconciler struct {
-	tools          ports.ToolRepository
-	qdrantCluster  ports.QdrantClusterPort
+	tools         ports.ToolRepository
+	qdrantCluster ports.QdrantClusterPort
+	recorder      record.EventRecorder
 }
 
 // NewToolReconciler creates a ToolReconciler.
 func NewToolReconciler(
 	tools ports.ToolRepository,
 	qdrantCluster ports.QdrantClusterPort,
+	recorder record.EventRecorder,
 ) *ToolReconciler {
-	return &ToolReconciler{tools: tools, qdrantCluster: qdrantCluster}
+	return &ToolReconciler{tools: tools, qdrantCluster: qdrantCluster, recorder: recorder}
 }
 
 // Reconcile dispatches on spec.type.
@@ -53,6 +60,16 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, key types.NamespacedName
 }
 
 func (r *ToolReconciler) reconcileMemory(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	// 1. Ensure finalizer is present on every reconcile (idempotent, retroactive)
+	if err := r.tools.AddFinalizer(ctx, tool, toolFinalizer); err != nil {
+		return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+	}
+
+	// 2. Handle deletion
+	if !tool.DeletionTimestamp.IsZero() {
+		return r.handleMemoryDeletion(ctx, tool)
+	}
+
 	if tool.Spec.Memory != nil && tool.Spec.Memory.External != nil {
 		return r.reconcileExternalMemory(ctx, tool)
 	}
@@ -150,6 +167,15 @@ func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
+	// 3. Ensure Qdrant collection exists (idempotent — skip on 200/409)
+	distanceMetric := "cosine"
+	if tool.Spec.Memory != nil {
+		distanceMetric = tool.Spec.Memory.DistanceMetric
+	}
+	if err := qdrant.EnsureCollection(ctx, url, tool.Name, distanceMetric); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring Qdrant collection: %w", err)
+	}
+
 	tool.Status.QdrantEndpoint = url
 	tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
 		Type:    "MemoryReady",
@@ -167,6 +193,44 @@ func (r *ToolReconciler) reconcileProvisionedMemory(ctx context.Context, tool *v
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// handleMemoryDeletion blocks deletion while any KapeHandler references the tool.
+// Once all references are gone, it deletes the Qdrant collection (idempotent on 404)
+// and then removes the finalizer.
+func (r *ToolReconciler) handleMemoryDeletion(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {
+	handlers, err := r.tools.ListHandlersByToolRef(ctx, tool.Name)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing handlers: %w", err)
+	}
+	if len(handlers) > 0 {
+		names := make([]string, 0, len(handlers))
+		for _, h := range handlers {
+			names = append(names, h.Name)
+		}
+		msg := fmt.Sprintf("Cannot delete: referenced by handlers: [%s]", strings.Join(names, ", "))
+		tool.Status.Conditions = setCondition(tool.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "ReferencedByHandlers",
+			Message: msg,
+		})
+		_ = r.tools.UpdateStatus(ctx, tool)
+		r.recorder.Event(tool, corev1.EventTypeWarning, "DeletionBlocked", msg)
+		return ctrl.Result{}, nil // blocked — no requeue; re-triggered on handler deletion
+	}
+
+	// Delete the Qdrant collection before releasing the finalizer (idempotent — skip on 404)
+	if tool.Status.QdrantEndpoint != "" {
+		if err := qdrant.DeleteCollection(ctx, tool.Status.QdrantEndpoint, tool.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("deleting Qdrant collection: %w", err)
+		}
+	}
+
+	if err := r.tools.RemoveFinalizer(ctx, tool, toolFinalizer); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *ToolReconciler) reconcileMCP(ctx context.Context, tool *v1alpha1.KapeTool) (ctrl.Result, error) {

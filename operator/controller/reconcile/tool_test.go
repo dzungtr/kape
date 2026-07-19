@@ -8,11 +8,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
 	"github.com/kape-io/kape/operator/controller/reconcile"
@@ -21,7 +24,12 @@ import (
 func newToolScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
+	_ = corev1.AddToScheme(s)
 	return s
+}
+
+func newToolFakeRecorder() *record.FakeRecorder {
+	return record.NewFakeRecorder(10)
 }
 
 // fakeQdrantClusterPort implements ports.QdrantClusterPort for unit tests.
@@ -56,7 +64,7 @@ func TestToolReconciler_MemoryType_CRDNotInstalled_SetsOperatorNotInstalled(t *t
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
 	qdrantPort := &fakeQdrantClusterPort{crdInstalled: false}
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort)
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -82,7 +90,7 @@ func TestToolReconciler_MemoryType_ClusterNotReady_RequeuesAfter15s(t *testing.T
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
 	qdrantPort := &fakeQdrantClusterPort{crdInstalled: true, ready: false, found: true}
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort)
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -97,6 +105,12 @@ func TestToolReconciler_MemoryType_ClusterNotReady_RequeuesAfter15s(t *testing.T
 }
 
 func TestToolReconciler_MemoryType_ClusterReady_SetsReadyAndEndpoint(t *testing.T) {
+	// Mock Qdrant server returns 200 for PUT /collections (EnsureCollection)
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer qdrantSrv.Close()
+
 	tool := &v1alpha1.KapeTool{
 		ObjectMeta: metav1.ObjectMeta{Name: "mem-tool", Namespace: "kape-system", UID: "uid-1"},
 		Spec: v1alpha1.KapeToolSpec{
@@ -110,10 +124,10 @@ func TestToolReconciler_MemoryType_ClusterReady_SetsReadyAndEndpoint(t *testing.
 	qdrantPort := &fakeQdrantClusterPort{
 		crdInstalled:  true,
 		ready:         true,
-		connectionURL: "http://kape-memory-mem-tool.kape-system:6333",
+		connectionURL: qdrantSrv.URL,
 		found:         true,
 	}
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort)
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), qdrantPort, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -121,13 +135,175 @@ func TestToolReconciler_MemoryType_ClusterReady_SetsReadyAndEndpoint(t *testing.
 
 	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
 	require.NotNil(t, got)
-	assert.Equal(t, "http://kape-memory-mem-tool.kape-system:6333", got.Status.QdrantEndpoint)
+	assert.Equal(t, qdrantSrv.URL, got.Status.QdrantEndpoint)
 	memReady := findCondition(got.Status.Conditions, "MemoryReady")
 	require.NotNil(t, memReady)
 	assert.Equal(t, metav1.ConditionTrue, memReady.Status)
 	readyCond := findCondition(got.Status.Conditions, "Ready")
 	require.NotNil(t, readyCond)
 	assert.Equal(t, metav1.ConditionTrue, readyCond.Status)
+}
+
+func TestToolReconciler_MemoryType_FinalizerAddedOnCreate(t *testing.T) {
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{Name: "mem-tool", Namespace: "kape-system", UID: "uid-1"},
+		Spec: v1alpha1.KapeToolSpec{
+			Type:   "memory",
+			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
+		},
+	}
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
+
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{crdInstalled: false}, newToolFakeRecorder())
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	require.NotNil(t, got)
+	assert.Contains(t, got.Finalizers, "kape.io/tool-protection")
+}
+
+func TestToolReconciler_MemoryType_UpgradePath_FinalizerAddedRetroactively(t *testing.T) {
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "old-tool",
+			Namespace:  "kape-system",
+			UID:        "uid-old",
+			Finalizers: []string{},
+		},
+		Spec: v1alpha1.KapeToolSpec{
+			Type:   "memory",
+			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
+		},
+	}
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
+
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{crdInstalled: false}, newToolFakeRecorder())
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "old-tool", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "old-tool", Namespace: "kape-system"})
+	require.NotNil(t, got)
+	assert.Contains(t, got.Finalizers, "kape.io/tool-protection")
+}
+
+func TestToolReconciler_MemoryType_DeletionBlockedWhenHandlerReferences(t *testing.T) {
+	now := metav1.Now()
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "mem-tool",
+			Namespace:         "kape-system",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"kape.io/tool-protection"},
+		},
+		Spec: v1alpha1.KapeToolSpec{
+			Type:   "memory",
+			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
+		},
+	}
+	handler := &v1alpha1.KapeHandler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-handler",
+			Namespace: "kape-system",
+			Labels:    map[string]string{"kape.io/tool-ref-mem-tool": "true"},
+		},
+	}
+
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool, handler).WithStatusSubresource(tool).Build()
+	rec := newToolFakeRecorder()
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, rec)
+
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	require.NotNil(t, got)
+	assert.Contains(t, got.Finalizers, "kape.io/tool-protection")
+
+	events := drainToolEvents(rec)
+	found := false
+	for _, e := range events {
+		if containsStr(e, "DeletionBlocked") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a Warning DeletionBlocked event, got: %v", events)
+}
+
+func TestToolReconciler_MemoryType_DeletionUnblocksWhenNoHandlers(t *testing.T) {
+	now := metav1.Now()
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer qdrantSrv.Close()
+
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "mem-tool",
+			Namespace:         "kape-system",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"kape.io/tool-protection"},
+		},
+		Spec: v1alpha1.KapeToolSpec{
+			Type:   "memory",
+			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
+		},
+		Status: v1alpha1.KapeToolStatus{
+			QdrantEndpoint: qdrantSrv.URL,
+		},
+	}
+
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
+
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	if got != nil {
+		assert.NotContains(t, got.Finalizers, "kape.io/tool-protection")
+	}
+}
+
+func TestToolReconciler_MemoryType_DeleteCollection_Idempotent404(t *testing.T) {
+	now := metav1.Now()
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer qdrantSrv.Close()
+
+	tool := &v1alpha1.KapeTool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "mem-tool",
+			Namespace:         "kape-system",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"kape.io/tool-protection"},
+		},
+		Spec: v1alpha1.KapeToolSpec{
+			Type:   "memory",
+			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
+		},
+		Status: v1alpha1.KapeToolStatus{
+			QdrantEndpoint: qdrantSrv.URL,
+		},
+	}
+
+	s := newToolScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
+
+	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+
+	require.NoError(t, err)
+	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "mem-tool", Namespace: "kape-system"})
+	if got != nil {
+		assert.NotContains(t, got.Finalizers, "kape.io/tool-protection")
+	}
 }
 
 func TestToolReconciler_MCPType_EndpointReachable_SetsReady(t *testing.T) {
@@ -146,7 +322,7 @@ func TestToolReconciler_MCPType_EndpointReachable_SetsReady(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mcp-tool", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -170,7 +346,7 @@ func TestToolReconciler_MCPType_EndpointUnreachable_SetsNotReady(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mcp-down", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -189,7 +365,6 @@ func TestToolReconciler_MCPType_SkipProbe_SetsReadyWithoutHTTPCall(t *testing.T)
 		Spec: v1alpha1.KapeToolSpec{
 			Type: "mcp",
 			MCP: &v1alpha1.MCPSpec{
-				// Use an unreachable URL to prove the probe is not called when SkipProbe=true.
 				Upstream:  v1alpha1.MCPUpstreamSpec{Transport: "sse", URL: "http://127.0.0.1:19999"},
 				SkipProbe: true,
 			},
@@ -198,7 +373,7 @@ func TestToolReconciler_MCPType_SkipProbe_SetsReadyWithoutHTTPCall(t *testing.T)
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "mcp-skip", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -223,7 +398,7 @@ func TestToolReconciler_EventPublish_ValidType_SetsReady(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "ep-tool", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -232,7 +407,6 @@ func TestToolReconciler_EventPublish_ValidType_SetsReady(t *testing.T) {
 	require.NotNil(t, readyCond)
 	assert.Equal(t, metav1.ConditionTrue, readyCond.Status)
 }
-
 
 func TestToolReconciler_ExternalMemory_SetsReadyWithExternalURL(t *testing.T) {
 	tool := &v1alpha1.KapeTool{
@@ -251,16 +425,11 @@ func TestToolReconciler_ExternalMemory_SetsReadyWithExternalURL(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), k8sadapters.NewStatefulSetAdapter(c), &fakeConfigLoader{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "ext-mem", Namespace: "kape-system"})
 
 	require.NoError(t, err)
 	assert.Equal(t, int64(30), int64(result.RequeueAfter.Seconds()))
-
-	// No StatefulSet should be provisioned
-	var sts appsv1.StatefulSet
-	err = c.Get(context.Background(), types.NamespacedName{Name: "kape-memory-ext-mem", Namespace: "kape-system"}, &sts)
-	assert.Error(t, err, "StatefulSet should not exist for external memory")
 
 	got, _ := k8sadapters.NewToolRepository(c).Get(context.Background(), types.NamespacedName{Name: "ext-mem", Namespace: "kape-system"})
 	require.NotNil(t, got)
@@ -291,7 +460,7 @@ func TestToolReconciler_ExternalMemory_WithSecretRef_SetsReady(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), k8sadapters.NewStatefulSetAdapter(c), &fakeConfigLoader{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "ext-mem-secret", Namespace: "kape-system"})
 
 	require.NoError(t, err)
@@ -315,8 +484,6 @@ func TestToolReconciler_ExternalMemory_MalformedURL_ReportsError(t *testing.T) {
 				Backend:        "qdrant",
 				DistanceMetric: "cosine",
 				External: &v1alpha1.ExternalMemorySpec{
-					// No scheme — should be rejected by the reconciler as a
-					// defense-in-depth check mirroring the CRD pattern.
 					URL: "my-qdrant",
 				},
 			},
@@ -325,7 +492,7 @@ func TestToolReconciler_ExternalMemory_MalformedURL_ReportsError(t *testing.T) {
 	s := newToolScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
 
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), k8sadapters.NewStatefulSetAdapter(c), &fakeConfigLoader{})
+	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), &fakeQdrantClusterPort{}, newToolFakeRecorder())
 	_, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "ext-mem-bad-url", Namespace: "kape-system"})
 
 	require.Error(t, err, "reconciler must reject external URL without http(s):// scheme")
@@ -340,26 +507,44 @@ func TestToolReconciler_ExternalMemory_MalformedURL_ReportsError(t *testing.T) {
 	assert.Equal(t, "InvalidExternalURL", readyCond.Reason)
 }
 
-func TestToolReconciler_ProvisionedMemory_ExternalNil_StillProvisions(t *testing.T) {
-	tool := &v1alpha1.KapeTool{
-		ObjectMeta: metav1.ObjectMeta{Name: "prov-mem", Namespace: "kape-system", UID: "uid-2"},
-		Spec: v1alpha1.KapeToolSpec{
-			Type:   "memory",
-			Memory: &v1alpha1.MemorySpec{Backend: "qdrant", DistanceMetric: "cosine"},
-		},
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
 	}
-	s := newToolScheme()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tool).WithStatusSubresource(tool).Build()
-
-	r := reconcile.NewToolReconciler(k8sadapters.NewToolRepository(c), k8sadapters.NewStatefulSetAdapter(c), &fakeConfigLoader{})
-	result, err := r.Reconcile(context.Background(), types.NamespacedName{Name: "prov-mem", Namespace: "kape-system"})
-
-	require.NoError(t, err)
-	assert.Equal(t, int64(15), int64(result.RequeueAfter.Seconds()))
-
-	// StatefulSet must be created (provisioned path)
-	var sts appsv1.StatefulSet
-	err = c.Get(context.Background(), types.NamespacedName{Name: "kape-memory-prov-mem", Namespace: "kape-system"}, &sts)
-	require.NoError(t, err)
+	return nil
 }
 
+func drainToolEvents(rec *record.FakeRecorder) []string {
+	var events []string
+	for {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
+}
+
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && stringContains(s, substr))
+}
+
+func stringContains(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+type fakeConfigLoader struct{}
+
+func (f *fakeConfigLoader) Load(_ context.Context) (domainconfig.KapeConfig, error) {
+	return domainconfig.KapeConfig{}, nil
+}

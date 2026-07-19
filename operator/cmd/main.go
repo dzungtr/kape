@@ -108,7 +108,8 @@ func main() {
 	podReader := k8sadapters.NewPodReaderAdapter(k8sClient)
 
 	// KapeToolReconciler
-	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt)
+	toolRecorder := mgr.GetEventRecorderFor("kapetool-controller")
+	toolRec := reconcilehandler.NewToolReconciler(toolRepo, qdrantClusterAdapt, toolRecorder)
 	if err := kapecontroller.SetupToolReconciler(mgr, toolRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeTool controller")
 		os.Exit(1)
