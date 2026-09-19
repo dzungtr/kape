@@ -29,6 +29,7 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git pull *)",
+      "Bash(memsearch)",
       "Bash(GOWORK=off go test *)",
       "Bash(GOWORK=off go build *)",
       "Bash(GOWORK=off go vet *)"
