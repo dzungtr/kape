@@ -1,0 +1,4 @@
+# Build context for Containerfile.dev only needs the flake
+*
+!flake.nix
+!flake.lock

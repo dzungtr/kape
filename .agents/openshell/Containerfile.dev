@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.7
+#
+# KAPE dev image — ghcr.io/dzungtr/pi-openshell + this repo's flake toolchain.
+#
+# Based on the published pi-openshell image (itself the official OpenShell
+# community `base` sandbox + pi + nix store graft — see ~/.pi/docker/openshell).
+# That base already satisfies the OpenShell supervisor contract (FHS layout,
+# /bin/bash, sandbox user, /sandbox workspace, /etc/openshell/policy.yaml with
+# the /nix read-only grant and the default-profile binary glob).
+#
+# This build merges kapeTools (go, golangci-lint, controller-gen, kubectl,
+# kind, helm, python313, uv, ruff, bun, podman, skopeo, ...) into the existing
+# nix default profile, so everything lands on the already-policy-allowed
+# /nix/var/nix/profiles/default/bin path. Host nix is NOT required: the nix
+# CLI ships inside the base image and fetches from cache.nixos.org at build
+# time over podman build's network.
+#
+# Build:  podman build -f .agents/openshell/Containerfile.dev -t ghcr.io/dzungtr/kape-dev:latest .
+# Push:   podman push ghcr.io/dzungtr/kape-dev:latest
+#
+# Run (OpenShell):
+#   openshell sandbox create --name kape-dev \
+#     --from ghcr.io/dzungtr/kape-dev:latest
+
+ARG BASE=ghcr.io/dzungtr/pi-openshell:openrouter
+
+FROM ${BASE}
+
+USER root
+
+# nix.conf: the /nix graft from nixos/nix does not carry /etc/nix (it lives
+# outside the store); re-create the same single-user, sandbox-less config the
+# pi-openshell builder stage uses.
+RUN mkdir -p /etc/nix \
+    && printf 'experimental-features = nix-command flakes\nsandbox = false\nbuild-users-group =\n' > /etc/nix/nix.conf
+
+# Merge kapeTools into the default profile. Priority 6: existing entries sit
+# at 4 (piTools) and 5 (stock nix profile, e.g. less) — a tie errors out, and
+# higher-than-all means piTools/bin stay canonical on any collision.
+# `--profile` flag is required: the graft lost the nixos/nix image's
+# /root/.nix-profile chain, and `nix profile` ignores the NIX_PROFILE env var
+# (that's nix-env-era) — without the flag it targets /root/.local/state/...
+COPY flake.nix flake.lock /tmp/kape-flake/
+RUN nix --extra-experimental-features "nix-command flakes" \
+    profile install --profile /nix/var/nix/profiles/default \
+    /tmp/kape-flake#kapeTools --priority 6 \
+    && GOBIN=/usr/local/bin /nix/var/nix/profiles/default/bin/go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3 \
+    && rm -rf /tmp/kape-flake /root/.cache/nix /root/.local/state/nix /root/go /root/.cache/go-build
+
+# Base image PATH already includes /nix/var/nix/profiles/default/bin — the
+# merged profile puts go/bun/kubectl/... on it. No ENV changes needed.
+
+USER sandbox
+WORKDIR /sandbox
