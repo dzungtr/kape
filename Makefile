@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: generate build test test-integration lint build-images docker-build podman-build playground-up playground-down playground-operator playground-logs fire-adapter clean help
+.PHONY: generate build test test-integration lint build-images docker-build podman-build build-dev-image push-dev-image playground-up playground-down playground-operator playground-logs fire-adapter clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -20,6 +20,15 @@ build: ## Build all Go binaries, Python wheel, and dashboard
 	cd dashboard && bun run build
 
 PODMAN_ENV := DOCKER_HOST=unix://$(XDG_RUNTIME_DIR)/podman/podman.sock TESTCONTAINERS_RYUK_DISABLED=true
+
+KAPE_DEV_IMAGE := ghcr.io/dzungtr/kape-dev
+KAPE_DEV_TAG ?= latest
+
+build-dev-image: ## Build the OpenShell kape-dev sandbox image
+	podman build -t $(KAPE_DEV_IMAGE):$(KAPE_DEV_TAG) -f .agents/openshell/Containerfile.dev .
+
+push-dev-image: ## Push the kape-dev sandbox image to ghcr.io
+	podman push $(KAPE_DEV_IMAGE):$(KAPE_DEV_TAG)
 
 test: ## Run all tests (Go, Python, dashboard)
 	$(PODMAN_ENV) go test ./operator/...
