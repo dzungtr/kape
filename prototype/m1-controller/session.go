@@ -20,6 +20,8 @@ type Session struct {
 	Sandbox string    `json:"sandbox"`
 	Created time.Time `json:"created"`
 
+	sandboxID string // gateway sandbox UUID (used by exec RPCs)
+
 	mu   sync.Mutex
 	hub  *EventHub // buffered + fan-out of raw JSONL records from pi stdout
 	piMu sync.Mutex
@@ -104,16 +106,23 @@ func (m *SessionManager) Create(ctx context.Context) (*Session, error) {
 	sess := &Session{ID: id, Sandbox: name, Created: time.Now(), hub: NewEventHub(), gw: m.gw, mgr: m}
 
 	log.Printf("[session %s] creating sandbox %s (image %s, provider %s)", id, name, m.image, m.provider)
-	if _, err := m.gw.CreateSandbox(ctx, name, m.image, m.provider); err != nil {
+	_, sbID, err := m.gw.CreateSandbox(ctx, name, m.image, m.provider)
+	if err != nil {
 		return nil, err
 	}
+	sess.sandboxID = sbID
 	if err := m.gw.WaitReady(ctx, name, 10*time.Minute); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, err
 	}
 	log.Printf("[session %s] sandbox %s READY", id, name)
 
-	m.gw.ProbeModelGateway(ctx, name)
+	m.gw.ProbeModelGateway(ctx, sbID)
+
+	if err := m.gw.ApplyModelGatewayPolicy(ctx, name); err != nil {
+		_ = m.gw.DeleteSandbox(context.Background(), name)
+		return nil, fmt.Errorf("apply network policy: %w", err)
+	}
 
 	if err := m.startPi(sess); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
@@ -154,7 +163,7 @@ func (m *SessionManager) Delete(ctx context.Context, id string) error {
 func (m *SessionManager) startPi(sess *Session) error {
 	// Session lifetime == exec stream lifetime: one context per session.
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := m.gw.StartPi(ctx, sess.Sandbox)
+	stream, err := m.gw.StartPi(ctx, sess.sandboxID)
 	if err != nil {
 		cancel()
 		return err

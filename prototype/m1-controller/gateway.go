@@ -24,8 +24,8 @@ func NewGateway(conn *grpc.ClientConn) *Gateway {
 }
 
 // CreateSandbox creates a sandbox running the pi image with the named
-// provider attached and modest resources. Returns the sandbox name.
-func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string) (string, error) {
+// provider attached and modest resources. Returns the canonical name and id.
+func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string) (string, string, error) {
 	req := &v1.CreateSandboxRequest{
 		Name: name,
 		Spec: &v1.SandboxSpec{
@@ -43,9 +43,9 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 	}
 	resp, err := g.client.CreateSandbox(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("CreateSandbox: %w", err)
+		return "", "", fmt.Errorf("CreateSandbox: %w", err)
 	}
-	return resp.Sandbox.Metadata.Name, nil
+	return resp.Sandbox.Metadata.Name, resp.Sandbox.Metadata.Id, nil
 }
 
 // GetSandboxPhase polls the sandbox phase.
@@ -68,7 +68,7 @@ func (g *Gateway) WaitReady(ctx context.Context, name string, timeout time.Durat
 		switch phase {
 		case v1.SandboxPhase_SANDBOX_PHASE_READY:
 			return nil
-		case v1.SandboxPhase_SANDBOX_PHASE_ERROR, v1.SandboxPhase_SANDBOX_PHASE_COMPLETED:
+		case v1.SandboxPhase_SANDBOX_PHASE_ERROR:
 			return fmt.Errorf("sandbox %s reached terminal phase %s", name, phase)
 		}
 		if time.Now().After(deadline) {
@@ -90,12 +90,12 @@ func (g *Gateway) DeleteSandbox(ctx context.Context, name string) error {
 // ProbeModelGateway runs a one-shot exec inside the sandbox to probe the
 // in-cluster model gateway and logs the result. Used to validate /v1/models
 // reachability and auth before pi starts.
-func (g *Gateway) ProbeModelGateway(ctx context.Context, name string) {
+func (g *Gateway) ProbeModelGateway(ctx context.Context, id string) {
 	cmd := []string{"bash", "-lc",
 		"curl -s -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' http://model-gateway-http.aperture.svc.cluster.local/v1/models " +
 			"&& echo '--- body ---' " +
 			"&& curl -s -m 8 http://model-gateway-http.aperture.svc.cluster.local/v1/models | head -c 2000 || echo 'curl missing/failed'"}
-	req := &v1.ExecSandboxRequest{Sandbox: name, Command: cmd}
+	req := &v1.ExecSandboxRequest{SandboxId: id, Command: cmd}
 	stream, err := g.client.ExecSandbox(ctx, req)
 	if err != nil {
 		log.Printf("[probe] exec failed: %v", err)
@@ -105,6 +105,7 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, name string) {
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
+			log.Printf("[probe] stream error: %v", err)
 			break
 		}
 		switch p := ev.Payload.(type) {
@@ -119,8 +120,12 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, name string) {
 
 // StartPi opens an interactive exec stream running the pi RPC wrapper and
 // returns the stream for later stdin writes.
-func (g *Gateway) StartPi(ctx context.Context, name string) (v1.OpenShell_ExecSandboxInteractiveClient, error) {
-	req := &v1.ExecSandboxRequest{Sandbox: name, Command: piWrapperCommand(), Workdir: "/sandbox"}
+func (g *Gateway) StartPi(ctx context.Context, id string) (v1.OpenShell_ExecSandboxInteractiveClient, error) {
+	// NOTE: provider-injected env is withheld by the gateway for unbound static
+// credentials (spike finding); the model gateway is unauthenticated, so we
+// inject the key via the exec environment directly.
+	req := &v1.ExecSandboxRequest{SandboxId: id, Command: piWrapperCommand(), Workdir: "/sandbox",
+		Environment: map[string]string{"OPENROUTER_API_KEY": "dummy"}}
 	stream, err := g.client.ExecSandboxInteractive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ExecSandboxInteractive open: %w", err)
@@ -137,7 +142,7 @@ func (g *Gateway) StartPi(ctx context.Context, name string) (v1.OpenShell_ExecSa
 func piWrapperCommand() []string {
 	script := `set -e
 cd /sandbox
-MODELS="$PI_CODING_AGENT_DIR/models.json"
+MODELS="${PI_CODING_AGENT_DIR:-/sandbox/.pi/agent}/models.json"
 if command -v python3 >/dev/null 2>&1; then
   python3 - "$MODELS" <<'PYEOF'
 import json, sys
