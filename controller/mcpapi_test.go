@@ -366,3 +366,21 @@ func TestMCPMountedOnRouter(t *testing.T) {
 		t.Fatalf("/mcp not mounted: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestMCPListAgentsTool covers the list_agents call path: an agent created
+// via the MCP create tool appears in the list with a live view.
+func TestMCPListAgentsTool(t *testing.T) {
+	cs, _, _, _ := newMCPClientSession(t)
+
+	view := callTool[CreateProfile, AgentView](t, cs, "create_agent", CreateProfile{Model: "m1"})
+	list := callTool[struct{}, []AgentView](t, cs, "list_agents", struct{}{})
+	if len(list) != 1 {
+		t.Fatalf("list_agents = %+v, want the created agent", list)
+	}
+	if list[0].ID != view.ID || list[0].Sandbox != view.Sandbox || list[0].Status != StatusReady {
+		t.Fatalf("list_agents[0] = %+v, want same agent as create (%+v)", list[0], view)
+	}
+	if list[0].Source != SourceLive {
+		t.Fatalf("list_agents[0].Source = %q, want %q", list[0].Source, SourceLive)
+	}
+}
