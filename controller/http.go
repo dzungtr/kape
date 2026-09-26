@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
 // NewRouter wires the agent API (domain language: sandbox agent, never session):
@@ -87,6 +91,10 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
 			return
 		}
+		if isPullRequest(r.URL.Query()) {
+			readEvents(w, r, agent)
+			return
+		}
 		serveSSE(w, r, agent)
 	})
 	mux.HandleFunc("DELETE /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +148,112 @@ func httpFieldError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "field": field})
 }
 
-// serveSSE streams events as text/event-stream: buffered replay, then live.
+// defaultReadLimit bounds a read_events batch when no limit is given.
+const defaultReadLimit = 1000
+
+// parseReadParams validates the read_events query. Returns (nil, "") when no
+// pull-mode params are present (SSE mode), (nil, msg) on a 400-worthy problem.
+func parseReadParams(q url.Values) (*readParams, string) {
+	_, hasAfter := q["after"]
+	_, hasLimit := q["limit"]
+	_, hasLast := q["last"]
+	_, hasTypes := q["types"]
+	if !hasAfter && !hasLimit && !hasLast && !hasTypes {
+		return nil, ""
+	}
+	p := &readParams{limit: defaultReadLimit}
+	if hasAfter && hasLast {
+		return nil, "after and last are mutually exclusive"
+	}
+	if hasAfter {
+		after, err := strconv.ParseUint(q.Get("after"), 10, 64)
+		if err != nil {
+			return nil, "after must be a non-negative integer"
+		}
+		p.after = after
+	}
+	if hasLimit {
+		limit, err := strconv.Atoi(q.Get("limit"))
+		if err != nil || limit < 0 {
+			return nil, "limit must be a non-negative integer"
+		}
+		p.limit = limit
+	}
+	if hasLast {
+		last, err := strconv.Atoi(q.Get("last"))
+		if err != nil || last < 0 {
+			return nil, "last must be a non-negative integer"
+		}
+		p.last = last
+	}
+	if hasTypes {
+		for _, t := range strings.Split(q.Get("types"), ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				p.types = append(p.types, t)
+			}
+		}
+	}
+	return p, ""
+}
+
+// isPullRequest reports whether the query selects read_events pull mode:
+// presence of any pull param — even an invalid one, which readEvents must
+// 400 rather than silently stream.
+func isPullRequest(q url.Values) bool {
+	for _, k := range []string{"after", "limit", "last", "types"} {
+		if _, ok := q[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// readParams is the parsed read_events query: after/limit/last/types.
+type readParams struct {
+	after uint64
+	limit int
+	last  int
+	types []string
+}
+
+// readEvents handles read_events pull mode. The response carries the events
+// (each {seq, type, data}; data is the verbatim record) and truncated: true
+// once any events have been evicted from the buffer ring.
+func readEvents(w http.ResponseWriter, r *http.Request, agent *Agent) {
+	p, msg := parseReadParams(r.URL.Query())
+	if p == nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("%s", msg))
+		return
+	}
+	var res ReadResult
+	if _, hasLast := r.URL.Query()["last"]; hasLast {
+		res = agent.hub.ReadLast(p.last, p.types)
+	} else {
+		res = agent.hub.Read(p.after, p.limit, p.types)
+	}
+	writeJSON(w, http.StatusOK, readEventsResponse{
+		AgentID:   agent.ID,
+		Events:    res.Events,
+		Truncated: res.Truncated,
+	})
+}
+
+// readEventsResponse is the JSON shape of read_events pull mode.
+type readEventsResponse struct {
+	AgentID   string  `json:"agent_id"`
+	Events    []Event `json:"events"`
+	Truncated bool    `json:"truncated"`
+}
+
+// serveSSE streams events as text/event-stream: buffered replay from the
+// cursor (Last-Event-ID header or after query — re-attach mid-turn), then
+// live. Each event carries id: <seq> so clients can resume from it.
 func serveSSE(w http.ResponseWriter, r *http.Request, agent *Agent) {
+	cursor, errMsg := sseCursor(r)
+	if errMsg != "" {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("%s", errMsg))
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
@@ -151,10 +263,10 @@ func serveSSE(w http.ResponseWriter, r *http.Request, agent *Agent) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	replay, live, unsub := agent.hub.Subscribe()
+	replay, live, unsub := agent.hub.Subscribe(cursor)
 	defer unsub()
-	for _, raw := range replay {
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
+	for i := range replay {
+		if !writeSSEEvent(w, &replay[i]) {
 			return
 		}
 	}
@@ -163,18 +275,46 @@ func serveSSE(w http.ResponseWriter, r *http.Request, agent *Agent) {
 		select {
 		case <-r.Context().Done():
 			return
-		case raw, ok := <-live:
+		case ev, ok := <-live:
 			if !ok {
 				fmt.Fprint(w, "event: closed\n\n")
 				flusher.Flush()
 				return
 			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
+			if !writeSSEEvent(w, ev) {
 				return
 			}
 			flusher.Flush()
 		}
 	}
+}
+
+// sseCursor resolves the SSE re-attach cursor: Last-Event-ID header or the
+// after query param (both together -> 400). Zero cursor = replay from start.
+func sseCursor(r *http.Request) (uint64, string) {
+	lid := r.Header.Get("Last-Event-ID")
+	after := r.URL.Query().Get("after")
+	if lid != "" && after != "" {
+		return 0, "Last-Event-ID and after are mutually exclusive"
+	}
+	v := lid
+	if v == "" {
+		v = after
+	}
+	if v == "" {
+		return 0, ""
+	}
+	cursor, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return 0, "cursor must be a non-negative integer"
+	}
+	return cursor, ""
+}
+
+// writeSSEEvent frames one event: id: <seq>, data: <verbatim record>.
+func writeSSEEvent(w io.Writer, ev *Event) bool {
+	_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, ev.Data)
+	return err == nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

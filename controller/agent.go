@@ -77,11 +77,10 @@ func (a *Agent) setStatusAndEmit(s AgentStatus, event string) {
 	a.mu.Lock()
 	a.status = s
 	a.mu.Unlock()
-	a.hub.Publish(json.RawMessage(mustJSON(map[string]interface{}{
-		"type":     event,
+	a.hub.PublishLifecycle(event, map[string]interface{}{
 		"agent_id": a.ID,
 		"status":   s,
-	})))
+	})
 }
 
 func mustJSON(v interface{}) []byte {
@@ -92,67 +91,7 @@ func mustJSON(v interface{}) []byte {
 	return b
 }
 
-// EventHub buffers all events and supports multiple SSE subscribers.
-type EventHub struct {
-	mu          sync.Mutex
-	buffer      []json.RawMessage
-	subscribers map[int]chan json.RawMessage
-	nextSub     int
-	closed      bool
-}
-
-func NewEventHub() *EventHub {
-	return &EventHub{subscribers: map[int]chan json.RawMessage{}}
-}
-
-// Publish appends an event to the buffer and fans out to subscribers.
-func (h *EventHub) Publish(raw json.RawMessage) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed {
-		return
-	}
-	h.buffer = append(h.buffer, raw)
-	for _, ch := range h.subscribers {
-		select {
-		case ch <- raw:
-		default: // slow subscriber: drop rather than stall the pi stream
-		}
-	}
-}
-
-// Subscribe returns the buffered replay plus a live channel.
-func (h *EventHub) Subscribe() ([]json.RawMessage, chan json.RawMessage, func()) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	replay := make([]json.RawMessage, len(h.buffer))
-	copy(replay, h.buffer)
-	ch := make(chan json.RawMessage, 256)
-	id := h.nextSub
-	h.nextSub++
-	h.subscribers[id] = ch
-	return replay, ch, func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		delete(h.subscribers, id)
-	}
-}
-
-func (h *EventHub) Close() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.closed = true
-}
-
-// Events returns a snapshot of the buffered events (used by tests and
-// read_events-style pulls until the cursor contract lands in the event slice).
-func (h *EventHub) Events() []json.RawMessage {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]json.RawMessage, len(h.buffer))
-	copy(out, h.buffer)
-	return out
-}
+// EventHub — the seq-aware replay buffer and fan-out — lives in events.go.
 
 // AgentManager tracks agents in memory and owns the per-agent FSM:
 // creating → ready ⇄ working, and → failed | terminated. The gateway client
@@ -203,6 +142,10 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		return nil, err
 	}
 	log.Printf("[agent %s] sandbox %s READY", id, name)
+	agent.hub.PublishLifecycle("agent.provisioned", map[string]interface{}{
+		"agent_id": agent.ID,
+		"status":   StatusCreating,
+	})
 
 	if err := m.gw.ApplyModelGatewayPolicy(ctx, name); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
@@ -273,11 +216,10 @@ func (m *AgentManager) Delete(ctx context.Context, id string) error {
 	agent.status = StatusTerminated
 	close(agent.stdin)
 	agent.mu.Unlock()
-	agent.hub.Publish(json.RawMessage(mustJSON(map[string]interface{}{
-		"type":     "agent.terminated",
+	agent.hub.PublishLifecycle("agent.terminated", map[string]interface{}{
 		"agent_id": agent.ID,
 		"status":   StatusTerminated,
-	})))
+	})
 	agent.hub.Close()
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
@@ -496,12 +438,11 @@ func (m *AgentManager) fail(agent *Agent, reason string) {
 	agent.status = StatusFailed
 	agent.mu.Unlock()
 	log.Printf("[agent %s] failed: %s", agent.ID, reason)
-	agent.hub.Publish(json.RawMessage(mustJSON(map[string]interface{}{
-		"type":     "agent.failed",
+	agent.hub.PublishLifecycle("agent.failed", map[string]interface{}{
 		"agent_id": agent.ID,
 		"status":   StatusFailed,
 		"reason":   reason,
-	})))
+	})
 }
 
 // splitLines splits on LF (strict JSONL framing), tolerating CRLF.
