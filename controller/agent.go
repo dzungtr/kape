@@ -106,10 +106,13 @@ type AgentManager struct {
 	agents map[string]*Agent
 	gw     GatewayClient
 	cfg    Config
+	// managedBy is the value stamped into the managed-by ownership label and
+	// used to filter ListSandboxes — the registry's identity.
+	managedBy string
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config) *AgentManager {
-	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg}
+	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue}
 }
 
 // Create provisions a sandbox for the (possibly partial) profile override
@@ -137,7 +140,10 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	log.Printf("[agent %s] creating sandbox %s (image %s, provider %s, cpu %s, memory %s, model %q)",
 		id, name, resolved.Image, resolved.Provider, resolved.Resources.CPU, resolved.Resources.Memory, resolved.Model)
 
-	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources)
+	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, map[string]string{
+		LabelManagedBy: m.managedBy, // ownership tag: the label registry's filter key
+		LabelAgentID:   id,          // agent-id: resolves sandbox → agent after restart
+	})
 	if err != nil {
 		return nil, err
 	}

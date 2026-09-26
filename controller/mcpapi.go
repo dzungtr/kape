@@ -12,10 +12,6 @@ import (
 // a thin wrapper over the shared AgentManager/EventHub core — one tool
 // implementation per verb, two transports (REST in http.go, MCP here).
 //
-// v1 note: `list_agents` is the eighth tool; it arrives with the label
-// registry slice (#175, PR #182) and is added to both transports then. The
-// contract-equality test compares MCP tools against the REST verb set on
-// main, which is these seven.
 
 // SDK decision (spec #172 UNVERIFIED, resolved): the official
 // github.com/modelcontextprotocol/go-sdk (v1.8.0, stable 1.x line) is used.
@@ -34,6 +30,7 @@ func RestVerbs() []string {
 		"stream_events",
 		"read_events",
 		"delete_agent",
+		"list_agents",
 	}
 }
 
@@ -71,6 +68,10 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 		Name:        "delete_agent",
 		Description: "Abort the agent's exec stream and delete its sandbox. The agent is terminated; subsequent calls error as unknown.",
 	}, handleDeleteAgent(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_agents",
+		Description: "List the sandbox agents owned by this controller: gateway sandboxes carrying the managed-by ownership label, joined with in-memory live state. Includes post-restart CR-derived views.",
+	}, handleListAgents(mgr))
 	return srv
 }
 
@@ -104,23 +105,38 @@ type streamEventsInput struct {
 
 // --- tool handlers ---------------------------------------------------------
 
-func handleCreateAgent(mgr *AgentManager) mcp.ToolHandlerFor[CreateProfile, agentView] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, input CreateProfile) (*mcp.CallToolResult, agentView, error) {
+func handleCreateAgent(mgr *AgentManager) mcp.ToolHandlerFor[CreateProfile, AgentView] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input CreateProfile) (*mcp.CallToolResult, AgentView, error) {
 		agent, err := mgr.Create(ctx, &input)
 		if err != nil {
-			return nil, agentView{}, err // validation errors name the field
+			return nil, AgentView{}, err // validation errors name the field
 		}
-		return nil, agentViewOf(agent), nil
+		return nil, agent.agentView(), nil
 	}
 }
 
-func handleGetAgent(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, agentView] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, input agentIDInput) (*mcp.CallToolResult, agentView, error) {
-		agent := mgr.Get(input.AgentID)
-		if agent == nil {
-			return nil, agentView{}, errUnknownAgent(input.AgentID)
+// handleGetAgent routes through GetView so MCP gets the same post-restart
+// CR-derived parity as the REST GET twin.
+func handleGetAgent(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, AgentView] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input agentIDInput) (*mcp.CallToolResult, AgentView, error) {
+		view, err := mgr.GetView(ctx, input.AgentID)
+		if err != nil {
+			return nil, AgentView{}, err
 		}
-		return nil, agentViewOf(agent), nil
+		return nil, view, nil
+	}
+}
+
+func handleListAgents(mgr *AgentManager) mcp.ToolHandlerFor[struct{}, []AgentView] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, []AgentView, error) {
+		views, err := mgr.List(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if views == nil {
+			views = []AgentView{}
+		}
+		return nil, views, nil
 	}
 }
 

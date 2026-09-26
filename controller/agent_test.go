@@ -189,19 +189,29 @@ func isErrTurnInFlight(err error) bool {
 	return errors.Is(err, ErrTurnInFlight)
 }
 
-// streamSent waits for stdinPump to drain the agent's stdin queue and for
-// the sent-payload count to settle across two samples (the pump dequeues
-// before recording, so queue-empty alone is not sufficient), then returns
-// the payloads the FakeStream observed.
+// streamSent waits for stdinPump to drain the agent's stdin queue, then
+// returns the payloads the FakeStream observed. The queue-empty check races
+// with the pump's Send (the queue empties on receive, before the payload is
+// recorded), so we also wait for the sent count to become stable.
 func streamSent(t *testing.T, gw *FakeGateway, a *Agent) [][]byte {
 	t.Helper()
-	// Wait until the stdin pump has recorded at least one payload on the
-	// fake stream: len(stdin)==0 does not prove the pump has run yet.
-	for i := 0; i < 50; i++ {
-		if got := gw.stream.SentPayloads(); len(got) > 0 {
-			return got
+	stable := 0
+	last := -1
+	for i := 0; i < 200; i++ {
+		a.mu.Lock()
+		n := len(a.stdin)
+		a.mu.Unlock()
+		sent := len(gw.stream.SentPayloads())
+		if n == 0 && sent == last {
+			stable++
+			if stable >= 3 {
+				return gw.stream.SentPayloads()
+			}
+		} else {
+			stable = 0
 		}
-		time.Sleep(10 * time.Millisecond)
+		last = sent
+		time.Sleep(5 * time.Millisecond)
 	}
 	return gw.stream.SentPayloads()
 }

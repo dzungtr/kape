@@ -28,11 +28,17 @@ type ExecStream interface {
 // so the status FSM and prompt policy run without a cluster.
 type GatewayClient interface {
 	// CreateSandbox creates a sandbox running the given image with the named
-	// provider attached and the given resources. Returns the canonical name
-	// and gateway UUID.
-	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (sandboxName, sandboxID string, err error)
+	// provider attached, the given resources, stamped with the given
+	// ownership labels. Returns the canonical name and gateway UUID.
+	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (sandboxName, sandboxID string, err error)
 	// GetSandboxPhase polls the sandbox phase (used to detect READY and ERROR).
 	GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error)
+	// ListSandboxes returns the sandboxes matching the label selector
+	// ("k1=v1,k2=v2" format, per the gateway ListSandboxes API). The registry
+	// joins these with in-memory live state; controllers filter the result
+	// client-side too, so an empty selector result is never trusted as
+	// authoritative for foreign-sandbox exclusion.
+	ListSandboxes(ctx context.Context, labelSelector string) ([]SandboxInfo, error)
 	// DeleteSandbox deletes the sandbox.
 	DeleteSandbox(ctx context.Context, name string) error
 	// StartPi opens the interactive exec stream running the pi RPC wrapper.
@@ -41,6 +47,15 @@ type GatewayClient interface {
 	StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error)
 	// ApplyModelGatewayPolicy merges the model-gateway egress rule for the sandbox.
 	ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error
+}
+
+// SandboxInfo is the registry's view of one gateway sandbox: the fields
+// needed to join gateway state with the in-memory agent map.
+type SandboxInfo struct {
+	Name   string
+	ID     string
+	Phase  v1.SandboxPhase
+	Labels map[string]string
 }
 
 // Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
@@ -54,10 +69,12 @@ func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
 }
 
 // CreateSandbox creates a sandbox running the pi image with the named
-// provider attached and the requested resources. Returns name and id.
-func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (string, string, error) {
+// provider attached, the requested resources, stamped with the ownership
+// labels (managed-by, agent-id) that back the label registry. Returns name and id.
+func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (string, string, error) {
 	req := &v1.CreateSandboxRequest{
-		Name: name,
+		Name:   name,
+		Labels: labels,
 		Spec: &v1.SandboxSpec{
 			Providers: []string{provider},
 			Template: &v1.SandboxTemplate{
@@ -85,6 +102,36 @@ func (g *Gateway) GetSandboxPhase(ctx context.Context, name string) (v1.SandboxP
 		return v1.SandboxPhase_SANDBOX_PHASE_UNSPECIFIED, err
 	}
 	return resp.Sandbox.Status.Phase, nil
+}
+
+// ListSandboxes pages the gateway ListSandboxes API with the given label
+// selector and flattens it into SandboxInfo values.
+func (g *Gateway) ListSandboxes(ctx context.Context, labelSelector string) ([]SandboxInfo, error) {
+	var out []SandboxInfo
+	offset := uint32(0)
+	const pageSize = uint32(100)
+	for {
+		resp, err := g.client.ListSandboxes(ctx, &v1.ListSandboxesRequest{
+			LabelSelector: labelSelector,
+			Limit:         pageSize,
+			Offset:        offset,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ListSandboxes: %w", err)
+		}
+		for _, sb := range resp.GetSandboxes() {
+			md := sb.GetMetadata()
+			labels := md.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			out = append(out, SandboxInfo{Name: md.GetName(), ID: md.GetId(), Phase: sb.GetStatus().GetPhase(), Labels: labels})
+		}
+		if uint32(len(resp.GetSandboxes())) < pageSize {
+			return out, nil
+		}
+		offset += pageSize
+	}
 }
 
 // WaitReady polls until the sandbox reaches READY (first image pull may take ~1min).

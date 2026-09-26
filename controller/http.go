@@ -19,7 +19,8 @@ import (
 // NewRouter wires the agent API (domain language: sandbox agent, never session):
 //
 //	POST   /agents                 -> create sandbox + pi agent, return {id,...,status}
-//	GET    /agents/{id}            -> agent detail incl. status
+//	GET    /agents                 -> list_agents: owned sandboxes joined with live state
+//	GET    /agents/{id}            -> agent detail incl. status (live or CR-derived)
 //	POST   /agents/{id}/prompt     {"message": ...} -> 202 (409 if turn in flight)
 //	POST   /agents/{id}/abort      -> stop the in-flight turn
 //	GET    /agents/{id}/events     -> SSE: buffered replay then live
@@ -50,15 +51,23 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			}
 			return
 		}
-		writeJSON(w, http.StatusCreated, agentViewOf(agent))
+		writeJSON(w, http.StatusCreated, agent.agentView())
 	})
-	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
-		agent := mgr.Get(r.PathValue("id"))
-		if agent == nil {
-			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
+	mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
+		views, err := mgr.List(r.Context())
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, agentViewOf(agent))
+		writeJSON(w, http.StatusOK, views)
+	})
+	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		view, err := mgr.GetView(r.Context(), r.PathValue("id"))
+		if err != nil {
+			httpError(w, statusForErr(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
 	})
 	mux.HandleFunc("POST /agents/{id}/prompt", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -118,17 +127,9 @@ func NewRouter(mgr *AgentManager) http.Handler {
 	return mux
 }
 
-// agentView is the JSON shape for create and get responses.
-type agentView struct {
-	ID      string      `json:"id"`
-	Sandbox string      `json:"sandbox"`
-	Status  AgentStatus `json:"status"`
-	Created interface{} `json:"created"`
-}
-
-func agentViewOf(a *Agent) agentView {
-	return agentView{a.ID, a.Sandbox, a.Status(), a.Created}
-}
+// agentView type lives in registry.go (AgentView): the joined registry record
+// used by list and get, with a source field distinguishing live from
+// CR-derived (post-restart) views.
 
 // statusForErr maps manager errors to HTTP status: validation (field-named)
 // → 400, unknown agent → 404, prompt policy (turn in flight / not in an

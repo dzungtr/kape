@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,9 +25,7 @@ func newMCPClientSession(t *testing.T) (*mcp.ClientSession, *AgentManager, *Fake
 	gw.SetStream(stream)
 	mgr := NewAgentManager(gw, testConfig())
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "kape-controller-test", Version: "v1"}, nil)
-	_ = server // tools are added by NewMCPServer; rebuild via it:
-	server = NewMCPServer(mgr)
+	server := NewMCPServer(mgr)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-host", Version: "v1"}, nil)
 	ct, st := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -75,8 +74,48 @@ func callTool[In any, Out any](t *testing.T, cs *mcp.ClientSession, name string,
 	return out
 }
 
+// toolContract maps each REST verb to the shared Go struct its MCP tool
+// input mirrors — the params half of the contract-equality gate. Fields with
+// json:"...,omitempty" are optional; all others are required.
+var toolContract = map[string]any{
+	"create_agent":  CreateProfile{},
+	"get_agent":     agentIDInput{},
+	"prompt_agent":  promptInput{},
+	"abort":         agentIDInput{},
+	"stream_events": streamEventsInput{},
+	"read_events":   readEventsInput{},
+	"delete_agent":  agentIDInput{},
+	"list_agents":   struct{}{},
+}
+
+// structParams extracts (properties, required) from a shared input struct's
+// json tags, mirroring the SDK's schema generation rules.
+func structParams(v any) (props, required map[string]bool) {
+	props, required = map[string]bool{}, map[string]bool{}
+	ty := reflect.TypeOf(v)
+	for ty.Kind() == reflect.Ptr {
+		ty = ty.Elem()
+	}
+	for i := 0; i < ty.NumField(); i++ {
+		f := ty.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name := strings.Split(f.Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		props[name] = true
+		if !strings.Contains(f.Tag.Get("json"), ",omitempty") {
+			required[name] = true
+		}
+	}
+	return props, required
+}
+
 // TestMCPToolListMatchesRESTContract is the mandatory contract-equality
-// assertion: the MCP tool list (names) equals the REST verb set exactly.
+// assertion: the MCP tool list equals the REST verb set exactly, and each
+// tool's input schema matches the params of its shared REST twin struct.
 func TestMCPToolListMatchesRESTContract(t *testing.T) {
 	cs, _, _, _ := newMCPClientSession(t)
 	res, err := cs.ListTools(context.Background(), nil)
@@ -97,6 +136,46 @@ func TestMCPToolListMatchesRESTContract(t *testing.T) {
 		}
 		delete(got, verb)
 	}
+
+	// Params equality: each tool's input schema must match the shared struct.
+	for _, tool := range res.Tools {
+		wantProps, wantReq := structParams(toolContract[tool.Name])
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+			Required   []string                   `json:"required"`
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s schema: %v", tool.Name, err)
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("unmarshal %s schema: %v", tool.Name, err)
+		}
+		gotProps := map[string]bool{}
+		for p := range schema.Properties {
+			gotProps[p] = true
+		}
+		if len(gotProps) != len(wantProps) {
+			t.Fatalf("%s params %v do not match shared struct params %v", tool.Name, gotProps, wantProps)
+		}
+		for p := range wantProps {
+			if !gotProps[p] {
+				t.Fatalf("%s missing param %q from shared struct", tool.Name, p)
+			}
+		}
+		gotReq := map[string]bool{}
+		for _, r := range schema.Required {
+			gotReq[r] = true
+		}
+		if len(gotReq) != len(wantReq) {
+			t.Fatalf("%s required params %v do not match shared struct required %v", tool.Name, schema.Required, wantReq)
+		}
+		for r := range wantReq {
+			if !gotReq[r] {
+				t.Fatalf("%s required params missing %q from shared struct", tool.Name, r)
+			}
+		}
+	}
 }
 
 // TestMCPCreateAndGetAgentTool round-trips create_agent and get_agent and
@@ -104,7 +183,7 @@ func TestMCPToolListMatchesRESTContract(t *testing.T) {
 func TestMCPCreateAndGetAgentTool(t *testing.T) {
 	cs, mgr, gw, _ := newMCPClientSession(t)
 
-	view := callTool[CreateProfile, agentView](t, cs, "create_agent", CreateProfile{Model: "m1"})
+	view := callTool[CreateProfile, AgentView](t, cs, "create_agent", CreateProfile{Model: "m1"})
 	if view.ID == "" || view.Status != StatusReady {
 		t.Fatalf("create_agent view = %+v, want id + status ready", view)
 	}
@@ -112,7 +191,7 @@ func TestMCPCreateAndGetAgentTool(t *testing.T) {
 		t.Fatalf("create_agent did not pass model to StartPi: %v", gw.PiModels())
 	}
 
-	got := callTool[agentIDInput, agentView](t, cs, "get_agent", agentIDInput{AgentID: view.ID})
+	got := callTool[agentIDInput, AgentView](t, cs, "get_agent", agentIDInput{AgentID: view.ID})
 	if got.ID != view.ID || got.Sandbox != view.Sandbox || got.Status != StatusReady {
 		t.Fatalf("get_agent = %+v, want same agent as create", got)
 	}
@@ -285,5 +364,23 @@ func TestMCPMountedOnRouter(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code == http.StatusNotFound {
 		t.Fatalf("/mcp not mounted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMCPListAgentsTool covers the list_agents call path: an agent created
+// via the MCP create tool appears in the list with a live view.
+func TestMCPListAgentsTool(t *testing.T) {
+	cs, _, _, _ := newMCPClientSession(t)
+
+	view := callTool[CreateProfile, AgentView](t, cs, "create_agent", CreateProfile{Model: "m1"})
+	list := callTool[struct{}, []AgentView](t, cs, "list_agents", struct{}{})
+	if len(list) != 1 {
+		t.Fatalf("list_agents = %+v, want the created agent", list)
+	}
+	if list[0].ID != view.ID || list[0].Sandbox != view.Sandbox || list[0].Status != StatusReady {
+		t.Fatalf("list_agents[0] = %+v, want same agent as create (%+v)", list[0], view)
+	}
+	if list[0].Source != SourceLive {
+		t.Fatalf("list_agents[0].Source = %q, want %q", list[0].Source, SourceLive)
 	}
 }
