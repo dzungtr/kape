@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-option go_package = "github.com/dzungtr/kape/prototype/m1-controller/gen;v1";
+option go_package = "github.com/dzungtr/kape/controller/gen;v1";
 
 package openshell.datamodel.v1;
 

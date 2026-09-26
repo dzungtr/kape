@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	v1 "github.com/dzungtr/kape/prototype/m1-controller/gen"
+	v1 "github.com/dzungtr/kape/controller/gen"
 )
 
 // Session owns one sandbox + one pi RPC process (the exec stream).
