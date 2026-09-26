@@ -110,7 +110,7 @@ func TestAbortStopsTurnButStreamStaysOpen(t *testing.T) {
 	waitFor(t, func() bool { return agent.Status() == StatusReady }, "settle after abort")
 
 	evs := agent.hub.Events()
-	last := string(evs[len(evs)-1])
+	last := string(evs[len(evs)-1].Data)
 	if last != `{"type":"agent_settled"}` {
 		t.Fatalf("last event = %s, want verbatim agent_settled record", last)
 	}
@@ -163,7 +163,7 @@ func TestDeleteMarksTerminatedAndDeletesSandbox(t *testing.T) {
 	}
 	// agent.terminated lifecycle event is on the (closed) event stream.
 	evs := agent.hub.Events()
-	last := string(evs[len(evs)-1])
+	last := string(evs[len(evs)-1].Data)
 	if !contains(last, `"type":"agent.terminated"`) {
 		t.Fatalf("last event = %s, want agent.terminated lifecycle event", last)
 	}
@@ -189,8 +189,10 @@ func isErrTurnInFlight(err error) bool {
 	return errors.Is(err, ErrTurnInFlight)
 }
 
-// streamSent waits for stdinPump to drain the agent's stdin queue, then
-// returns the payloads the FakeStream observed.
+// streamSent waits for stdinPump to drain the agent's stdin queue and for
+// the sent-payload count to settle across two samples (the pump dequeues
+// before recording, so queue-empty alone is not sufficient), then returns
+// the payloads the FakeStream observed.
 func streamSent(t *testing.T, gw *FakeGateway, a *Agent) [][]byte {
 	t.Helper()
 	// Wait until the stdin pump has recorded at least one payload on the
@@ -218,8 +220,8 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 
 func assertLifecycleEvent(t *testing.T, a *Agent, eventType string) {
 	t.Helper()
-	for _, raw := range a.hub.Events() {
-		if contains(string(raw), `"`+eventType+`"`) {
+	for _, ev := range a.hub.Events() {
+		if contains(string(ev.Data), `"`+eventType+`"`) {
 			return
 		}
 	}
