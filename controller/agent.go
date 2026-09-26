@@ -158,33 +158,42 @@ func (h *EventHub) Events() []json.RawMessage {
 // creating → ready ⇄ working, and → failed | terminated. The gateway client
 // is behind GatewayClient so FSM tests run against a fake.
 type AgentManager struct {
-	mu       sync.Mutex
-	agents   map[string]*Agent
-	gw       GatewayClient
-	provider string
-	image    string
+	mu     sync.Mutex
+	agents map[string]*Agent
+	gw     GatewayClient
+	cfg    Config
 }
 
-func NewAgentManager(gw GatewayClient, provider, image string) *AgentManager {
-	return &AgentManager{agents: map[string]*Agent{}, gw: gw, provider: provider, image: image}
+func NewAgentManager(gw GatewayClient, cfg Config) *AgentManager {
+	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg}
 }
 
-// Create provisions a sandbox, waits for READY, applies the model-gateway
-// egress policy, then opens the long-lived pi exec stream. On success the
-// agent is StatusReady; on any failure the sandbox is deleted and an error
-// returned. A phase-poll goroutine watches for ERROR phases and a pi-pump
+// Create provisions a sandbox for the (possibly partial) profile override
+// set, waits for READY, applies the model-gateway egress policy, then opens
+// the long-lived pi exec stream. Validation happens BEFORE any gateway call,
+// so a rejected create never leaks a sandbox. On later (gateway) failure the
+// sandbox is deleted and an error returned. On success the agent is
+// StatusReady; a phase-poll goroutine watches for ERROR phases and a pi-pump
 // goroutine watches the exec stream for the agent's lifetime.
-func (m *AgentManager) Create(ctx context.Context) (*Agent, error) {
+func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Agent, error) {
+	resolved, err := m.cfg.ResolveProfile(profile)
+	if err != nil {
+		return nil, err
+	}
 	id := randID("agent")
-	name := "sbx-" + id
+	if resolved.Name == "" {
+		resolved.Name = "sbx-" + id
+	}
+	name := resolved.Name
 	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: NewEventHub(), gw: m.gw, mgr: m}
 
 	agent.mu.Lock()
 	agent.status = StatusCreating
 	agent.mu.Unlock()
-	log.Printf("[agent %s] creating sandbox %s (image %s, provider %s)", id, name, m.image, m.provider)
+	log.Printf("[agent %s] creating sandbox %s (image %s, provider %s, cpu %s, memory %s, model %q)",
+		id, name, resolved.Image, resolved.Provider, resolved.Resources.CPU, resolved.Resources.Memory, resolved.Model)
 
-	_, sbID, err := m.gw.CreateSandbox(ctx, name, m.image, m.provider)
+	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +209,7 @@ func (m *AgentManager) Create(ctx context.Context) (*Agent, error) {
 		return nil, fmt.Errorf("apply network policy: %w", err)
 	}
 
-	if err := m.startPi(agent); err != nil {
+	if err := m.startPi(agent, resolved.Model); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, err
 	}
@@ -369,10 +378,10 @@ func errNotReady(id string, s AgentStatus) error {
 }
 
 // startPi opens the exec stream and spawns the read/write/phase pumps.
-func (m *AgentManager) startPi(agent *Agent) error {
+func (m *AgentManager) startPi(agent *Agent, model string) error {
 	// Agent lifetime == exec stream lifetime: one context per agent.
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := m.gw.StartPi(ctx, agent.sandboxID)
+	stream, err := m.gw.StartPi(ctx, agent.sandboxID, model)
 	if err != nil {
 		cancel()
 		return err

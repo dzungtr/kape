@@ -20,10 +20,10 @@ func newTestAgent(t *testing.T) (*AgentManager, *FakeGateway, *FakeStream, *Agen
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, "openrouter-spike", "pi-image")
+	mgr := NewAgentManager(gw, testConfig())
 
 	// Sandbox must be READY by the time the phase poll starts.
-	agent, err := mgr.Create(context.Background())
+	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -193,12 +193,11 @@ func isErrTurnInFlight(err error) bool {
 // returns the payloads the FakeStream observed.
 func streamSent(t *testing.T, gw *FakeGateway, a *Agent) [][]byte {
 	t.Helper()
+	// Wait until the stdin pump has recorded at least one payload on the
+	// fake stream: len(stdin)==0 does not prove the pump has run yet.
 	for i := 0; i < 50; i++ {
-		a.mu.Lock()
-		n := len(a.stdin)
-		a.mu.Unlock()
-		if n == 0 {
-			break
+		if got := gw.stream.SentPayloads(); len(got) > 0 {
+			return got
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

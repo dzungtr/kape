@@ -20,6 +20,8 @@ type FakeGateway struct {
 	initialPhase v1.SandboxPhase
 	deleted      []string
 	created      []string
+	requests     []CreateRequest
+	piModels     []string
 	// stream, if set, is returned by every StartPi call.
 	stream *FakeStream
 }
@@ -31,12 +33,30 @@ func NewFakeGateway() *FakeGateway {
 	}
 }
 
-func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string) (string, string, error) {
+func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, name)
+	f.requests = append(f.requests, CreateRequest{Name: name, Image: image, Provider: provider, Resources: resources})
 	f.phase[name] = f.initialPhase
 	return name, "uuid-" + name, nil
+}
+
+// CreateRequest records one CreateSandbox call for assertions on overrides.
+type CreateRequest struct {
+	Name      string
+	Image     string
+	Provider  string
+	Resources Resources
+}
+
+// CreatedRequests returns the recorded CreateSandbox requests.
+func (f *FakeGateway) CreatedRequests() []CreateRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]CreateRequest, len(f.requests))
+	copy(out, f.requests)
+	return out
 }
 
 func (f *FakeGateway) GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error) {
@@ -70,13 +90,23 @@ func (f *FakeGateway) SetStream(s *FakeStream) {
 	f.stream = s
 }
 
-func (f *FakeGateway) StartPi(ctx context.Context, sandboxID string) (ExecStream, error) {
+func (f *FakeGateway) StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.piModels = append(f.piModels, model)
 	if f.stream == nil {
 		return nil, fmt.Errorf("no fake stream installed")
 	}
 	return f.stream, nil
+}
+
+// PiModels returns the model argument of each StartPi call (in order).
+func (f *FakeGateway) PiModels() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.piModels))
+	copy(out, f.piModels)
+	return out
 }
 
 func (f *FakeGateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error {

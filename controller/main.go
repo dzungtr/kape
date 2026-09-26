@@ -4,10 +4,10 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
-	"crypto/tls"
 	"net/http"
 	"os"
 	"time"
@@ -17,35 +17,36 @@ import (
 )
 
 func main() {
-	// Generous timeouts: first sandbox image pull may take ~1 minute.
-	gwEndpoint := flag.String("gateway", "127.0.0.1:32353", "OpenShell gateway host:port")
-	creds := flag.String("creds", os.Getenv("HOME")+"/.config/openshell/gateways/k8s/mtls", "mTLS creds dir (ca.crt/tls.crt/tls.key)")
-	listen := flag.String("listen", ":8081", "HTTP listen address")
-	providerName := flag.String("provider", "openrouter-spike", "OpenShell provider name attached to sandboxes")
-	sandboxImage := flag.String("image", "ghcr.io/dzungtr/pi-openshell:openrouter", "sandbox OCI image")
+	// Config resolution: compiled defaults → KAPE_* env → flags (flags win).
+	cfg := ConfigFromEnv()
+	cfg.RegisterFlags(flag.CommandLine)
 	flag.Parse()
-
-	tlsCfg, err := loadMtlsConfig(*creds)
-	if err != nil {
-		log.Fatalf("load mTLS creds from %s: %v", *creds, err)
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid config: %v", err)
 	}
-	conn, err := grpc.NewClient(*gwEndpoint,
+
+	tlsCfg, err := loadMtlsConfig(cfg.CredsDir)
+	if err != nil {
+		log.Fatalf("load mTLS creds from %s: %v", cfg.CredsDir, err)
+	}
+	conn, err := grpc.NewClient(cfg.GatewayAddr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithIdleTimeout(0),
 	)
 	if err != nil {
-		log.Fatalf("grpc dial %s: %v", *gwEndpoint, err)
+		log.Fatalf("grpc dial %s: %v", cfg.GatewayAddr, err)
 	}
-	gw := NewGateway(conn)
+	gw := NewGateway(conn, cfg.ModelGatewayURL)
 
-	mgr := NewAgentManager(gw, *providerName, *sandboxImage)
+	mgr := NewAgentManager(gw, cfg)
 	srv := &http.Server{
-		Addr:              *listen,
+		Addr:              cfg.ListenAddr,
 		Handler:           NewRouter(mgr),
 		ReadHeaderTimeout: 30 * time.Second,
 		// No overall timeouts: SSE streams are long-lived.
 	}
-	log.Printf("controller listening on %s (gateway %s, sandbox image %s)", *listen, *gwEndpoint, *sandboxImage)
+	log.Printf("controller listening on %s (gateway %s, sandbox image %s, provider %s, model gateway %s)",
+		cfg.ListenAddr, cfg.GatewayAddr, cfg.DefaultImage, cfg.DefaultProvider, cfg.ModelGatewayURL)
 	log.Fatal(srv.ListenAndServe())
 }
 
