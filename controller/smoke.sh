@@ -47,8 +47,14 @@ cleanup() {
     # belt and braces: delete any sandbox carrying the controller ownership label
     kubectl delete sandbox -A -l managed-by=kape-controller --ignore-not-found >/dev/null 2>&1 || true
     sleep 2
-    local remaining; remaining=$(kubectl get sandbox -A --no-headers 2>/dev/null | wc -l)
-    if [ "$remaining" -eq 0 ]; then
+    local remaining
+    if ! remaining=$(kubectl get sandbox -A --no-headers 2>/dev/null); then
+        echo "FAIL: teardown kubectl get sandbox failed — cannot verify zero CRs"; kubectl get sandbox -A 2>&1; rc=1
+        remaining=UNKNOWN
+    else
+        remaining=$(echo "$remaining" | grep -c . || true)
+    fi
+    if [ "$remaining" = 0 ]; then
         echo "PASS: teardown leaves zero Sandbox CRs"
     else
         echo "FAIL: teardown leaves $remaining Sandbox CRs:"; kubectl get sandbox -A; rc=1
@@ -63,6 +69,7 @@ trap cleanup EXIT
 # --- preflight -------------------------------------------------------------
 note "preflight"
 command -v kubectl >/dev/null || { echo "kubectl required"; exit 1; }
+command -v nc >/dev/null || { echo "nc required"; exit 1; }
 nc -z 127.0.0.1 32353 || { echo "gateway 127.0.0.1:32353 not reachable"; exit 1; }
 kubectl get provider -A 2>/dev/null | grep -q openrouter-spike \
     || openshell provider list 2>/dev/null | grep -q openrouter-spike \
@@ -83,7 +90,7 @@ for i in $(seq 1 20); do
     [ "$(http_code "$BASE/agents")" = "200" ] && break
     sleep 0.5
 done
-[ "$(http_code "$BASE/agents")" = "200" ] || { echo "controller did not start"; cat /tmp/kape-smoke-controller.log; exit 1; }
+[ "$(http_code "$BASE/agents")" = "200" ] || { echo "controller did not start"; cat "$NOTE/controller.log"; exit 1; }
 pass "controller up on $BASE"
 
 # --- 1. create agent, default profile --------------------------------------
@@ -237,7 +244,8 @@ CREATED_IDS=()
 assert "get after delete is 404" "[ '$(http_code "$BASE/agents/$ID1")' = '404' ]"
 assert "list empty after delete" "[ \"\$(curl -s "$BASE/agents" | jqpy 'len(d)')\" = '0' ]"
 sleep 3
-assert "zero Sandbox CRs after delete" "[ \"\$(kubectl get sandbox -A --no-headers 2>/dev/null | wc -l)\" = '0' ]"
+KOUT=$(kubectl get sandbox -A --no-headers 2>/dev/null); KRC=$?
+assert "zero Sandbox CRs after delete" "[ '$KRC' = '0' ] && [ \"\$(echo \"\$KOUT\" | grep -c . )\" = '0' ]"
 
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0
