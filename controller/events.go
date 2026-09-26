@@ -135,9 +135,17 @@ type ReadResult struct {
 // to limit — the primary cursor mode: bounded batches with no gaps and no
 // duplicates across polls.
 func (h *EventHub) Read(after uint64, limit int, types []string) ReadResult {
+	return h.ReadFiltered(after, limit, types, nil)
+}
+
+// ReadFiltered is Read with an exclusion set: events whose type is in
+// exclude are dropped before the limit is applied, so the MCP read_events
+// tool's non-delta default (exclude text_delta) still yields full batches of
+// matching events — never short ones.
+func (h *EventHub) ReadFiltered(after uint64, limit int, types, exclude []string) ReadResult {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return ReadResult{Events: filterEvents(h.buffer, after, limit, types), Truncated: h.evicted > 0}
+	return ReadResult{Events: filterEventsExcluding(h.buffer, after, limit, types, exclude), Truncated: h.evicted > 0}
 }
 
 // ReadLast returns the final n events (after types filtering) — the REST-only
@@ -155,14 +163,24 @@ func (h *EventHub) ReadLast(n int, types []string) ReadResult {
 // filterEvents selects seq > after matching types, up to limit (0 = no
 // bound). Caller holds h.mu.
 func filterEvents(buffer []Event, after uint64, limit int, types []string) []Event {
+	return filterEventsExcluding(buffer, after, limit, types, nil)
+}
+
+// filterEventsExcluding is filterEvents with an exclusion set (empty = no
+// exclusions). Caller holds h.mu.
+func filterEventsExcluding(buffer []Event, after uint64, limit int, types, exclude []string) []Event {
 	wanted := map[string]bool{}
 	for _, t := range types {
 		wanted[t] = true
 	}
+	excluded := map[string]bool{}
+	for _, t := range exclude {
+		excluded[t] = true
+	}
 	var out []Event
 	for i := range buffer {
 		ev := &buffer[i]
-		if ev.Seq <= after {
+		if ev.Seq <= after || excluded[ev.Type] {
 			continue
 		}
 		if len(wanted) > 0 && !wanted[ev.Type] {
@@ -183,6 +201,13 @@ func (h *EventHub) Events() []Event {
 	out := make([]Event, len(h.buffer))
 	copy(out, h.buffer)
 	return out
+}
+
+// Truncated reports whether any events have been evicted from the ring.
+func (h *EventHub) Truncated() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.evicted > 0
 }
 
 // eventTypeOf extracts the "type" field of a JSON object record, if any.
