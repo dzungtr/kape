@@ -18,6 +18,44 @@ Verified against the locally installed pi (0.87.1,
   session becomes idle. Queued steering/followUp messages continue unless
   `clear_queue` is sent first (not done in v1).
 
+## MCP transport
+
+The same eight-tool contract is exposed as MCP tools on **Streamable HTTP**
+at `/mcp`, on the same port and process as REST — one Tailscale ingress
+route serves both surfaces. Tools are thin wrappers over the shared
+AgentManager/EventHub handler core: one implementation per verb, two
+transports. Tool semantics, parameters, and error meanings match the REST
+verbs exactly (validation failures name the field; unknown agent and turn
+in-flight surface as MCP tool errors mirroring REST 404/409).
+
+| MCP tool | REST twin | Notes |
+|---|---|---|
+| `create_agent` | `POST /agents` | profile overrides validated pre-gateway (#177 rules) |
+| `get_agent` | `GET /agents/{id}` | |
+| `prompt_agent` | `POST /agents/{id}/prompt` | 409-equivalent tool error when a turn is in flight |
+| `abort` | `POST /agents/{id}/abort` | |
+| `stream_events` | `GET /agents/{id}/events` (SSE) | over MCP this returns the buffered replay from the cursor as one batch — tool results cannot stream; live push uses REST SSE (`Last-Event-ID`/`after` re-attach) |
+| `read_events` | `GET /agents/{id}/events?after=…` | cursor+limit+types; **`text_delta` records excluded by default, `include_deltas` opt-in** |
+| `delete_agent` | `DELETE /agents/{id}` | |
+| `list_agents` | `GET /agents` | **arrives with the label-registry slice (#175, PR #182)** — added to both transports then |
+
+`last=N` remains a REST-only convenience and is never an MCP tool (spec
+#172). A contract-equality test asserts the MCP tool list equals the REST
+verb set.
+
+### MCP SDK choice (spec #172 UNVERIFIED — resolved)
+
+The official **`github.com/modelcontextprotocol/go-sdk` v1.8.0** is used.
+Rationale: verified live at implementation time — it is on a stable 1.x
+line (past the 1.0 API stabilization), provides first-class Streamable HTTP
+server *and* client transports, generates input/output JSON Schemas from Go
+structs, and offers typed tool handlers with automatic schema validation.
+The documented fallback (`mark3labs/mcp-go`) was not needed. Consequence:
+MCP tool results are validated against generated output schemas, so the
+event-bearing tools (`read_events`, `stream_events`) declare `any` outputs
+(event `data` payloads are verbatim pi records of varying shape) while still
+returning the same structured JSON as REST.
+
 ## Setup
 
 Prereqs: microk8s cluster with the OpenShell gateway deployed (v0.0.116), mTLS

@@ -35,6 +35,11 @@ const (
 // agent_settled, the agent is idle and may accept another prompt.
 const piSettledEventType = "agent_settled"
 
+// textDeltaEventType is the pi RPC record type carrying streamed answer
+// tokens. The MCP read_events tool excludes it by default (include_deltas
+// opt-in) so host-agent context grows per turn, not per token.
+const textDeltaEventType = "text_delta"
+
 // piAbortCommand is the pi RPC abort command (verified against local pi
 // 0.87.1 docs, @earendil-works/pi-coding-agent docs/rpc-commands.md §abort):
 // a bare object with no id field; pi replies {"type":"response",
