@@ -47,6 +47,81 @@ func TestCreateProvisionsAndReachesReady(t *testing.T) {
 	}
 }
 
+// TestDefaultSandboxNameWithinGatewayCap guards the OpenShell gateway's
+// sandbox-name cap (19 chars): the derived default must be accepted by the
+// gateway without an explicit name override (issue #179 live smoke).
+func TestDefaultSandboxNameWithinGatewayCap(t *testing.T) {
+	gw := NewFakeGateway()
+	stream := NewFakeStream()
+	gw.SetStream(stream)
+	mgr := NewAgentManager(gw, testConfig())
+
+	for i := 0; i < 10; i++ {
+		agent, err := mgr.Create(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if len(agent.Sandbox) > 19 {
+			t.Fatalf("default sandbox name %q exceeds the 19-char gateway cap", agent.Sandbox)
+		}
+		mgr.Delete(context.Background(), agent.ID)
+	}
+}
+
+// TestNonJSONStdoutLineIsWrapped: a non-JSON stdout line must be wrapped, not
+// published raw — one invalid record in the buffer made every read_events
+// batch fail to encode (empty 200s, found by the #179 live smoke).
+func TestNonJSONStdoutLineIsWrapped(t *testing.T) {
+	gw := NewFakeGateway()
+	stream := NewFakeStream()
+	gw.SetStream(stream)
+	mgr := NewAgentManager(gw, testConfig())
+
+	agent, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stream.Deliver("(node:53) plain text warning\n")
+	stream.Deliver(`{"type":"agent_settled"}`)
+	mgr.Prompt(agent.ID, "hi")
+	waitFor(t, func() bool { return agent.Status() == StatusReady }, "settle")
+
+	for _, ev := range agent.hub.Events() {
+		if !json.Valid(ev.Data) {
+			t.Fatalf("event seq %d has invalid JSON data: %s", ev.Seq, ev.Data)
+		}
+	}
+	// the wrapped line stays visible, typed raw
+	var found bool
+	for _, ev := range agent.hub.Events() {
+		var rec map[string]interface{}
+		if json.Unmarshal(ev.Data, &rec) == nil && rec["type"] == "raw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("non-JSON line not wrapped as a raw record")
+	}
+}
+
+// TestNameValidationEnforcesGatewayCap: a 20-char name is a pre-gateway 400,
+// never a live gateway InvalidArgument.
+func TestNameValidationEnforcesGatewayCap(t *testing.T) {
+	gw := NewFakeGateway()
+	stream := NewFakeStream()
+	gw.SetStream(stream)
+	mgr := NewAgentManager(gw, testConfig())
+
+	_, err := mgr.Create(context.Background(), &CreateProfile{Name: "a2345678901234567890"})
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Field != "name" {
+		t.Fatalf("err = %v, want name field error", err)
+	}
+	if reqs := gw.CreatedRequests(); len(reqs) != 0 {
+		t.Fatalf("leaked %d sandboxes on rejected create", len(reqs))
+	}
+}
+
 func TestPromptPolicySecondPromptDuringTurnIsRejected(t *testing.T) {
 	mgr, _, stream, agent := newTestAgent(t)
 

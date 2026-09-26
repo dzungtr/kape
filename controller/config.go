@@ -76,7 +76,7 @@ type CreateProfile struct {
 
 // Validation rules (consumed by the MCP create tool and smoke tests):
 //   - name:        optional; DNS-1123 label, lowercase alphanumerics and '-',
-//     ≤63 chars, start/end alphanumeric
+//     ≤19 chars (OpenShell gateway sandbox-name cap), start/end alphanumeric
 //   - image:       optional; OCI-style reference with optional tag and
 //     sha256 digest, no whitespace or uppercase-host nonsense
 //   - resources:   optional; cpu/memory as Kubernetes quantities
@@ -93,8 +93,8 @@ var (
 // Validate checks only the fields the caller supplied; it never rejects an
 // empty field (that is what defaults are for). Each failure names its field.
 func (p *CreateProfile) Validate() error {
-	if p.Name != "" && !agentNameRe.MatchString(p.Name) {
-		return fieldErr("name", fmt.Sprintf("%q must be a lowercase DNS label (alphanumerics and '-', ≤63 chars)", p.Name))
+	if p.Name != "" && (len(p.Name) > 19 || !agentNameRe.MatchString(p.Name)) {
+		return fieldErr("name", fmt.Sprintf("%q must be a lowercase DNS label (alphanumerics and '-', ≤19 chars — OpenShell gateway cap)", p.Name))
 	}
 	if p.Image != "" {
 		if strings.ContainsAny(p.Image, " \t\n") || !imageRefRe.MatchString(p.Image) {
