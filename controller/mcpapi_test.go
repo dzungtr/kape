@@ -373,7 +373,7 @@ func TestMCPListAgentsTool(t *testing.T) {
 	cs, _, _, _ := newMCPClientSession(t)
 
 	view := callTool[CreateProfile, AgentView](t, cs, "create_agent", CreateProfile{Model: "m1"})
-	list := callTool[struct{}, []AgentView](t, cs, "list_agents", struct{}{})
+	list := callTool[struct{}, listAgentsOutput](t, cs, "list_agents", struct{}{}).Agents
 	if len(list) != 1 {
 		t.Fatalf("list_agents = %+v, want the created agent", list)
 	}
