@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"time"
@@ -28,30 +28,34 @@ type ExecStream interface {
 // so the status FSM and prompt policy run without a cluster.
 type GatewayClient interface {
 	// CreateSandbox creates a sandbox running the given image with the named
-	// provider attached. Returns the canonical name and gateway UUID.
-	CreateSandbox(ctx context.Context, name, image, provider string) (sandboxName, sandboxID string, err error)
+	// provider attached and the given resources. Returns the canonical name
+	// and gateway UUID.
+	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (sandboxName, sandboxID string, err error)
 	// GetSandboxPhase polls the sandbox phase (used to detect READY and ERROR).
 	GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error)
 	// DeleteSandbox deletes the sandbox.
 	DeleteSandbox(ctx context.Context, name string) error
 	// StartPi opens the interactive exec stream running the pi RPC wrapper.
-	StartPi(ctx context.Context, sandboxID string) (ExecStream, error)
+	// model ("" = leave the image's default model) is patched into
+	// models.json and exported as PI_MODEL.
+	StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error)
 	// ApplyModelGatewayPolicy merges the model-gateway egress rule for the sandbox.
 	ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error
 }
 
 // Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
 type Gateway struct {
-	client v1.OpenShellClient
+	client          v1.OpenShellClient
+	modelGatewayURL string // base URL patched into the pi wrapper's models.json
 }
 
-func NewGateway(conn *grpc.ClientConn) *Gateway {
-	return &Gateway{client: v1.NewOpenShellClient(conn)}
+func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
+	return &Gateway{client: v1.NewOpenShellClient(conn), modelGatewayURL: modelGatewayURL}
 }
 
 // CreateSandbox creates a sandbox running the pi image with the named
-// provider attached and modest resources. Returns the canonical name and id.
-func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string) (string, string, error) {
+// provider attached and the requested resources. Returns name and id.
+func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (string, string, error) {
 	req := &v1.CreateSandboxRequest{
 		Name: name,
 		Spec: &v1.SandboxSpec{
@@ -60,8 +64,8 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 				Image: image,
 				Resources: &structpb.Struct{
 					Fields: map[string]*structpb.Value{
-						"cpu":    structpb.NewStringValue("1"),
-						"memory": structpb.NewStringValue("2Gi"),
+						"cpu":    structpb.NewStringValue(resources.CPU),
+						"memory": structpb.NewStringValue(resources.Memory),
 					},
 				},
 			},
@@ -146,12 +150,17 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, id string) {
 
 // StartPi opens an interactive exec stream running the pi RPC wrapper and
 // returns the stream for later stdin writes.
-func (g *Gateway) StartPi(ctx context.Context, id string) (ExecStream, error) {
+func (g *Gateway) StartPi(ctx context.Context, id, model string) (ExecStream, error) {
 	// NOTE: provider-injected env is withheld by the gateway for unbound static
-// credentials (spike finding); the model gateway is unauthenticated, so we
-// inject the key via the exec environment directly.
-	req := &v1.ExecSandboxRequest{SandboxId: id, Command: piWrapperCommand(), Workdir: "/sandbox",
-		Environment: map[string]string{"OPENROUTER_API_KEY": "dummy"}}
+	// credentials (spike finding); the model gateway is unauthenticated, so we
+	// inject the key via the exec environment directly.
+	env := map[string]string{"OPENROUTER_API_KEY": "dummy"}
+	if model != "" {
+		env["PI_MODEL"] = model
+		env["PI_PROVIDER"] = "openrouter"
+	}
+	req := &v1.ExecSandboxRequest{SandboxId: id, Command: piWrapperCommand(g.modelGatewayURL, model), Workdir: "/sandbox",
+		Environment: env}
 	stream, err := g.client.ExecSandboxInteractive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ExecSandboxInteractive open: %w", err)
@@ -162,28 +171,30 @@ func (g *Gateway) StartPi(ctx context.Context, id string) (ExecStream, error) {
 	return stream, nil
 }
 
-// piWrapperCommand patches the pi models.json baseUrl to the in-cluster model
-// gateway (pi env-interpolates apiKey/headers but NOT baseUrl), then execs pi
-// in RPC mode.
-func piWrapperCommand() []string {
-	script := `set -e
+// piWrapperCommand patches the pi models.json: baseUrl to the configured
+// model-gateway URL (pi env-interpolates apiKey/headers but NOT baseUrl) and,
+// when a model override is requested, ensures that model id exists under
+// providers.openrouter.models. It then execs pi in RPC mode. The model id is
+// passed as argv to the python heredoc — never interpolated into the shell
+// text itself.
+func piWrapperCommand(modelGatewayURL, model string) []string {
+	script := fmt.Sprintf(`set -e
 cd /sandbox
 MODELS="${PI_CODING_AGENT_DIR:-/sandbox/.pi/agent}/models.json"
-if command -v python3 >/dev/null 2>&1; then
-  python3 - "$MODELS" <<'PYEOF'
+python3 - "$MODELS" %q <<'PYEOF'
 import json, sys
-p = sys.argv[1]
+p, model = sys.argv[1], sys.argv[2]
 with open(p) as f: m = json.load(f)
-m["providers"]["openrouter"]["baseUrl"] = "http://model-gateway-http.aperture.svc.cluster.local/v1"
+m["providers"]["openrouter"]["baseUrl"] = %q
+if model:
+    models = m["providers"]["openrouter"].setdefault("models", [])
+    if not any(e.get("id") == model for e in models):
+        models.append({"id": model})
 with open(p, "w") as f: json.dump(m, f, indent=2)
-print("patched baseUrl ->", m["providers"]["openrouter"]["baseUrl"])
+print("patched baseUrl ->", m["providers"]["openrouter"]["baseUrl"], "model ->", model or "(image default)")
 PYEOF
-else
-  sed -i 's|"baseUrl": *"[^"]*"|"baseUrl": "http://model-gateway-http.aperture.svc.cluster.local/v1"|' "$MODELS"
-  echo "patched baseUrl via sed"
-fi
 exec pi --mode rpc --no-session
-`
+`, model, modelGatewayURL)
 	return []string{"bash", "-lc", script}
 }
 

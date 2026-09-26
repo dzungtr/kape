@@ -21,9 +21,22 @@ import (
 func NewRouter(mgr *AgentManager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /agents", func(w http.ResponseWriter, r *http.Request) {
-		agent, err := mgr.Create(r.Context())
+		var profile CreateProfile
+		if r.ContentLength != 0 {
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&profile); err != nil {
+				httpFieldError(w, fieldErr("body", "must be an object with optional name, image, resources, provider, model"))
+				return
+			}
+		}
+		agent, err := mgr.Create(r.Context(), &profile)
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, err)
+			if errors.Is(err, ErrValidation) {
+				httpFieldError(w, err)
+			} else {
+				httpError(w, statusForErr(err), err)
+			}
 			return
 		}
 		writeJSON(w, http.StatusCreated, agentViewOf(agent))
@@ -98,12 +111,14 @@ func agentViewOf(a *Agent) agentView {
 	return agentView{a.ID, a.Sandbox, a.Status(), a.Created}
 }
 
-// statusForErr maps manager errors to HTTP status: unknown agent → 404,
-// prompt policy (turn in flight / not in an accepting state) → 409,
-// everything else → 500. Mapping is typed via sentinel errors, never
-// message text.
+// statusForErr maps manager errors to HTTP status: validation (field-named)
+// → 400, unknown agent → 404, prompt policy (turn in flight / not in an
+// accepting state) → 409, everything else → 500. Mapping is typed via
+// sentinel errors, never message text.
 func statusForErr(err error) int {
 	switch {
+	case errors.Is(err, ErrValidation):
+		return http.StatusBadRequest
 	case errors.Is(err, ErrUnknownAgent):
 		return http.StatusNotFound
 	case errors.Is(err, ErrTurnInFlight), errors.Is(err, ErrNotReady):
@@ -111,6 +126,18 @@ func statusForErr(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// httpFieldError writes a 400 naming the offending field so callers (REST
+// and the MCP create tool) can surface precise validation errors.
+func httpFieldError(w http.ResponseWriter, err error) {
+	var fe *FieldError
+	field := ""
+	if errors.As(err, &fe) {
+		field = fe.Field
+	}
+	log.Printf("[http] 400: %v", err)
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "field": field})
 }
 
 // serveSSE streams events as text/event-stream: buffered replay, then live.
