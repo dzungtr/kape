@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	v1 "github.com/dzungtr/kape/prototype/m1-controller/gen"
+	v1 "github.com/dzungtr/kape/controller/gen"
 )
 
 // Gateway wraps the OpenShell gRPC surface used by the spike.

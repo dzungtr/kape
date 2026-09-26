@@ -1,4 +1,4 @@
-module github.com/dzungtr/kape/prototype/m1-controller
+module github.com/dzungtr/kape/controller
 
 go 1.25.12
 

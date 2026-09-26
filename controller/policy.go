@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	v1 "github.com/dzungtr/kape/prototype/m1-controller/gen"
+	v1 "github.com/dzungtr/kape/controller/gen"
 	
 )
 
