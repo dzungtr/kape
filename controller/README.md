@@ -112,6 +112,13 @@ curl ──HTTP──▶ m1-controller (localhost:3000/8081)
                    FakeGateway for unit tests of the FSM + prompt policy
 ```
 
+FSM observability note: `creating` and `terminated` are not observable via
+`GET /agents/{id}` — the agent is only registered after it reaches `ready`,
+and DELETE removes it (subsequent GETs return 404). Both states are visible
+only on the SSE event stream (`agent.started`, `agent.terminated`) during
+v1's in-memory, no-DB design (see spec #172 user story 21 for restart
+semantics).
+
 Inside the sandbox the exec runs a bash wrapper that patches
 `providers.openrouter.baseUrl` in pi's `models.json` to the in-cluster model
 gateway (`http://model-gateway-http.aperture.svc.cluster.local/v1` — pi

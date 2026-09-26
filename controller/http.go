@@ -4,10 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 )
 
 // NewRouter wires the agent API (domain language: sandbox agent, never session):
@@ -26,7 +26,7 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			httpError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, agent)
+		writeJSON(w, http.StatusCreated, agentViewOf(agent))
 	})
 	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		agent := mgr.Get(r.PathValue("id"))
@@ -34,12 +34,7 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
 			return
 		}
-		writeJSON(w, http.StatusOK, struct {
-			ID      string      `json:"id"`
-			Sandbox string      `json:"sandbox"`
-			Status  AgentStatus `json:"status"`
-			Created interface{} `json:"created"`
-		}{agent.ID, agent.Sandbox, agent.Status(), agent.Created})
+		writeJSON(w, http.StatusOK, agentViewOf(agent))
 	})
 	mux.HandleFunc("POST /agents/{id}/prompt", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -91,21 +86,31 @@ func NewRouter(mgr *AgentManager) http.Handler {
 	return mux
 }
 
+// agentView is the JSON shape for create and get responses.
+type agentView struct {
+	ID      string      `json:"id"`
+	Sandbox string      `json:"sandbox"`
+	Status  AgentStatus `json:"status"`
+	Created interface{} `json:"created"`
+}
+
+func agentViewOf(a *Agent) agentView {
+	return agentView{a.ID, a.Sandbox, a.Status(), a.Created}
+}
+
 // statusForErr maps manager errors to HTTP status: unknown agent → 404,
-// in-flight prompt policy → 409, everything else → 500.
+// prompt policy (turn in flight / not in an accepting state) → 409,
+// everything else → 500. Mapping is typed via sentinel errors, never
+// message text.
 func statusForErr(err error) int {
-	if err == nil {
+	switch {
+	case errors.Is(err, ErrUnknownAgent):
+		return http.StatusNotFound
+	case errors.Is(err, ErrTurnInFlight), errors.Is(err, ErrNotReady):
+		return http.StatusConflict
+	default:
 		return http.StatusInternalServerError
 	}
-	// Sentinel-wrapped errors carry a distinguishable prefix.
-	msg := err.Error()
-	if strings.HasPrefix(msg, "unknown agent") {
-		return http.StatusNotFound
-	}
-	if strings.HasPrefix(msg, "agent ") && strings.Contains(msg, "turn in flight") {
-		return http.StatusConflict
-	}
-	return http.StatusInternalServerError
 }
 
 // serveSSE streams events as text/event-stream: buffered replay, then live.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -185,7 +186,7 @@ func contains(s, sub string) bool { return strings.Contains(s, sub) }
 func jsonUnmarshal(b []byte, v interface{}) error { return json.Unmarshal(b, v) }
 
 func isErrTurnInFlight(err error) bool {
-	return err != nil && contains(err.Error(), "turn in flight")
+	return errors.Is(err, ErrTurnInFlight)
 }
 
 // streamSent waits for stdinPump to drain the agent's stdin queue, then

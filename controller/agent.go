@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -247,11 +248,17 @@ func (m *AgentManager) Delete(ctx context.Context, id string) error {
 	delete(m.agents, id)
 	m.mu.Unlock()
 	if agent == nil {
-		return fmt.Errorf("unknown agent %q", id)
+		return errUnknownAgent(id)
 	}
 	if agent.cancel != nil {
 		agent.cancel()
 	}
+	// Close stdin under the agent lock so stdinPump exits instead of
+	// leaking on a stream that will never be read again. Safe: sendPrompt
+	// and Abort hold the same lock while sending.
+	agent.mu.Lock()
+	close(agent.stdin)
+	agent.mu.Unlock()
 	agent.setStatusAndEmit(StatusTerminated, "agent.terminated")
 	agent.hub.Close()
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
@@ -285,7 +292,7 @@ func (a *Agent) sendPrompt(message string) error {
 	case StatusReady:
 		// accepted below
 	default:
-		return fmt.Errorf("agent %s not ready (status %s)", a.ID, a.status)
+		return errNotReady(a.ID, a.status)
 	}
 	a.piSeq++
 	cmd := map[string]interface{}{
@@ -314,9 +321,13 @@ func (m *AgentManager) Abort(id string) error {
 		return errUnknownAgent(id)
 	}
 	if agent.Status() != StatusWorking {
-		return fmt.Errorf("agent %s has no turn in flight (status %s)", id, agent.Status())
+		return errNotReady(id, agent.Status())
 	}
 	raw, _ := json.Marshal(piAbortCommand{Type: "abort"})
+	// Hold the agent lock while sending so Delete cannot close stdin
+	// concurrently (send on a closed channel would panic).
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
 	select {
 	case agent.stdin <- append(raw, '\n'):
 		return nil
@@ -325,13 +336,23 @@ func (m *AgentManager) Abort(id string) error {
 	}
 }
 
-// errUnknownAgent / errTurnInFlight are sentinel errors transports map to
-// 404 and 409 respectively.
-func errUnknownAgent(id string) error { return fmt.Errorf("unknown agent %q", id) }
-func errTurnInFlight(id string) error {
-	return fmt.Errorf("agent %s has a turn in flight; abort or wait for settle", id)
-}
+// Transport-mappable sentinel errors: handlers test with errors.Is, never
+// by matching message text.
+var (
+	// ErrUnknownAgent: no agent with the given id is registered.
+	ErrUnknownAgent = errors.New("unknown agent")
+	// ErrTurnInFlight: a turn is already in flight; the prompt policy rejected it.
+	ErrTurnInFlight = errors.New("has a turn in flight; abort or wait for settle")
+	// ErrNotReady: the agent's FSM status does not permit the operation
+	// (prompt on a non-ready agent, abort without a turn in flight).
+	ErrNotReady = errors.New("agent not in a state permitting the operation")
+)
 
+func errUnknownAgent(id string) error { return fmt.Errorf("%w %q", ErrUnknownAgent, id) }
+func errTurnInFlight(id string) error { return fmt.Errorf("agent %s %w", id, ErrTurnInFlight) }
+func errNotReady(id string, s AgentStatus) error {
+	return fmt.Errorf("agent %s %w (status %s)", id, ErrNotReady, s)
+}
 
 // startPi opens the exec stream and spawns the read/write/phase pumps.
 func (m *AgentManager) startPi(agent *Agent) error {

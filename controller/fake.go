@@ -13,8 +13,8 @@ import (
 // transitions directly (SetPhase) and push exec events into the FakeStream
 // returned by StartPi.
 type FakeGateway struct {
-	mu      sync.Mutex
-	phase   map[string]v1.SandboxPhase
+	mu    sync.Mutex
+	phase map[string]v1.SandboxPhase
 	// initialPhase is the phase a newly created sandbox starts in; tests
 	// default it to READY so Create's waitReady loop returns immediately.
 	initialPhase v1.SandboxPhase
