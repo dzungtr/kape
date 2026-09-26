@@ -37,7 +37,7 @@ in-flight surface as MCP tool errors mirroring REST 404/409).
 | `stream_events` | `GET /agents/{id}/events` (SSE) | over MCP this returns the buffered replay from the cursor as one batch — tool results cannot stream; live push uses REST SSE (`Last-Event-ID`/`after` re-attach) |
 | `read_events` | `GET /agents/{id}/events?after=…` | cursor+limit+types; **`text_delta` records excluded by default, `include_deltas` opt-in** |
 | `delete_agent` | `DELETE /agents/{id}` | |
-| `list_agents` | `GET /agents` | **arrives with the label-registry slice (#175, PR #182)** — added to both transports then |
+| `list_agents` | `GET /agents` | gateway sandboxes carrying the `managed-by` ownership label, joined with live state; includes post-restart CR-derived views |
 
 `last=N` remains a REST-only convenience and is never an MCP tool (spec
 #172). A contract-equality test asserts the MCP tool list equals the REST

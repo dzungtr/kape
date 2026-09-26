@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
@@ -15,6 +16,13 @@ import (
 type FakeGateway struct {
 	mu    sync.Mutex
 	phase map[string]v1.SandboxPhase
+	// labels holds the labels stamped on each sandbox, keyed by name. Real
+	// gateways persist the CreateSandbox labels; the fake records them so
+	// registry tests can assert the ownership tags landed.
+	labels map[string]map[string]string
+	// ids overrides a sandbox's gateway UUID when seeded (SeedSandbox); the
+	// default is "uuid-<name>" as CreateSandbox returns.
+	ids map[string]string
 	// initialPhase is the phase a newly created sandbox starts in; tests
 	// default it to READY so Create's waitReady loop returns immediately.
 	initialPhase v1.SandboxPhase
@@ -29,16 +37,22 @@ type FakeGateway struct {
 func NewFakeGateway() *FakeGateway {
 	return &FakeGateway{
 		phase:        map[string]v1.SandboxPhase{},
+		labels:       map[string]map[string]string{},
+		ids:          map[string]string{},
 		initialPhase: v1.SandboxPhase_SANDBOX_PHASE_READY,
 	}
 }
 
-func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources) (string, string, error) {
+func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, name)
 	f.requests = append(f.requests, CreateRequest{Name: name, Image: image, Provider: provider, Resources: resources})
 	f.phase[name] = f.initialPhase
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	f.labels[name] = labels
 	return name, "uuid-" + name, nil
 }
 
@@ -56,6 +70,76 @@ func (f *FakeGateway) CreatedRequests() []CreateRequest {
 	defer f.mu.Unlock()
 	out := make([]CreateRequest, len(f.requests))
 	copy(out, f.requests)
+	return out
+}
+
+// SeedSandbox installs a pre-existing sandbox with the given labels and
+// phase — used to model foreign sandboxes and post-restart CR-derived state.
+func (f *FakeGateway) SeedSandbox(name, id string, labels map[string]string, phase v1.SandboxPhase) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.phase[name] = phase
+	f.labels[name] = labels
+	f.ids[name] = id
+}
+
+// ListSandboxes returns the seeded/created sandboxes matching the
+// "k1=v1,k2=v2" label selector, mirroring the gateway's ListSandboxes
+// filtering contract.
+func (f *FakeGateway) ListSandboxes(ctx context.Context, labelSelector string) ([]SandboxInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sel, err := parseLabelSelector(labelSelector)
+	if err != nil {
+		return nil, err
+	}
+	var out []SandboxInfo
+	for name, labels := range f.labels {
+		if !labelsMatch(labels, sel) {
+			continue
+		}
+		id := f.ids[name]
+		if id == "" {
+			id = "uuid-" + name
+		}
+		out = append(out, SandboxInfo{Name: name, ID: id, Phase: f.phase[name], Labels: labels})
+	}
+	return out, nil
+}
+
+// parseLabelSelector parses the gateway's "k1=v1,k2=v2" label-selector format.
+func parseLabelSelector(sel string) (map[string]string, error) {
+	out := map[string]string{}
+	if sel == "" {
+		return out, nil
+	}
+	for _, part := range strings.Split(sel, ",") {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid label selector %q", sel)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func labelsMatch(labels, sel map[string]string) bool {
+	for k, v := range sel {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// LabelsFor returns the labels stamped on a sandbox (test assertion helper).
+func (f *FakeGateway) LabelsFor(name string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]string{}
+	for k, v := range f.labels[name] {
+		out[k] = v
+	}
 	return out
 }
 
