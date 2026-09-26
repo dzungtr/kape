@@ -2,33 +2,44 @@ package main
 
 import (
 	"crypto/rand"
-	"log"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 )
 
-// NewRouter wires the localhost:8081 API:
+// NewRouter wires the agent API (domain language: sandbox agent, never session):
 //
-//	POST   /sessions            -> create sandbox + pi session, return {id}
-//	POST   /sessions/{id}/prompt {"message": ...} -> 202 (queued to pi stdin)
-//	GET    /sessions/{id}/events -> SSE: buffered replay then live
-//	DELETE /sessions/{id}       -> abort exec + delete sandbox
-func NewRouter(mgr *SessionManager) http.Handler {
+//	POST   /agents                 -> create sandbox + pi agent, return {id,...,status}
+//	GET    /agents/{id}            -> agent detail incl. status
+//	POST   /agents/{id}/prompt     {"message": ...} -> 202 (409 if turn in flight)
+//	POST   /agents/{id}/abort      -> stop the in-flight turn
+//	GET    /agents/{id}/events     -> SSE: buffered replay then live
+//	DELETE /agents/{id}            -> abort exec + delete sandbox
+func NewRouter(mgr *AgentManager) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
-		sess, err := mgr.Create(r.Context())
+	mux.HandleFunc("POST /agents", func(w http.ResponseWriter, r *http.Request) {
+		agent, err := mgr.Create(r.Context())
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, sess)
+		writeJSON(w, http.StatusCreated, agentViewOf(agent))
 	})
-	mux.HandleFunc("POST /sessions/{id}/prompt", func(w http.ResponseWriter, r *http.Request) {
-		sess := mgr.Get(r.PathValue("id"))
-		if sess == nil {
-			httpError(w, http.StatusNotFound, fmt.Errorf("unknown session %q", r.PathValue("id")))
+	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		agent := mgr.Get(r.PathValue("id"))
+		if agent == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
+			return
+		}
+		writeJSON(w, http.StatusOK, agentViewOf(agent))
+	})
+	mux.HandleFunc("POST /agents/{id}/prompt", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if mgr.Get(id) == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(id))
 			return
 		}
 		var body struct {
@@ -38,24 +49,36 @@ func NewRouter(mgr *SessionManager) http.Handler {
 			httpError(w, http.StatusBadRequest, fmt.Errorf("body must be {\"message\": string}"))
 			return
 		}
-		if err := sess.Prompt(body.Message); err != nil {
-			httpError(w, http.StatusConflict, err)
+		if err := mgr.Prompt(id, body.Message); err != nil {
+			httpError(w, statusForErr(err), err)
 			return
 		}
-		log.Printf("[session %s] prompt accepted: %q", sess.ID, body.Message)
 		w.WriteHeader(http.StatusAccepted)
 	})
-	mux.HandleFunc("GET /sessions/{id}/events", func(w http.ResponseWriter, r *http.Request) {
-		sess := mgr.Get(r.PathValue("id"))
-		if sess == nil {
-			httpError(w, http.StatusNotFound, fmt.Errorf("unknown session %q", r.PathValue("id")))
+	mux.HandleFunc("POST /agents/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if mgr.Get(id) == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(id))
 			return
 		}
-		serveSSE(w, r, sess)
+		if err := mgr.Abort(id); err != nil {
+			httpError(w, statusForErr(err), err)
+			return
+		}
+		log.Printf("[http] abort accepted for agent %s", id)
+		w.WriteHeader(http.StatusAccepted)
 	})
-	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /agents/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		agent := mgr.Get(r.PathValue("id"))
+		if agent == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
+			return
+		}
+		serveSSE(w, r, agent)
+	})
+	mux.HandleFunc("DELETE /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := mgr.Delete(r.Context(), r.PathValue("id")); err != nil {
-			httpError(w, http.StatusInternalServerError, err)
+			httpError(w, statusForErr(err), err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -63,8 +86,35 @@ func NewRouter(mgr *SessionManager) http.Handler {
 	return mux
 }
 
+// agentView is the JSON shape for create and get responses.
+type agentView struct {
+	ID      string      `json:"id"`
+	Sandbox string      `json:"sandbox"`
+	Status  AgentStatus `json:"status"`
+	Created interface{} `json:"created"`
+}
+
+func agentViewOf(a *Agent) agentView {
+	return agentView{a.ID, a.Sandbox, a.Status(), a.Created}
+}
+
+// statusForErr maps manager errors to HTTP status: unknown agent → 404,
+// prompt policy (turn in flight / not in an accepting state) → 409,
+// everything else → 500. Mapping is typed via sentinel errors, never
+// message text.
+func statusForErr(err error) int {
+	switch {
+	case errors.Is(err, ErrUnknownAgent):
+		return http.StatusNotFound
+	case errors.Is(err, ErrTurnInFlight), errors.Is(err, ErrNotReady):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // serveSSE streams events as text/event-stream: buffered replay, then live.
-func serveSSE(w http.ResponseWriter, r *http.Request, sess *Session) {
+func serveSSE(w http.ResponseWriter, r *http.Request, agent *Agent) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		httpError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
@@ -74,7 +124,7 @@ func serveSSE(w http.ResponseWriter, r *http.Request, sess *Session) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	replay, live, unsub := sess.hub.Subscribe()
+	replay, live, unsub := agent.hub.Subscribe()
 	defer unsub()
 	for _, raw := range replay {
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {

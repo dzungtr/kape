@@ -1,9 +1,22 @@
-# m1-controller (spike)
+# controller v1 (promoted M1 spike)
 
-A local Go binary that talks gRPC **directly** to the deployed OpenShell
-gateway, creates a sandbox pod running the pi coding agent in RPC mode, and
-drives it end-to-end from localhost. No kapeproxy, no bridge daemon — the
-point of M1 is to learn what a controller must own before M2 exists.
+A standalone Go module (`GOWORK=off`, not in the repo go.work) that talks
+gRPC **directly** to the deployed OpenShell gateway, creates a sandbox pod
+running the pi coding agent in RPC mode, and drives it end-to-end. Domain
+language is **agent** (sandbox agent), never session: REST routes at
+`/agents...`.
+
+## pi RPC command shapes (verified)
+
+Verified against the locally installed pi (0.87.1,
+`@earendil-works/pi-coding-agent`, `docs/rpc-commands.md`):
+
+- **prompt**: `{"id": "req-1", "type": "prompt", "message": "..."}` — the
+  spike's baseline shape is correct; `id` is echoed in the command response.
+- **abort**: `{"type": "abort"}` — a bare object, **no `id` field**. Pi
+  responds `{"type":"response","command":"abort","success":true}` after the
+  session becomes idle. Queued steering/followUp messages continue unless
+  `clear_queue` is sent first (not done in v1).
 
 ## Setup
 
@@ -26,7 +39,7 @@ export PATH=$GOPATH/bin:$PATH
 /usr/bin/go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 /usr/bin/go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 buf generate   # regenerates gen/ from proto/ (protos pinned to gateway v0.0.116)
-/usr/bin/go build -o /tmp/gopath/bin/m1-controller .
+/usr/bin/go build -o /tmp/gopath/bin/controller .
 ```
 
 The protos under `proto/` are copied from `github.com/NVIDIA/OpenShell` at tag
@@ -35,7 +48,7 @@ The protos under `proto/` are copied from `github.com/NVIDIA/OpenShell` at tag
 
 ## Provider
 
-One provider record must exist before creating sessions (the controller
+One provider record must exist before creating agents (the controller
 attaches it by name, default `openrouter-spike`):
 
 ```sh
@@ -49,27 +62,31 @@ Default listen address is `:8081`; under the nono security sandbox only
 dev ports (3000, 5173) are allowed to listen, so pass `-listen :3000`:
 
 ```sh
-/tmp/gopath/bin/m1-controller -listen :3000   # unsandboxed: omit -listen (defaults to :8081)
+/tmp/gopath/bin/controller -listen :3000   # unsandboxed: omit -listen (defaults to :8081)
 ```
 
 ## Demo
 
 ```sh
-# 1. create session (CreateSandbox -> wait READY -> policy -> exec pi)
-ID=$(curl -s -X POST localhost:3000/sessions | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+# 1. create agent (CreateSandbox -> wait READY -> policy -> exec pi)
+ID=$(curl -s -X POST localhost:3000/agents | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+curl -s localhost:3000/agents/$ID   # {"id","sandbox","status":"ready",...}
 
 # 2. subscribe to events (SSE: replay + live)
-curl -sN localhost:3000/sessions/$ID/events > events.txt &
+curl -sN localhost:3000/agents/$ID/events > events.txt &
 
-# 3. send a prompt (202 accepted)
-curl -X POST localhost:3000/sessions/$ID/prompt \
+# 3. send a prompt (202 accepted; 409 if a turn is in flight)
+curl -X POST localhost:3000/agents/$ID/prompt \
   -H 'Content-Type: application/json' \
   -d '{"message":"Introduce yourself in one sentence and list the tools you have."}'
+
+# 3b. stop the in-flight turn (stream stays open; settle still lands)
+curl -X POST localhost:3000/agents/$ID/abort
 
 # 4. watch events.txt — text_delta events stream the answer, ends with agent_settled
 
 # 5. teardown
-curl -X DELETE localhost:3000/sessions/$ID
+curl -X DELETE localhost:3000/agents/$ID
 kubectl get sandbox -A      # empty
 openshell sandbox list      # empty
 ```
@@ -78,14 +95,29 @@ openshell sandbox list      # empty
 
 ```
 curl ──HTTP──▶ m1-controller (localhost:3000/8081)
-                │  POST /sessions ──────▶ CreateSandbox (pi image, provider, 1cpu/2Gi)
-                │                          WaitReady (poll phase) → UpdateConfig (net policy)
+                │  POST /agents ────────▶ CreateSandbox (pi image, provider, 1cpu/2Gi)
+                │                          waitReady (poll phase) → UpdateConfig (net policy)
+                │                          status FSM: creating → ready
                 │  POST /prompt ────────▶ ExecSandboxInteractive (bidi gRPC, mTLS to :32353)
-                │                          stdin  ← JSONL prompt commands
-                │  GET  /events (SSE) ◀── stdout → strict JSONL pi records → EventHub (buffer+fanout)
-                │  DELETE /sessions ─────▶ cancel exec ctx + DeleteSandbox
-                └─ in-memory session map only; no persistence, no auth
+                │                          stdin ← JSONL {"id","type":"prompt","message"}
+                │                          409 if a turn is in flight; status working
+                │  POST /abort ─────────▶ stdin ← {"type":"abort"} (no id; verified)
+                │  GET  /events (SSE) ◀── stdout → verbatim JSONL pi records → EventHub
+                │                          agent_settled record → status ready
+                │                          exec break / pi exit / sandbox ERROR → failed
+                │                          + agent.failed lifecycle event
+                │  DELETE /agents/{id} ─▶ cancel exec ctx + DeleteSandbox; status terminated
+                └─ in-memory agent map only; no persistence, no auth
+                   gateway client is behind GatewayClient (interface) with a
+                   FakeGateway for unit tests of the FSM + prompt policy
 ```
+
+FSM observability note: `creating` and `terminated` are not observable via
+`GET /agents/{id}` — the agent is only registered after it reaches `ready`,
+and DELETE removes it (subsequent GETs return 404). Both states are visible
+only on the SSE event stream (`agent.started`, `agent.terminated`) during
+v1's in-memory, no-DB design (see spec #172 user story 21 for restart
+semantics).
 
 Inside the sandbox the exec runs a bash wrapper that patches
 `providers.openrouter.baseUrl` in pi's `models.json` to the in-cluster model

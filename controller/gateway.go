@@ -14,7 +14,33 @@ import (
 	v1 "github.com/dzungtr/kape/controller/gen"
 )
 
-// Gateway wraps the OpenShell gRPC surface used by the spike.
+// ExecStream is the controller-observed subset of a bidirectional exec
+// stream: writes reach the sandbox stdin, reads drain its stdout/stderr/exit
+// events. The real Gateway's gRPC client stream and the test FakeStream both
+// satisfy it.
+type ExecStream interface {
+	Send(*v1.ExecSandboxInput) error
+	Recv() (*v1.ExecSandboxEvent, error)
+}
+
+// GatewayClient is the subset of the OpenShell gateway the AgentManager needs.
+// The real Gateway implements it over mTLS gRPC; tests use gateway.FakeGateway
+// so the status FSM and prompt policy run without a cluster.
+type GatewayClient interface {
+	// CreateSandbox creates a sandbox running the given image with the named
+	// provider attached. Returns the canonical name and gateway UUID.
+	CreateSandbox(ctx context.Context, name, image, provider string) (sandboxName, sandboxID string, err error)
+	// GetSandboxPhase polls the sandbox phase (used to detect READY and ERROR).
+	GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error)
+	// DeleteSandbox deletes the sandbox.
+	DeleteSandbox(ctx context.Context, name string) error
+	// StartPi opens the interactive exec stream running the pi RPC wrapper.
+	StartPi(ctx context.Context, sandboxID string) (ExecStream, error)
+	// ApplyModelGatewayPolicy merges the model-gateway egress rule for the sandbox.
+	ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error
+}
+
+// Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
 type Gateway struct {
 	client v1.OpenShellClient
 }
@@ -120,7 +146,7 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, id string) {
 
 // StartPi opens an interactive exec stream running the pi RPC wrapper and
 // returns the stream for later stdin writes.
-func (g *Gateway) StartPi(ctx context.Context, id string) (v1.OpenShell_ExecSandboxInteractiveClient, error) {
+func (g *Gateway) StartPi(ctx context.Context, id string) (ExecStream, error) {
 	// NOTE: provider-injected env is withheld by the gateway for unbound static
 // credentials (spike finding); the model gateway is unauthenticated, so we
 // inject the key via the exec environment directly.

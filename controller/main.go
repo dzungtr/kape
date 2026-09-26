@@ -1,6 +1,6 @@
-// m1-controller: spike controller that talks gRPC directly to the deployed
+// m1-controller → controller v1: talks gRPC directly to the deployed
 // OpenShell gateway, creates sandboxes running the pi coding agent in RPC
-// mode, and exposes a local HTTP/SSE API on localhost:8081.
+// mode, and exposes a local HTTP/SSE agent API on localhost:3000 (8081 default).
 package main
 
 import (
@@ -38,14 +38,14 @@ func main() {
 	}
 	gw := NewGateway(conn)
 
-	mgr := NewSessionManager(gw, *providerName, *sandboxImage)
+	mgr := NewAgentManager(gw, *providerName, *sandboxImage)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           NewRouter(mgr),
 		ReadHeaderTimeout: 30 * time.Second,
 		// No overall timeouts: SSE streams are long-lived.
 	}
-	log.Printf("m1-controller listening on %s (gateway %s, sandbox image %s)", *listen, *gwEndpoint, *sandboxImage)
+	log.Printf("controller listening on %s (gateway %s, sandbox image %s)", *listen, *gwEndpoint, *sandboxImage)
 	log.Fatal(srv.ListenAndServe())
 }
 
