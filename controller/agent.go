@@ -129,7 +129,9 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	}
 	id := randID("agent")
 	if resolved.Name == "" {
-		resolved.Name = "sbx-" + id
+		// The OpenShell gateway caps sandbox names at 19 chars, so the
+		// derived default drops the "agent-" prefix: sbx-<hex> (16 chars).
+		resolved.Name = "sbx-" + id[len("agent-"):]
 	}
 	name := resolved.Name
 	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: NewEventHub(), gw: m.gw, mgr: m}
@@ -378,8 +380,17 @@ func (m *AgentManager) stdoutPump(agent *Agent, stream ExecStream, cancel contex
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
-				agent.hub.Publish(json.RawMessage(line))
-				m.onPiRecord(agent, json.RawMessage(line))
+				// pi occasionally emits non-JSON stdout lines (node warnings,
+				// control sequences). Publish them wrapped — the event buffer
+				// must stay JSON-safe or pull batches fail to encode wholesale
+				// (found by the #179 live smoke: one bad line emptied every
+				// read_events response).
+				rec := bytes.TrimSpace(line)
+				if !json.Valid(rec) {
+					rec = mustJSON(map[string]string{"type": "raw", "data": string(rec)})
+				}
+				agent.hub.Publish(json.RawMessage(rec))
+				m.onPiRecord(agent, json.RawMessage(rec))
 			}
 		case *v1.ExecSandboxEvent_Stderr:
 			text := string(p.Stderr.Data)
