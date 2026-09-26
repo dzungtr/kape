@@ -127,16 +127,24 @@ func handleGetAgent(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, AgentVie
 	}
 }
 
-func handleListAgents(mgr *AgentManager) mcp.ToolHandlerFor[struct{}, []AgentView] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, []AgentView, error) {
+// listAgentsOutput wraps the agent list so the generated outputSchema has a
+// top-level "object" type, as required by the MCP spec. A bare []AgentView
+// produced an array-typed outputSchema that strict clients (e.g. Pi)
+// reject during tools/list validation.
+type listAgentsOutput struct {
+	Agents []AgentView `json:"agents"`
+}
+
+func handleListAgents(mgr *AgentManager) mcp.ToolHandlerFor[struct{}, listAgentsOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOutput, error) {
 		views, err := mgr.List(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, listAgentsOutput{}, err
 		}
 		if views == nil {
 			views = []AgentView{}
 		}
-		return nil, views, nil
+		return nil, listAgentsOutput{Agents: views}, nil
 	}
 }
 
