@@ -63,13 +63,17 @@ func crView(info SandboxInfo) AgentView {
 }
 
 // statusFromPhase maps a gateway sandbox phase to the agent FSM status for
-// CR-derived (post-restart) views.
+// CR-derived (post-restart) views. A STOPPED sandbox maps to creating under
+// documented v1 semantics (no stopped status in the FSM); revisit if the FSM
+// grows one. See PR #182 review notes.
 func statusFromPhase(phase v1.SandboxPhase) AgentStatus {
 	switch phase {
 	case v1.SandboxPhase_SANDBOX_PHASE_READY:
 		return StatusReady
 	case v1.SandboxPhase_SANDBOX_PHASE_ERROR:
 		return StatusFailed
+	case v1.SandboxPhase_SANDBOX_PHASE_STOPPED:
+		return StatusCreating
 	default:
 		return StatusCreating
 	}

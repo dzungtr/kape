@@ -77,6 +77,21 @@ func TestListJoinsLiveState(t *testing.T) {
 	}
 }
 
+// TestOwnedManagedByMismatch exercises the defense-in-depth branch of
+// owned() directly: a sandbox carrying a foreign managed-by value is excluded
+// even when the gateway's label selector would have passed it through (e.g. a
+// selector-ignoring backend).
+func TestOwnedManagedByMismatch(t *testing.T) {
+	mgr := &AgentManager{managedBy: ManagedByValue}
+
+	if mgr.owned(SandboxInfo{Name: "sbx-foreign", Labels: map[string]string{LabelManagedBy: "someone-else", LabelAgentID: "agent-x"}}) {
+		t.Fatal("foreign managed-by sandbox wrongly reported owned")
+	}
+	if !mgr.owned(SandboxInfo{Name: "sbx-ours", Labels: map[string]string{LabelManagedBy: ManagedByValue, LabelAgentID: "agent-x"}}) {
+		t.Fatal("owned sandbox with matching labels wrongly excluded")
+	}
+}
+
 // TestListExcludesForeignSandboxes pins AC 3: a sandbox created by hand (no
 // managed-by label, or a foreign managed-by value) never appears, and an
 // owned-label sandbox without an agent-id is excluded too.

@@ -190,6 +190,8 @@ func isErrTurnInFlight(err error) bool {
 }
 
 // streamSent waits for stdinPump to drain the agent's stdin queue, then
+// returns the payloads the FakeStream observed.
+// streamSent waits for stdinPump to drain the agent's stdin queue, then
 // returns the payloads the FakeStream observed. The queue-empty check races
 // with the pump's Send (the queue empties on receive, before the payload is
 // recorded), so we also wait for the sent count to become stable.
