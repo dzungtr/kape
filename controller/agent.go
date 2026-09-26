@@ -253,13 +253,22 @@ func (m *AgentManager) Delete(ctx context.Context, id string) error {
 	if agent.cancel != nil {
 		agent.cancel()
 	}
-	// Close stdin under the agent lock so stdinPump exits instead of
-	// leaking on a stream that will never be read again. Safe: sendPrompt
-	// and Abort hold the same lock while sending.
+	// Flip to terminal status and close stdin in ONE critical section:
+	// any sender (sendPrompt, Abort) holds agent.mu while checking status
+	// and sending, so it either sees pre-termination status with the
+	// channel still open, or post-termination status with no send. Closing
+	// before the status flip would allow a send on the closed channel —
+	// a panic (send on closed channel). Emit the lifecycle event after
+	// releasing the lock.
 	agent.mu.Lock()
+	agent.status = StatusTerminated
 	close(agent.stdin)
 	agent.mu.Unlock()
-	agent.setStatusAndEmit(StatusTerminated, "agent.terminated")
+	agent.hub.Publish(json.RawMessage(mustJSON(map[string]interface{}{
+		"type":     "agent.terminated",
+		"agent_id": agent.ID,
+		"status":   StatusTerminated,
+	})))
 	agent.hub.Close()
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
@@ -321,13 +330,18 @@ func (m *AgentManager) Abort(id string) error {
 		return errUnknownAgent(id)
 	}
 	if agent.Status() != StatusWorking {
-		return errNotReady(id, agent.Status())
+		return errNotReady(id, agent.Status()) // fast path
 	}
 	raw, _ := json.Marshal(piAbortCommand{Type: "abort"})
-	// Hold the agent lock while sending so Delete cannot close stdin
-	// concurrently (send on a closed channel would panic).
+	// Hold the agent lock for the status re-check and the send together:
+	// Delete flips to terminated and closes stdin in one critical
+	// section, so re-checking under the lock is what prevents a send on
+	// the closed channel (a TOCTOU panic if only the pre-lock check ran).
 	agent.mu.Lock()
 	defer agent.mu.Unlock()
+	if agent.status != StatusWorking {
+		return errNotReady(id, agent.status)
+	}
 	select {
 	case agent.stdin <- append(raw, '\n'):
 		return nil

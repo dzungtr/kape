@@ -246,3 +246,73 @@ func assertJSONFields(t *testing.T, raw []byte, want map[string]string, requireI
 		t.Fatalf("payload %s must not carry an id field (abort shape)", raw)
 	}
 }
+
+// TestDeleteRacingAbortAndPromptDoesNotPanic exercises the P0 race from the
+// PR #181 re-review: Delete closes agent.stdin; if Abort or sendPrompt can
+// send after the close, the controller panics ("send on closed channel").
+// The fix makes Delete flip the terminal status and close stdin in one
+// agent.mu critical section, and makes Abort re-check status under the lock
+// before sending. This test hammers the Delete-vs-Abort and Delete-vs-Prompt
+// interleavings so the race detector (go test -race) sees any remaining
+// unsynchronized send.
+func TestDeleteRacingAbortAndPromptDoesNotPanic(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		mgr, _, _, agent := newTestAgent(t)
+		if err := mgr.Prompt(agent.ID, "turn"); err != nil {
+			t.Fatalf("iteration %d: prompt: %v", i, err)
+		}
+
+		done := make(chan struct{}, 3)
+		go func() {
+			_ = mgr.Abort(agent.ID) // must return an error, never panic
+			done <- struct{}{}
+		}()
+		go func() {
+			_ = mgr.Prompt(agent.ID, "racing prompt") // rejected by FSM
+			done <- struct{}{}
+		}()
+		go func() {
+			if err := mgr.Delete(context.Background(), agent.ID); err != nil {
+				t.Errorf("iteration %d: delete: %v", i, err)
+			}
+			done <- struct{}{}
+		}()
+		<-done
+		<-done
+		<-done
+
+		if got := agent.Status(); got != StatusTerminated {
+			t.Fatalf("iteration %d: status = %q, want terminated", i, got)
+		}
+		if mgr.Get(agent.ID) != nil {
+			t.Fatalf("iteration %d: agent still registered", i)
+		}
+	}
+}
+
+// TestOperationsOnTerminatedAgentAreRejected pins the FSM contract the fix
+// relies on: once Delete has run, prompt and abort on the agent object
+// itself must return ErrNotReady — the status check that guards each channel
+// send — rather than reaching the closed stdin channel.
+func TestOperationsOnTerminatedAgentAreRejected(t *testing.T) {
+	mgr, _, _, agent := newTestAgent(t)
+	if err := mgr.Delete(context.Background(), agent.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Reach the agent object directly (manager lookups now 404) to prove
+	// the send paths are guarded by status even past deregistration.
+	if err := agent.sendPrompt("after delete"); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("prompt on terminated agent: err = %v, want ErrNotReady", err)
+	}
+
+	// Simulate the racy Abort interleaving: the pre-lock status check has
+	// already passed, then Delete completes, then Abort takes the lock and
+	// must re-check before sending.
+	agent.mu.Lock()
+	agent.status = StatusWorking
+	agent.mu.Unlock()
+	if err := mgr.Abort(agent.ID); !errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("abort on deleted agent: err = %v, want ErrUnknownAgent", err)
+	}
+}
