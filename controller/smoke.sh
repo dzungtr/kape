@@ -160,6 +160,7 @@ wait_settle "$ID1" $TIMEOUT_SETTLE && pass "turn settled (agent_settled observed
     || { echo "FAIL: turn never settled"; exit 1; }
 grep -q 'text_delta' "$NOTE/sse-$ID1.log" && pass "SSE observed text_delta events (live round trip)" \
     || fail "SSE observed no text_delta events"
+assert "SSE observed agent_settled" "grep -q agent_settled $NOTE/sse-$ID1.log"
 # concatenate streamed answer text: live pi wraps deltas as message_update
 # records with assistantMessageEvent{type:text_delta,delta:...}; collect all
 # "delta"/"text" strings recursively from the pull batch
