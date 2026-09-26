@@ -6,7 +6,6 @@ import (
 	"log"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
-	
 )
 
 // ApplyModelGatewayPolicy merges a network rule allowing the sandbox to reach

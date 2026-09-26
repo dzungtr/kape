@@ -16,7 +16,7 @@ func newTestHandler(t *testing.T) (http.Handler, *AgentManager, *FakeGateway, *F
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, "openrouter-spike", "pi-image")
+	mgr := NewAgentManager(gw, testConfig())
 	return NewRouter(mgr), mgr, gw, stream
 }
 
