@@ -91,7 +91,11 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			httpError(w, http.StatusNotFound, errUnknownAgent(r.PathValue("id")))
 			return
 		}
-		if isPullRequest(r.URL.Query()) {
+		// Pull mode is the default for query-cursor requests, but a client
+		// asking for text/event-stream wants SSE re-attach (Last-Event-ID or
+		// after) — route it to the stream before the pull check, per the #172
+		// handoff ("SSE re-attach via Last-Event-ID or after").
+		if isPullRequest(r.URL.Query()) && !isStreamRequest(r) {
 			readEvents(w, r, agent)
 			return
 		}
@@ -165,6 +169,9 @@ func parseReadParams(q url.Values) (*readParams, string) {
 	if hasAfter && hasLast {
 		return nil, "after and last are mutually exclusive"
 	}
+	if hasLast && hasLimit {
+		return nil, "last and limit are mutually exclusive"
+	}
 	if hasAfter {
 		after, err := strconv.ParseUint(q.Get("after"), 10, 64)
 		if err != nil {
@@ -174,8 +181,8 @@ func parseReadParams(q url.Values) (*readParams, string) {
 	}
 	if hasLimit {
 		limit, err := strconv.Atoi(q.Get("limit"))
-		if err != nil || limit < 0 {
-			return nil, "limit must be a non-negative integer"
+		if err != nil || limit <= 0 {
+			return nil, "limit must be a positive integer"
 		}
 		p.limit = limit
 	}
@@ -208,6 +215,13 @@ func isPullRequest(q url.Values) bool {
 	return false
 }
 
+// isStreamRequest reports whether the client asked for the SSE stream via
+// the Accept header — the signal that an after-cursor request is an SSE
+// re-attach rather than a pull.
+func isStreamRequest(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+}
+
 // readParams is the parsed read_events query: after/limit/last/types.
 type readParams struct {
 	after uint64
@@ -230,6 +244,9 @@ func readEvents(w http.ResponseWriter, r *http.Request, agent *Agent) {
 		res = agent.hub.ReadLast(p.last, p.types)
 	} else {
 		res = agent.hub.Read(p.after, p.limit, p.types)
+	}
+	if res.Events == nil {
+		res.Events = []Event{} // empty poll serializes as [], never null
 	}
 	writeJSON(w, http.StatusOK, readEventsResponse{
 		AgentID:   agent.ID,

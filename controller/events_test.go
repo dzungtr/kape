@@ -154,6 +154,14 @@ func TestReadEventsHTTPContract(t *testing.T) {
 	if code, _ := doJSON(t, h, "GET", base+"?limit=-1", nil); code != http.StatusBadRequest {
 		t.Fatalf("limit=-1 status = %d, want 400", code)
 	}
+	// limit=0 would be an unbounded batch — 400, per "bounded batches".
+	if code, _ := doJSON(t, h, "GET", base+"?limit=0", nil); code != http.StatusBadRequest {
+		t.Fatalf("limit=0 status = %d, want 400", code)
+	}
+	// last + limit together is a conflicting param set — 400.
+	if code, _ := doJSON(t, h, "GET", base+"?last=2&limit=3", nil); code != http.StatusBadRequest {
+		t.Fatalf("last+limit status = %d, want 400", code)
+	}
 
 	// after cursor + limit bound.
 	code, body = doJSON(t, h, "GET", base+"?after=0&limit=2", nil)
@@ -191,6 +199,19 @@ func TestReadEventsHTTPContract(t *testing.T) {
 	if body["truncated"] != false {
 		t.Fatalf("truncated = %v, want false", body["truncated"])
 	}
+
+	// Empty poll (cursor at latest) serializes events as [], never null.
+	code, body = doJSON(t, h, "GET", base+fmt.Sprintf("?after=%d", len(agent.hub.Events())), nil)
+	if code != http.StatusOK {
+		t.Fatalf("empty poll status = %d", code)
+	}
+	evs, ok := body["events"].([]interface{})
+	if !ok {
+		t.Fatalf("empty poll events = %v (%T), want []", body["events"], body["events"])
+	}
+	if len(evs) != 0 {
+		t.Fatalf("empty poll returned %d events", len(evs))
+	}
 }
 
 // --- SSE re-attach ---
@@ -224,6 +245,61 @@ func TestSSEReattachReplaysFromCursorThenLive(t *testing.T) {
 	}
 	assertSSEHas(t, raw, "1", `"type":"agent.provisioned"`)
 	assertSSEHas(t, raw, "5", `{"type":"message_update","content":"two"}`)
+}
+
+// TestSSEReattachViaAfterReplayThenLiveOnSingleConnection pins the #172
+// handoff: a re-attach carrying the after cursor (Accept: text/event-stream)
+// is served as SSE — replaying events after the cursor, then delivering
+// subsequent live events on the same connection with no gap and no duplicate.
+func TestSSEReattachViaAfterReplayThenLiveOnSingleConnection(t *testing.T) {
+	h, _, stream, agent := newTestAgentHandler(t)
+	base := "/agents/" + agent.ID + "/events"
+
+	// Turn so far: two pi records (seqs 3 and 4 after the lifecycle pair).
+	stream.Deliver(`{"type":"message_update","content":"one"}`)
+	stream.Deliver(`{"type":"agent_settled"}`)
+	waitFor(t, func() bool { return len(agent.hub.Events()) >= 4 }, "records buffered")
+
+	// One connection, re-attached via after=2 as a stream request.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("GET", base+"?after=2", nil).WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	// The replay frames (seqs 3 and 4 only) arrive first.
+	waitFor(t, func() bool {
+		return strings.Contains(rec.Body.String(), "id: 4\n")
+	}, "replay frames flushed")
+	replayBody := rec.Body.String()
+	assertSSEHas(t, replayBody, "3", `"content":"one"`)
+	assertSSELacks(t, replayBody, "id: 1\n", "id: 2\n")
+
+	// A mid-connection publish must arrive live on the same response body.
+	stream.Deliver(`{"type":"message_update","content":"two"}`)
+	waitFor(t, func() bool {
+		return strings.Contains(rec.Body.String(), "id: 5\n")
+	}, "live frame after replay")
+	full := rec.Body.String()
+	assertSSEHas(t, full, "5", `"content":"two"`)
+	if strings.Contains(full, "id: 1\n") || strings.Contains(full, "id: 2\n") {
+		t.Fatalf("re-attach replayed pre-cursor events\ngot:\n%s", full)
+	}
+	if strings.Contains(full, "id: 4\n\nid: 4\n") || strings.Count(full, "id: 4\n") != 1 {
+		t.Fatalf("duplicate seq 4 on re-attach\ngot:\n%s", full)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SSE handler did not return after cancel")
+	}
 }
 
 // doRaw issues a request against the handler with a cancellable context and
@@ -286,4 +362,3 @@ func newTestAgentHandler(t *testing.T) (http.Handler, *AgentManager, *FakeStream
 	mgr, _, stream, agent := newTestAgent(t)
 	return NewRouter(mgr), mgr, stream, agent
 }
-
