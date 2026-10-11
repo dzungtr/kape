@@ -15,9 +15,11 @@ _Avoid_: config, spec (when you mean the declarative goal rather than the YAML f
 
 **Operator**:
 The Go controller that watches Kape* custom resources and materialises everything a Handler pod needs before it starts — skill content, file mounts, the KapeProxy config, sidecars.
+_Deprecated (v1 platform)_: Kape* materialisation is superseded by the successor platform (#150); the successor controller owns the CRUD job. Retained as a re-role candidate.
 
 **Handler runtime**:
 The Python + LangGraph process inside a Handler pod that consumes an event and runs the agent. A pure message processor: it does not read CRDs, manage infrastructure, or hold database credentials.
+_Deprecated (v1 platform)_: superseded by the successor platform (#150), where the agent runs inside a session-owned sandbox. Retained as a re-role candidate.
 _Avoid_: agent (the runtime runs an agent; it is not itself "the agent")
 
 ### Custom resources
@@ -54,6 +56,7 @@ An effect a Handler emits after reasoning. `event-publish` tools live in `action
 
 **Task**:
 The persisted record of one Handler invocation — its event, reasoning trace, decision, and actions. The audit unit surfaced in the dashboard.
+_Deprecated (v1 platform)_: superseded by the successor's session event log (#150); the task-service is retired as the system of record. Retained as a re-role candidate.
 
 ### Successor platform (M2)
 
