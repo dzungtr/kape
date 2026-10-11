@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 BASE="${BASE:-http://localhost:3000}"
 LISTEN="${LISTEN:-:3000}"
 MODEL="${MODEL:-z-ai/glm-5.2}"
-GATEWAY="${GATEWAY:-127.0.0.1:32353}"   # via kubectl port-forward (cert SAN covers 127.0.0.1)
+export GATEWAY="${GATEWAY:-127.0.0.1:32353}"   # via socat relay / port-forward (cert SAN covers 127.0.0.1)
 BIN=/tmp/kape-smoke/controller-restart
 STORE=/tmp/kape-smoke/restart-events.db
 TIMEOUT_READY=180
@@ -184,7 +184,6 @@ assert "post-restart history non-empty (got $N1)" "[ '$N1' -gt 0 ]"
 assert "no history loss (post >= pre: $N1 >= $N0)" "[ '$N1' -ge '$N0' ]"
 # identical prefix: every pre-restart event reappears byte-identically
 PRE=$(echo "$E0" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["events"],sort_keys=True))' | head -c 200000)
-PRE_HEAD=$(echo "$PRE" | head -c 40000)
 # identical-prefix check via python heredoc below
 E1T=$(echo "$E1" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(json.dumps(d["events"],sort_keys=True))')
 python3 - <<PYEOF && pass "replayed history contains every pre-restart event (identical)" || fail "replayed history diverges from pre-restart prefix"
