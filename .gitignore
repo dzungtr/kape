@@ -64,3 +64,5 @@ playground/runtime/settings.toml
 # agents
 .pi
 .pi-subagents
+
+node_modules
