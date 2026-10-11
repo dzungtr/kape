@@ -62,6 +62,12 @@ type Agent struct {
 	sandboxID string // gateway sandbox UUID (used by exec RPCs)
 	piSeq     int    // last pi RPC prompt id issued
 
+	// replayedOnly marks an agent rebuilt from the durable log at startup
+	// (issue #197): registry + hub are hydrated, but no exec stream exists
+	// in this process — prompts/aborts are rejected, view source is
+	// "replayed".
+	replayedOnly bool
+
 	hub    *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
 	fsm    *SessionFSM // session lifecycle projection over the log (issue #196)
 	stdin  chan []byte
@@ -163,9 +169,14 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		return nil, err
 	}
 	log.Printf("[agent %s] sandbox %s READY", id, name)
+	// created and sandbox land in the log so a restart rebuilds the view
+	// from replay alone (issue #197); the sandbox CR stays the address
+	// source — this payload only lets the replayed view echo it.
 	agent.hub.PublishLifecycle("agent.provisioned", map[string]interface{}{
 		"agent_id": agent.ID,
 		"status":   StatusCreating,
+		"sandbox":  agent.Sandbox,
+		"created":  agent.Created.UTC().Format(time.RFC3339Nano),
 	})
 
 	if err := m.gw.ApplyModelGatewayPolicy(ctx, name); err != nil {
@@ -256,7 +267,9 @@ func (m *AgentManager) Delete(ctx context.Context, id string) error {
 	// releasing the lock.
 	agent.mu.Lock()
 	agent.status = StatusTerminated
-	close(agent.stdin)
+	if agent.stdin != nil {
+		close(agent.stdin)
+	}
 	agent.mu.Unlock()
 	if err := agent.fsm.Transition(SessionTerminated, "agent.terminated", nil); err != nil {
 		log.Printf("[agent %s] record session terminated failed: %v", id, err)
@@ -290,6 +303,10 @@ func (m *AgentManager) Prompt(id, message string) error {
 func (a *Agent) sendPrompt(message string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.stdin == nil {
+		// Replayed-only agent (issue #197): no exec stream in this process.
+		return errNotReady(a.ID, a.status)
+	}
 	switch a.fsm.State() {
 	case SessionRunning:
 		return errTurnInFlight(a.ID)
@@ -335,8 +352,8 @@ func (m *AgentManager) Abort(id string) error {
 	if agent == nil {
 		return errUnknownAgent(id)
 	}
-	if agent.Status() != StatusWorking {
-		return errNotReady(id, agent.Status()) // fast path
+	if agent.Status() != StatusWorking || agent.stdin == nil {
+		return errNotReady(id, agent.Status()) // fast path (also replayed-only)
 	}
 	raw, _ := json.Marshal(piAbortCommand{Type: "abort"})
 	// Hold the agent lock for the status re-check and the send together:

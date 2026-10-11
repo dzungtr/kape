@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -47,6 +48,11 @@ func main() {
 	defer store.Close()
 
 	mgr := NewAgentManager(gw, cfg, store)
+	if err := mgr.RebuildFromLog(context.Background()); err != nil {
+		// Degrade, don't die: CR-derived views keep list/get working while
+		// the log is unreadable (issue #197 semantics).
+		log.Printf("registry replay degraded to CR-derived views: %v", err)
+	}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           NewRouter(mgr),

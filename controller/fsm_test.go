@@ -80,6 +80,8 @@ func TestRestartMidLifecycleLandsOnIdenticalState(t *testing.T) {
 // full durable log. Reads still work.
 type appendFailingStore struct{}
 
+func (appendFailingStore) Agents() ([]string, error) { return nil, nil }
+
 func (appendFailingStore) NextSeq(string) (uint64, error) { return 1, nil }
 func (appendFailingStore) Append(string, Event) error     { return errors.New("append failed") }
 func (appendFailingStore) Replay(string, uint64) ([]Event, error) {
