@@ -55,6 +55,20 @@ An effect a Handler emits after reasoning. `event-publish` tools live in `action
 **Task**:
 The persisted record of one Handler invocation — its event, reasoning trace, decision, and actions. The audit unit surfaced in the dashboard.
 
+### Successor platform (M2)
+
+**Session**:
+The durable lifecycle unit of the successor platform: owns the sandbox storage, spans agent replacements and revives, and carries the event history. The unit that survives a controller drop.
+_Avoid_: agent (a session outlives its agents), task (old-platform term).
+
+**Agent (successor sense)**:
+The live sandbox+pi instance serving a session at a given moment. A revive replaces the agent, not the session.
+_Avoid_: Handler runtime (old-platform term).
+
+**Event log**:
+The authoritative record of session events. The single execution truth from which session state derives; everything else mirrors it.
+_Avoid_: task-service event log, broker (old-platform mechanisms).
+
 ## Relationships
 
 - A **KapeHandler** references zero or more **KapeTool** and **KapeSkill** resources; the **Operator** unions their tool refs into one **KapeProxy** config.
