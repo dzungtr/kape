@@ -121,18 +121,20 @@ func (f *SessionFSM) State() SessionState {
 
 // Transition validates the edge, appends the lifecycle event to the durable
 // log FIRST, and only then takes the transition effect (updates the state).
-// If the append fails the state is unchanged — durability wins over
-// availability, matching the EventHub policy. Returns an error for an
-// illegal edge or a failed append.
+// The whole sequence runs under one critical section on f.mu: validate,
+// append, and state-set are atomic with respect to any other Transition (or
+// State read). PublishLifecycle takes only the hub's own lock, so holding
+// f.mu across it creates no lock inversion. If the append fails the state is
+// unchanged — durability wins over availability, matching the EventHub
+// policy. Returns an error for an illegal edge or a failed append.
 func (f *SessionFSM) Transition(next SessionState, eventType string, fields map[string]interface{}) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	from := f.state
 	if !sessionTransitions[from][next] {
-		f.mu.Unlock()
 		return fmt.Errorf("illegal session transition %s → %s", from, next)
 	}
-	f.mu.Unlock()
-
 	if fields == nil {
 		fields = map[string]interface{}{}
 	}
@@ -144,8 +146,6 @@ func (f *SessionFSM) Transition(next SessionState, eventType string, fields map[
 		log.Printf("[fsm] append %s (%s → %s) failed; state unchanged", eventType, from, next)
 		return fmt.Errorf("append %s failed", eventType)
 	}
-	f.mu.Lock()
 	f.state = next
-	f.mu.Unlock()
 	return nil
 }

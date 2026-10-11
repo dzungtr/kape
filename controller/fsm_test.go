@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 )
 
@@ -215,6 +216,69 @@ func TestAgentViewCarriesSessionStatus(t *testing.T) {
 	}
 	if string(view.Session) == string(view.Status) && view.Session != "" {
 		t.Fatalf("session %q collides with agent status vocabulary %q — session must be its own enum", view.Session, view.Status)
+	}
+}
+
+// TestTransitionAtomicUnderRace pins the single-critical-section fix from
+// the PR #205 round-3 review: two concurrent Transitions out of the same
+// state (the settle-vs-Delete interleaving) must keep the in-memory state
+// consistent with the durable log — exactly one append per successful
+// transition, and the projection over the log must equal the live state.
+// Under the old shape (validate and state-set in two separate f.mu
+// sections, append outside the lock) both transitions validated against
+// the stale running state, both appended, and the final state could land
+// on either writer, diverging from the log projection.
+func TestTransitionAtomicUnderRace(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		store := testStore(t)
+		hub, err := NewEventHub(store, "agent-race")
+		if err != nil {
+			t.Fatalf("NewEventHub: %v", err)
+		}
+		fsm := NewSessionFSM(hub, "agent-race", SessionProvision)
+		// Seed the legal chain up to running so the log replays cleanly.
+		if err := fsm.Transition(SessionReady, "agent.started", nil); err != nil {
+			t.Fatalf("run %d: seed ready: %v", i, err)
+		}
+		if err := fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
+			t.Fatalf("run %d: seed running: %v", i, err)
+		}
+
+		var wg sync.WaitGroup
+		successes := make(chan SessionState, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := fsm.Transition(SessionIdle, "agent.settled", nil); err == nil {
+				successes <- SessionIdle
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := fsm.Transition(SessionTerminated, "agent.terminated", nil); err == nil {
+				successes <- SessionTerminated
+			}
+		}()
+		wg.Wait()
+		close(successes)
+
+		var winners []SessionState
+		for s := range successes {
+			winners = append(winners, s)
+		}
+		if len(winners) == 0 {
+			t.Fatalf("run %d: no transition succeeded", i)
+		}
+		evs, err := store.Replay("agent-race", 0)
+		if err != nil {
+			t.Fatalf("run %d: replay: %v", i, err)
+		}
+		if len(evs) != 2+len(winners) {
+			t.Fatalf("run %d: %d events appended, want %d", i, len(evs), 2+len(winners))
+		}
+		if got := ReplaySession(evs); got != fsm.State() {
+			t.Fatalf("run %d: log projects %q, live state %q — atomicity broken", i, got, fsm.State())
+		}
 	}
 }
 
