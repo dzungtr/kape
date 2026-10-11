@@ -1,5 +1,7 @@
 # KAPE Operator
 
+> ⚠️ **Deprecated** — this component is part of the v1 KAPE platform, superseded by the greenfield successor (#150), whose controller owns the CRUD job. Deprecated does **not** mean deleted: the component stays in place as a re-role candidate for the successor platform.
+
 The KAPE operator reconciles three custom resources — `KapeHandler`, `KapeTool`, `KapeSchema` — into the Kubernetes objects that run a KAPE agent: a `Deployment`, a `ConfigMap` holding `settings.toml`, and a per-handler `ServiceAccount`. It is a controller-runtime operator written in Go.
 
 This README has two jobs:
