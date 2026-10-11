@@ -174,6 +174,7 @@ type Config struct {
 	DefaultImage     string    // sandbox OCI image
 	DefaultResources Resources // cpu/memory defaults
 	ModelGatewayURL  string    // base URL patched into pi models.json
+	EventStorePath   string    // durable event log file (controller-local volume)
 }
 
 // DefaultConfig is the compiled-in baseline (matches the spike's flags).
@@ -186,6 +187,7 @@ func DefaultConfig() Config {
 		DefaultImage:     "ghcr.io/dzungtr/pi-openshell:openrouter",
 		DefaultResources: Resources{CPU: "1", Memory: "2Gi"},
 		ModelGatewayURL:  "http://model-gateway-http.aperture.svc.cluster.local/v1",
+		EventStorePath:   "controller-events.db",
 	}
 }
 
@@ -216,6 +218,9 @@ func envConfig(def Config) Config {
 	if v := os.Getenv("KAPE_MODEL_GATEWAY_URL"); v != "" {
 		def.ModelGatewayURL = v
 	}
+	if v := os.Getenv("KAPE_EVENT_STORE"); v != "" {
+		def.EventStorePath = v
+	}
 	return def
 }
 
@@ -230,6 +235,7 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DefaultProvider, "provider", c.DefaultProvider, "default OpenShell provider (env KAPE_DEFAULT_PROVIDER)")
 	fs.StringVar(&c.DefaultImage, "image", c.DefaultImage, "default sandbox OCI image (env KAPE_DEFAULT_IMAGE)")
 	fs.StringVar(&c.ModelGatewayURL, "model-gateway-url", c.ModelGatewayURL, "model-gateway base URL patched into pi models.json (env KAPE_MODEL_GATEWAY_URL)")
+	fs.StringVar(&c.EventStorePath, "event-store", c.EventStorePath, "durable event log file (env KAPE_EVENT_STORE)")
 	fs.Func("resources", "default resources JSON {\"cpu\":...,\"memory\":...} (env KAPE_DEFAULT_RESOURCES)", func(v string) error {
 		var r Resources
 		if err := json.Unmarshal([]byte(v), &r); err != nil {
@@ -252,6 +258,9 @@ func (c *Config) Validate() error {
 	}
 	if c.GatewayAddr == "" || c.ListenAddr == "" {
 		return fieldErr("config", "gateway address and listen address are required")
+	}
+	if c.EventStorePath == "" {
+		return fieldErr("event-store", "durable event log path is required")
 	}
 	return nil
 }

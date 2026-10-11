@@ -23,7 +23,7 @@ func newMCPClientSession(t *testing.T) (*mcp.ClientSession, *AgentManager, *Fake
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	server := NewMCPServer(mgr)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-host", Version: "v1"}, nil)
@@ -295,7 +295,7 @@ func TestMCPReadEventsToolDefaultsToNonDelta(t *testing.T) {
 // behaviour the MCP non-delta default relies on: the batch fills with
 // matching events, never short-changed by excluded ones.
 func TestMCPReadEventsExclusionAppliesBeforeLimit(t *testing.T) {
-	h := NewEventHub()
+	h := testHub(t)
 	h.Publish(json.RawMessage(`{"type":"text_delta","text":"a"}`))
 	h.Publish(json.RawMessage(`{"type":"text_delta","text":"b"}`))
 	h.Publish(json.RawMessage(`{"type":"message_update","role":"assistant"}`))

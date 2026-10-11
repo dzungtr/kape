@@ -16,7 +16,7 @@ func newTestHandler(t *testing.T) (http.Handler, *AgentManager, *FakeGateway, *F
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 	return NewRouter(mgr), mgr, gw, stream
 }
 

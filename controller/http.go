@@ -239,8 +239,9 @@ type readParams struct {
 }
 
 // readEvents handles read_events pull mode. The response carries the events
-// (each {seq, type, data}; data is the verbatim record) and truncated: true
-// once any events have been evicted from the buffer ring.
+// (each {seq, type, data}; data is the verbatim record) replayed from the
+// durable store after the cursor; truncated stays in the contract but is
+// always false — the log is never evicted (issue #195).
 func readEvents(w http.ResponseWriter, r *http.Request, agent *Agent) {
 	p, msg := parseReadParams(r.URL.Query())
 	if p == nil {

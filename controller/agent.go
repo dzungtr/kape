@@ -109,10 +109,13 @@ type AgentManager struct {
 	// managedBy is the value stamped into the managed-by ownership label and
 	// used to filter ListSandboxes — the registry's identity.
 	managedBy string
+	// store is the durable event log shared by every agent's hub (issue #195):
+	// one controller-owned file, one writer per agent bucket.
+	store EventStore
 }
 
-func NewAgentManager(gw GatewayClient, cfg Config) *AgentManager {
-	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue}
+func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
+	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store}
 }
 
 // Create provisions a sandbox for the (possibly partial) profile override
@@ -134,7 +137,11 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		resolved.Name = "sbx-" + id[len("agent-"):]
 	}
 	name := resolved.Name
-	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: NewEventHub(), gw: m.gw, mgr: m}
+	hub, err := NewEventHub(m.store, id)
+	if err != nil {
+		return nil, fmt.Errorf("open event log for %s: %w", id, err)
+	}
+	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: hub, gw: m.gw, mgr: m}
 
 	agent.mu.Lock()
 	agent.status = StatusCreating

@@ -38,7 +38,15 @@ func main() {
 	}
 	gw := NewGateway(conn, cfg.ModelGatewayURL)
 
-	mgr := NewAgentManager(gw, cfg)
+	// Durable event store (issue #195): one controller-local single-file log,
+	// opened before any agent can publish; closed when the process exits.
+	store, err := NewBoltEventStore(cfg.EventStorePath)
+	if err != nil {
+		log.Fatalf("open event store: %v", err)
+	}
+	defer store.Close()
+
+	mgr := NewAgentManager(gw, cfg, store)
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           NewRouter(mgr),

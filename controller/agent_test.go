@@ -20,7 +20,7 @@ func newTestAgent(t *testing.T) (*AgentManager, *FakeGateway, *FakeStream, *Agen
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	// Sandbox must be READY by the time the phase poll starts.
 	agent, err := mgr.Create(context.Background(), nil)
@@ -54,7 +54,7 @@ func TestDefaultSandboxNameWithinGatewayCap(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	for i := 0; i < 10; i++ {
 		agent, err := mgr.Create(context.Background(), nil)
@@ -75,7 +75,7 @@ func TestNonJSONStdoutLineIsWrapped(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestNameValidationEnforcesGatewayCap(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	_, err := mgr.Create(context.Background(), &CreateProfile{Name: "a2345678901234567890"})
 	var fe *FieldError
