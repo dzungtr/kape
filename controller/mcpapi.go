@@ -103,6 +103,42 @@ type streamEventsInput struct {
 	After   uint64 `json:"after,omitempty"`
 }
 
+// mcpEvent is the MCP-facing event shape. It mirrors Event but types Data as
+// `any`: the go-sdk generates a constrained schema from json.RawMessage
+// (bytes → array) while actual payloads are JSON objects, and strict
+// clients (e.g. Pi) reject that mismatch during tool-output validation.
+// Wire format is identical — Data still marshals verbatim.
+type mcpEvent struct {
+	Seq  uint64 `json:"seq"`
+	Type string `json:"type,omitempty"`
+	Data any    `json:"data"`
+}
+
+func toMCPEvents(evs []Event) []mcpEvent {
+	out := make([]mcpEvent, len(evs))
+	for i, ev := range evs {
+		out[i] = mcpEvent{Seq: ev.Seq, Type: ev.Type, Data: ev.Data}
+	}
+	return out
+}
+
+// mcpReadEventsResponse wraps readEventsResponse for MCP so events use the
+// mcpEvent shape and the generated outputSchema validates against actual
+// payloads.
+type mcpReadEventsResponse struct {
+	AgentID   string     `json:"agent_id"`
+	Events    []mcpEvent `json:"events"`
+	Truncated bool       `json:"truncated"`
+}
+
+func toMCPResponse(res readEventsResponse) mcpReadEventsResponse {
+	evs := toMCPEvents(res.Events)
+	if evs == nil {
+		evs = []mcpEvent{}
+	}
+	return mcpReadEventsResponse{AgentID: res.AgentID, Events: evs, Truncated: res.Truncated}
+}
+
 // --- tool handlers ---------------------------------------------------------
 
 func handleCreateAgent(mgr *AgentManager) mcp.ToolHandlerFor[CreateProfile, AgentView] {
@@ -176,38 +212,41 @@ func handleAbort(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, map[string]
 }
 
 // handleStreamEvents returns the buffered replay from the cursor. Live push
-// is a REST SSE capability (see the tool description).
-func handleStreamEvents(mgr *AgentManager) mcp.ToolHandlerFor[streamEventsInput, any] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, input streamEventsInput) (*mcp.CallToolResult, any, error) {
+// is a REST SSE capability (see the tool description). The output type is
+// readEventsResponse (not `any`) so the generated outputSchema has a
+// top-level "object" type; an `any` output produced a schema strict clients
+// (e.g. Pi) reject during tools/list validation.
+func handleStreamEvents(mgr *AgentManager) mcp.ToolHandlerFor[streamEventsInput, mcpReadEventsResponse] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, input streamEventsInput) (*mcp.CallToolResult, mcpReadEventsResponse, error) {
 		agent := mgr.Get(input.AgentID)
 		if agent == nil {
-			return nil, readEventsResponse{}, errUnknownAgent(input.AgentID)
+			return nil, mcpReadEventsResponse{}, errUnknownAgent(input.AgentID)
 		}
 		replay, _, unsub, err := agent.hub.Subscribe(input.After)
 		if err != nil {
-			return nil, readEventsResponse{}, err
+			return nil, mcpReadEventsResponse{}, err
 		}
 		defer unsub()
 		evs := make([]Event, len(replay))
 		copy(evs, replay)
-		return nil, readEventsResponse{AgentID: agent.ID, Events: evs, Truncated: agent.hub.Truncated()}, nil
+		return nil, toMCPResponse(readEventsResponse{AgentID: agent.ID, Events: evs, Truncated: agent.hub.Truncated()}), nil
 	}
 }
 
-// handleReadEvents is the MCP read_events tool: cursor+limit+types, with the
-// non-delta default (include_deltas=false excludes text_delta records).
-func handleReadEvents(mgr *AgentManager) mcp.ToolHandlerFor[readEventsInput, any] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, input readEventsInput) (*mcp.CallToolResult, any, error) {
+// read_events uses readEventsResponse as its output type for the same
+// outputSchema reason as stream_events above.
+func handleReadEvents(mgr *AgentManager) mcp.ToolHandlerFor[readEventsInput, mcpReadEventsResponse] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, input readEventsInput) (*mcp.CallToolResult, mcpReadEventsResponse, error) {
 		agent := mgr.Get(input.AgentID)
 		if agent == nil {
-			return nil, readEventsResponse{}, errUnknownAgent(input.AgentID)
+			return nil, mcpReadEventsResponse{}, errUnknownAgent(input.AgentID)
 		}
 		limit := input.Limit
 		if limit == 0 {
 			limit = defaultReadLimit
 		}
 		if limit < 0 {
-			return nil, readEventsResponse{}, errors.New("limit must be a positive integer")
+			return nil, mcpReadEventsResponse{}, errors.New("limit must be a positive integer")
 		}
 		var exclude []string
 		if !input.IncludeDeltas {
@@ -215,12 +254,12 @@ func handleReadEvents(mgr *AgentManager) mcp.ToolHandlerFor[readEventsInput, any
 		}
 		res := agent.hub.ReadFiltered(input.After, limit, input.Types, exclude)
 		if res.Err != nil {
-			return nil, readEventsResponse{}, res.Err
+			return nil, mcpReadEventsResponse{}, res.Err
 		}
 		if res.Events == nil {
 			res.Events = []Event{}
 		}
-		return nil, readEventsResponse{AgentID: agent.ID, Events: res.Events, Truncated: res.Truncated}, nil
+		return nil, toMCPResponse(readEventsResponse{AgentID: agent.ID, Events: res.Events, Truncated: res.Truncated}), nil
 	}
 }
 
