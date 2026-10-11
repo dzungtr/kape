@@ -15,7 +15,7 @@ func TestCreatePartialOverridesCoexist(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	_, err := mgr.Create(context.Background(), &CreateProfile{
 		Image:     "agent-a-image:v1",
@@ -54,7 +54,7 @@ func TestCreateWithNameUsesSandboxName(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	agent, err := mgr.Create(context.Background(), &CreateProfile{Name: "my-agent"})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestInvalidProfileLeaksNoSandbox(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
 	_, err := mgr.Create(context.Background(), &CreateProfile{Resources: &Resources{CPU: "banana", Memory: "2Gi"}})
 	if err == nil {

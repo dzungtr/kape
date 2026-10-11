@@ -239,8 +239,9 @@ type readParams struct {
 }
 
 // readEvents handles read_events pull mode. The response carries the events
-// (each {seq, type, data}; data is the verbatim record) and truncated: true
-// once any events have been evicted from the buffer ring.
+// (each {seq, type, data}; data is the verbatim record) replayed from the
+// durable store after the cursor; truncated stays in the contract but is
+// always false — the log is never evicted (issue #195).
 func readEvents(w http.ResponseWriter, r *http.Request, agent *Agent) {
 	p, msg := parseReadParams(r.URL.Query())
 	if p == nil {
@@ -252,6 +253,10 @@ func readEvents(w http.ResponseWriter, r *http.Request, agent *Agent) {
 		res = agent.hub.ReadLast(p.last, p.types)
 	} else {
 		res = agent.hub.Read(p.after, p.limit, p.types)
+	}
+	if res.Err != nil {
+		httpError(w, http.StatusInternalServerError, res.Err)
+		return
 	}
 	if res.Events == nil {
 		res.Events = []Event{} // empty poll serializes as [], never null
@@ -284,12 +289,18 @@ func serveSSE(w http.ResponseWriter, r *http.Request, agent *Agent) {
 		httpError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
 		return
 	}
+	replay, live, unsub, err := agent.hub.Subscribe(cursor)
+	if err != nil {
+		// Surface a store read failure instead of silently streaming an empty
+		// replay plus a live channel.
+		httpError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer unsub()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	replay, live, unsub := agent.hub.Subscribe(cursor)
-	defer unsub()
 	for i := range replay {
 		if !writeSSEEvent(w, &replay[i]) {
 			return

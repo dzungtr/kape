@@ -15,7 +15,7 @@ import (
 // --- seq ordering and cursor pulls ---
 
 func TestSeqAssignedToEveryEventMonotonically(t *testing.T) {
-	h := NewEventHub()
+	h := testHub(t)
 	h.PublishLifecycle("agent.provisioned", map[string]interface{}{"agent_id": "a1", "status": StatusCreating})
 	h.Publish(json.RawMessage(`{"type":"message_update","content":"hi"}`))
 	h.PublishLifecycle("agent.started", map[string]interface{}{"agent_id": "a1", "status": StatusReady})
@@ -49,7 +49,7 @@ func TestSeqAssignedToEveryEventMonotonically(t *testing.T) {
 }
 
 func TestCursorPollsAcrossBurstNoGapsNoDuplicates(t *testing.T) {
-	h := NewEventHub()
+	h := testHub(t)
 	var wg sync.WaitGroup
 	for i := 0; i < 200; i++ {
 		wg.Add(1)
@@ -87,7 +87,7 @@ func TestCursorPollsAcrossBurstNoGapsNoDuplicates(t *testing.T) {
 }
 
 func TestReadTypeFilter(t *testing.T) {
-	h := NewEventHub()
+	h := testHub(t)
 	h.PublishLifecycle("agent.provisioned", map[string]interface{}{"agent_id": "a", "status": StatusCreating})
 	h.Publish(json.RawMessage(`{"type":"text_delta","text":"x"}`))
 	h.Publish(json.RawMessage(`{"type":"message_update","content":"y"}`))
@@ -105,7 +105,7 @@ func TestReadTypeFilter(t *testing.T) {
 }
 
 func TestReadLastReturnsTail(t *testing.T) {
-	h := NewEventHub()
+	h := testHub(t)
 	for i := 1; i <= 10; i++ {
 		h.Publish(json.RawMessage(fmt.Sprintf(`{"type":"record","n":%d}`, i)))
 	}
@@ -115,24 +115,131 @@ func TestReadLastReturnsTail(t *testing.T) {
 	}
 }
 
-// --- ring cap + truncated ---
+// --- durability: restart, replay-after-cursor, seq continuity ---
 
-func TestRingCapEvictsOldestAndSetsTruncated(t *testing.T) {
-	h := newEventHub(10)
-	for i := 1; i <= 25; i++ {
-		h.Publish(json.RawMessage(fmt.Sprintf(`{"type":"record","n":%d}`, i)))
+// testStore opens a BoltEventStore in the test's temp dir.
+func testStore(t *testing.T) *BoltEventStore {
+	t.Helper()
+	s, err := NewBoltEventStore(t.TempDir() + "/events.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	if res := h.Read(0, 100, nil); len(res.Events) != 10 || res.Events[0].Seq != 16 {
-		t.Fatalf("buffer = seqs %v, want last 10 (16..25)", seqs(res.Events))
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// testHub returns a hub over a fresh durable store for one agent.
+func testHub(t *testing.T) *EventHub {
+	t.Helper()
+	h, err := NewEventHub(testStore(t), "agent-test")
+	if err != nil {
+		t.Fatalf("NewEventHub: %v", err)
 	}
-	if !h.Read(0, 100, nil).Truncated {
-		t.Fatal("truncated = false after eviction, want true")
+	return h
+}
+
+// TestHistoryAndCursorsSurviveRestart pins the #195 acceptance criterion:
+// closing and reopening the store (a controller restart) keeps the full
+// history replayable and the per-agent seq continuing without gaps or reuse.
+func TestHistoryAndCursorsSurviveRestart(t *testing.T) {
+	store, path := func() (*BoltEventStore, string) {
+		dir := t.TempDir()
+		s, err := NewBoltEventStore(dir + "/events.db")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		return s, dir + "/events.db"
+	}()
+
+	h, err := NewEventHub(store, "agent-x")
+	if err != nil {
+		t.Fatalf("NewEventHub: %v", err)
 	}
-	// A hub that never evicted reports truncated: false.
-	fresh := NewEventHub()
-	fresh.Publish(json.RawMessage(`{"type":"record"}`))
-	if fresh.Read(0, 100, nil).Truncated {
-		t.Fatal("fresh hub reports truncated")
+	h.PublishLifecycle("agent.started", map[string]interface{}{"agent_id": "agent-x", "status": StatusReady})
+	h.Publish(json.RawMessage(`{"type":"agent_settled"}`))
+	if got := h.Publish(json.RawMessage(`{"type":"response"}`)); got != 3 {
+		t.Fatalf("seq = %d, want 3", got)
+	}
+
+	// Simulate an unclean-then-clean restart: close the store entirely.
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	reopened, err := NewBoltEventStore(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+
+	// Replay after cursor 1 is identical to the same query before restart.
+	h2, err := NewEventHub(reopened, "agent-x")
+	if err != nil {
+		t.Fatalf("NewEventHub after restart: %v", err)
+	}
+	after := h2.Read(1, 0, nil).Events
+	if len(after) != 2 {
+		t.Fatalf("replay after=1 across restart: %v, want seqs [2 3]", seqs(after))
+	}
+	for i, want := range []struct {
+		seq  uint64
+		data string
+	}{
+		{2, `{"type":"agent_settled"}`},
+		{3, `{"type":"response"}`},
+	} {
+		if after[i].Seq != want.seq || string(after[i].Data) != want.data {
+			t.Fatalf("replay[%d] = %d %s, want %d %s", i, after[i].Seq, after[i].Data, want.seq, want.data)
+		}
+	}
+	// Seq continues at 4 — no reuse, no gap.
+	if got := h2.Publish(json.RawMessage(`{"type":"response"}`)); got != 4 {
+		t.Fatalf("seq after restart = %d, want 4", got)
+	}
+}
+
+// TestAppendRejectsSeqGap guards the no-gap invariant at the store boundary:
+// an append that does not advance the log by one is rejected, so a
+// miscounting writer can never create a hole or reuse a seq.
+func TestAppendRejectsSeqGap(t *testing.T) {
+	store := testStore(t)
+	if err := store.Append("agent-g", Event{Seq: 2, Data: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("first append at seq 2 accepted, want rejection")
+	}
+	if err := store.Append("agent-g", Event{Seq: 1, Data: json.RawMessage(`{"type":"a"}`)}); err != nil {
+		t.Fatalf("append seq 1: %v", err)
+	}
+	if err := store.Append("agent-g", Event{Seq: 1, Data: json.RawMessage(`{"type":"b"}`)}); err == nil {
+		t.Fatal("reused seq 1 accepted, want rejection")
+	}
+	if err := store.Append("agent-g", Event{Seq: 3, Data: json.RawMessage(`{"type":"c"}`)}); err == nil {
+		t.Fatal("gap seq 3 accepted, want rejection")
+	}
+	evs, err := store.Replay("agent-g", 0)
+	if err != nil || len(evs) != 1 || evs[0].Seq != 1 {
+		t.Fatalf("log = %v, err %v; want exactly seq 1", evs, err)
+	}
+}
+
+// TestReplayIsAscendingPerAgent isolates the store: two agents never share
+// a seq space, and replay is ordered by seq within each.
+func TestReplayIsAscendingPerAgent(t *testing.T) {
+	store := testStore(t)
+	ha, _ := NewEventHub(store, "agent-a")
+	hb, _ := NewEventHub(store, "agent-b")
+	ha.Publish(json.RawMessage(`{"type":"r"}`))
+	hb.Publish(json.RawMessage(`{"type":"r"}`))
+	ha.Publish(json.RawMessage(`{"type":"r"}`))
+
+	evs, err := store.Replay("agent-a", 0)
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("agent-a replay = %v, err %v", evs, err)
+	}
+	if evs[0].Seq != 1 || evs[1].Seq != 2 {
+		t.Fatalf("agent-a seqs %v, want ascending [1 2]", seqs(evs))
+	}
+	evs, _ = store.Replay("agent-b", 0)
+	if len(evs) != 1 || evs[0].Seq != 1 {
+		t.Fatalf("agent-b seqs %v, want [1]", seqs(evs))
 	}
 }
 

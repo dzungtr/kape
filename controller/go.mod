@@ -4,6 +4,7 @@ go 1.25.10
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	go.etcd.io/bbolt v1.5.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )

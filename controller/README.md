@@ -85,8 +85,16 @@ Two layers, every event stamped with a monotonically increasing per-agent
   encode). Controller stderr from the exec wrapper is likewise wrapped as
   `{"type":"stderr",...}`.
 
-History is in-memory only, ring-buffered with a `truncated: true` flag so a
-runaway agent cannot OOM the controller.
+History is durable: every event is appended to a single-file embedded store
+(bbolt) on a controller-local volume (`KAPE_EVENT_STORE` / `-event-store`;
+issue #195), one bucket per agent keyed by big-endian seq. The v1 in-memory
+ring and its `truncated: true` flag are gone — the `truncated` response
+field remains in the read_events contract but is always false. Event reads
+(replay-after-cursor, tail pulls, SSE re-attach) all read the store; the
+per-agent seq continues from the log's highest key after a restart, with no
+gaps and no reuse. The controller is the single writer of the store; each
+append is one committed transaction, so replay after an unclean shutdown
+sees exactly the committed tail.
 
 ### read_events params
 
@@ -102,14 +110,23 @@ runaway agent cannot OOM the controller.
 - Slow-subscriber drop policy applies only to the live SSE push channel;
   pulls always read the buffer.
 
-## Restart semantics (documented v1 behavior)
+## Restart semantics (documented v2 behavior)
 
 - **In-flight turns die** — the pi process lives inside one long-lived
   exec gRPC stream; controller restart cancels it.
 - **The registry survives** — `list_agents`/`get_agent` fall back to
   gateway Sandbox CRs carrying the ownership labels (post-restart views are
   CR-derived; reattach to events works).
-- **Event history does not survive** — the buffer and the seq space reset.
+- **Event history and cursors survive** — the durable log is persisted and
+  new events continue the per-agent seq with no gap or reuse (issue #195).
+  Surface-level replay (`read_events?after=<cursor>`, SSE re-attach) does
+  **not** yet survive a restart: pre-restart agents are unknown to the
+  registry until #197 wires registry→hub rehydration, at which point the
+  replayed history becomes reachable through those tools.
+- **Deployment durability caveat** — the default store path
+  (`controller-events.db`) is relative, so it is container-ephemeral until a
+  controller-local volume/PVC is mounted; and the store takes a single-writer
+  file lock, so the controller must run with `replicas=1`.
 
 ## Config reference
 
@@ -124,6 +141,7 @@ Resolution: compiled default → `KAPE_*` env → flag (flag wins).
 | default image | `KAPE_DEFAULT_IMAGE` | `-image` | `ghcr.io/dzungtr/pi-openshell:openrouter` |
 | default resources | `KAPE_DEFAULT_RESOURCES` (JSON) | `-resources` | `{"cpu":"1","memory":"2Gi"}` |
 | model-gateway URL | `KAPE_MODEL_GATEWAY_URL` | `-model-gateway-url` | `http://model-gateway-http.aperture.svc.cluster.local/v1` |
+| event store file | `KAPE_EVENT_STORE` | `-event-store` | `controller-events.db` |
 
 No auth in v1: the tailnet (Tailscale ingress) is the boundary. The container
 image is built from `controller/Dockerfile` in this repo (`make build-images`

@@ -58,7 +58,7 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 	}, handleAbort(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "stream_events",
-		Description: "Subscribe to an agent's event stream from a cursor. Over MCP this returns the buffered replay from the cursor as one batch (tool results cannot stream); for live push use the REST SSE endpoint GET /agents/{id}/events with Accept: text/event-stream (re-attach via Last-Event-ID or after).",
+		Description: "Subscribe to an agent's event stream from a cursor. Over MCP this returns the durable replay from the cursor as one batch (tool results cannot stream); for live push use the REST SSE endpoint GET /agents/{id}/events with Accept: text/event-stream (re-attach via Last-Event-ID or after).",
 	}, handleStreamEvents(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "read_events",
@@ -183,7 +183,10 @@ func handleStreamEvents(mgr *AgentManager) mcp.ToolHandlerFor[streamEventsInput,
 		if agent == nil {
 			return nil, readEventsResponse{}, errUnknownAgent(input.AgentID)
 		}
-		replay, _, unsub := agent.hub.Subscribe(input.After)
+		replay, _, unsub, err := agent.hub.Subscribe(input.After)
+		if err != nil {
+			return nil, readEventsResponse{}, err
+		}
 		defer unsub()
 		evs := make([]Event, len(replay))
 		copy(evs, replay)
@@ -211,6 +214,9 @@ func handleReadEvents(mgr *AgentManager) mcp.ToolHandlerFor[readEventsInput, any
 			exclude = []string{textDeltaEventType}
 		}
 		res := agent.hub.ReadFiltered(input.After, limit, input.Types, exclude)
+		if res.Err != nil {
+			return nil, readEventsResponse{}, res.Err
+		}
 		if res.Events == nil {
 			res.Events = []Event{}
 		}

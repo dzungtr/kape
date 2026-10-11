@@ -18,7 +18,7 @@ func newRegistryTest(t *testing.T) (*AgentManager, *FakeGateway, *FakeStream, *A
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 	agent, err := mgr.Create(context.Background(), &CreateProfile{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -121,7 +121,7 @@ func TestListSurvivesRestart(t *testing.T) {
 	_, gw, _, agent := newRegistryTest(t)
 
 	// "Restart": a new AgentManager over the same gateway, no memory.
-	restarted := NewAgentManager(gw, testConfig())
+	restarted := NewAgentManager(gw, testConfig(), testStore(t))
 	views, err := restarted.List(context.Background())
 	if err != nil {
 		t.Fatalf("List after restart: %v", err)
@@ -144,7 +144,7 @@ func TestListSurvivesRestart(t *testing.T) {
 // TestCRStatusFromPhase pins the phase → status mapping for CR-derived views.
 func TestCRStatusFromPhase(t *testing.T) {
 	_, gw, _, agent := newRegistryTest(t)
-	restarted := NewAgentManager(gw, testConfig())
+	restarted := NewAgentManager(gw, testConfig(), testStore(t))
 
 	for phase, want := range map[v1.SandboxPhase]AgentStatus{
 		v1.SandboxPhase_SANDBOX_PHASE_READY:        StatusReady,
@@ -168,7 +168,7 @@ func TestCRStatusFromPhase(t *testing.T) {
 func TestGetViewPostRestart(t *testing.T) {
 	_, gw, _, agent := newRegistryTest(t)
 
-	restarted := NewAgentManager(gw, testConfig())
+	restarted := NewAgentManager(gw, testConfig(), testStore(t))
 	view, err := restarted.GetView(context.Background(), agent.ID)
 	if err != nil {
 		t.Fatalf("GetView after restart: %v", err)
@@ -208,12 +208,12 @@ func TestHTTPListAndPostRestartGet(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
 	gw.SetStream(stream)
-	mgr := NewAgentManager(gw, testConfig())
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 	agent, err := mgr.Create(context.Background(), &CreateProfile{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	h := NewRouter(NewAgentManager(gw, testConfig())) // fresh memory
+	h := NewRouter(NewAgentManager(gw, testConfig(), testStore(t))) // fresh memory
 
 	// GET /agents returns a bare JSON array of registry views.
 	rec := rawJSON(t, h, "GET", "/agents")
