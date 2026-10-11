@@ -1,6 +1,6 @@
 module github.com/dzungtr/kape/controller
 
-go 1.25.12
+go 1.25.10
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
