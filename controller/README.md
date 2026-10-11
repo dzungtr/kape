@@ -125,8 +125,10 @@ Resolution: compiled default → `KAPE_*` env → flag (flag wins).
 | default resources | `KAPE_DEFAULT_RESOURCES` (JSON) | `-resources` | `{"cpu":"1","memory":"2Gi"}` |
 | model-gateway URL | `KAPE_MODEL_GATEWAY_URL` | `-model-gateway-url` | `http://model-gateway-http.aperture.svc.cluster.local/v1` |
 
-No auth in v1: the tailnet (Tailscale ingress) is the boundary. Container
-image build and deployment manifests live in `dzungtr/homelab`, not here.
+No auth in v1: the tailnet (Tailscale ingress) is the boundary. The container
+image is built from `controller/Dockerfile` in this repo (`make build-images`
+→ `kape-controller:dev`); deployment manifests for the local cluster live in
+the `dzungtr/homelab` GitOps repo.
 
 ## MCP transport
 

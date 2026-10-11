@@ -1,4 +1,17 @@
-# Build context for Containerfile.dev only needs the flake
+# Build context for Containerfile.dev only needs the flake; everything else
+# is excluded, with negations for the module directories used by the
+# per-module Dockerfiles (see make build-images).
 *
 !flake.nix
 !flake.lock
+!go.work
+!go.work.sum
+!operator/
+!task-service/
+!controller/
+!kapeproxy/
+!adapters/
+!runtime/
+!dashboard/
+!package.json
+!bun.lock
