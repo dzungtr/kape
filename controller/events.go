@@ -216,6 +216,15 @@ func filterEventsExcluding(buffer []Event, after uint64, limit int, types, exclu
 	return out
 }
 
+// SubscribeSnapshot returns the full stored log for the agent — the read path
+// for log-projection consumers (SessionFSM restart derivation, issue #196;
+// AgentRegistry replay, #197).
+func (h *EventHub) SubscribeSnapshot() ([]Event, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.store.Replay(h.agentID, 0)
+}
+
 // Events returns a snapshot of the stored events (test helper).
 func (h *EventHub) Events() []Event {
 	evs, err := h.store.Replay(h.agentID, 0)

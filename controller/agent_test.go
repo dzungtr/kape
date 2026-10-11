@@ -185,9 +185,16 @@ func TestAbortStopsTurnButStreamStaysOpen(t *testing.T) {
 	waitFor(t, func() bool { return agent.Status() == StatusReady }, "settle after abort")
 
 	evs := agent.hub.Events()
-	last := string(evs[len(evs)-1].Data)
-	if last != `{"type":"agent_settled"}` {
-		t.Fatalf("last event = %s, want verbatim agent_settled record", last)
+	// The verbatim agent_settled record must still be in the log; the
+	// agent.settled session lifecycle event (#196) lands after it.
+	found := false
+	for _, ev := range evs {
+		if string(ev.Data) == `{"type":"agent_settled"}` {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("events = %v, want a verbatim agent_settled record", evs)
 	}
 	// Abort outside a turn is rejected.
 	if err := mgr.Abort(agent.ID); err == nil {
