@@ -103,12 +103,16 @@ func (h *EventHub) fanout(ev *Event) {
 // with seq > after) plus a live channel; the cursor guarantees no gaps and
 // no duplicates across re-attach and across controller restarts. Replay and
 // registration happen under one lock, so no live event can fall between.
-func (h *EventHub) Subscribe(after uint64) ([]Event, chan *Event, func()) {
+// A store read failure is returned as an error (with an empty replay) so the
+// SSE/MCP handler can surface it instead of replying with a silent empty
+// replay.
+func (h *EventHub) Subscribe(after uint64) ([]Event, chan *Event, func(), error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	replay, err := h.store.Replay(h.agentID, after)
 	if err != nil {
 		log.Printf("[events] replay agent %s after %d failed: %v", h.agentID, after, err)
+		return nil, nil, func() {}, err
 	}
 	ch := make(chan *Event, 256)
 	id := h.nextSub
@@ -118,7 +122,7 @@ func (h *EventHub) Subscribe(after uint64) ([]Event, chan *Event, func()) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		delete(h.subscribers, id)
-	}
+	}, nil
 }
 
 // Close marks the hub closed: no further publishes. Stored history stays
@@ -133,6 +137,10 @@ func (h *EventHub) Close() {
 type ReadResult struct {
 	Events    []Event
 	Truncated bool // always false: the durable log is never truncated (issue #195)
+	// Err is the store read failure, if any. Handlers must surface it to the
+	// client (HTTP 500 / MCP tool error) instead of returning a silent empty
+	// or partial batch.
+	Err error
 }
 
 // Read returns events with seq > after, filtered by types (empty = all), up
@@ -152,6 +160,7 @@ func (h *EventHub) ReadFiltered(after uint64, limit int, types, exclude []string
 	all, err := h.store.Replay(h.agentID, after)
 	if err != nil {
 		log.Printf("[events] read agent %s after %d failed: %v", h.agentID, after, err)
+		return ReadResult{Err: err}
 	}
 	return ReadResult{Events: filterEventsExcluding(all, after, limit, types, exclude)}
 }
@@ -164,6 +173,7 @@ func (h *EventHub) ReadLast(n int, types []string) ReadResult {
 	all, err := h.store.Replay(h.agentID, 0)
 	if err != nil {
 		log.Printf("[events] read agent %s failed: %v", h.agentID, err)
+		return ReadResult{Err: err}
 	}
 	evs := filterEvents(all, 0, 0, types)
 	if len(evs) > n {

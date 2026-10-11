@@ -117,10 +117,16 @@ sees exactly the committed tail.
 - **The registry survives** — `list_agents`/`get_agent` fall back to
   gateway Sandbox CRs carrying the ownership labels (post-restart views are
   CR-derived; reattach to events works).
-- **Event history and cursors survive** — the durable log is replayed from
-  the store; `read_events?after=<cursor>` and SSE re-attach return the same
-  history as before the restart, and new events continue the per-agent seq
-  with no gap or reuse (issue #195).
+- **Event history and cursors survive** — the durable log is persisted and
+  new events continue the per-agent seq with no gap or reuse (issue #195).
+  Surface-level replay (`read_events?after=<cursor>`, SSE re-attach) does
+  **not** yet survive a restart: pre-restart agents are unknown to the
+  registry until #197 wires registry→hub rehydration, at which point the
+  replayed history becomes reachable through those tools.
+- **Deployment durability caveat** — the default store path
+  (`controller-events.db`) is relative, so it is container-ephemeral until a
+  controller-local volume/PVC is mounted; and the store takes a single-writer
+  file lock, so the controller must run with `replicas=1`.
 
 ## Config reference
 

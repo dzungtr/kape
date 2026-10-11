@@ -183,7 +183,10 @@ func handleStreamEvents(mgr *AgentManager) mcp.ToolHandlerFor[streamEventsInput,
 		if agent == nil {
 			return nil, readEventsResponse{}, errUnknownAgent(input.AgentID)
 		}
-		replay, _, unsub := agent.hub.Subscribe(input.After)
+		replay, _, unsub, err := agent.hub.Subscribe(input.After)
+		if err != nil {
+			return nil, readEventsResponse{}, err
+		}
 		defer unsub()
 		evs := make([]Event, len(replay))
 		copy(evs, replay)
@@ -211,6 +214,9 @@ func handleReadEvents(mgr *AgentManager) mcp.ToolHandlerFor[readEventsInput, any
 			exclude = []string{textDeltaEventType}
 		}
 		res := agent.hub.ReadFiltered(input.After, limit, input.Types, exclude)
+		if res.Err != nil {
+			return nil, readEventsResponse{}, res.Err
+		}
 		if res.Events == nil {
 			res.Events = []Event{}
 		}
