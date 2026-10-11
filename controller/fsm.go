@@ -49,9 +49,10 @@ var sessionEventType = map[string]SessionState{
 }
 
 // sessionTransitions is the FSM transition table: sessionTransitions[from][to]
-// is true when the edge from → to is legal. paused and reviving have legal
-// edges defined (provision/ready → paused, paused → reviving, reviving →
-// ready) but no emitter exists until Epic 3, so they stay unreachable.
+// is true when the edge from → to is legal. paused and reviving have rows in
+// the table (paused → reviving, reviving → ready) but no edge reaches paused
+// in this epic (spec #194 Handoffs row), so they stay unreachable until
+// Epic 3 (#192) emits agent.paused/agent.reviving.
 var sessionTransitions = map[SessionState]map[SessionState]bool{
 	SessionProvision: {SessionReady: true, SessionTerminated: true},
 	SessionReady:     {SessionRunning: true, SessionTerminated: true},

@@ -183,10 +183,27 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	m.mu.Unlock()
 
 	if err := agent.fsm.Transition(SessionReady, "agent.started", nil); err != nil {
+		// The agent is already registered: remove the zombie entry, stop the
+		// pumps, and close the hub before returning.
+		if agent.cancel != nil {
+			agent.cancel()
+		}
+		agent.mu.Lock()
+		agent.status = StatusTerminated
+		close(agent.stdin)
+		agent.mu.Unlock()
+		agent.hub.Close()
+		m.mu.Lock()
+		delete(m.agents, id)
+		m.mu.Unlock()
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, fmt.Errorf("record session started for %s: %w", id, err)
 	}
+	// The session event is already appended by fsm.Transition; only flip the
+	// in-memory status, under the lock (phasePoll/stdoutPump read it).
+	agent.mu.Lock()
 	agent.status = StatusReady
+	agent.mu.Unlock()
 	return agent, nil
 }
 
