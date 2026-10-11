@@ -164,6 +164,12 @@ func (f *FakeGateway) DeleteSandbox(ctx context.Context, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, name)
+	// Remove the sandbox entirely — a real gateway stops serving it, so the
+	// registry's CR join must not find it after a delete (replay tests rely
+	// on this: a terminated agent stays unknown post-restart).
+	delete(f.phase, name)
+	delete(f.labels, name)
+	delete(f.ids, name)
 	return nil
 }
 

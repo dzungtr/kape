@@ -31,6 +31,9 @@ type EventStore interface {
 	Append(agentID string, ev Event) error
 	// Replay returns all events with seq > after, ascending.
 	Replay(agentID string, after uint64) ([]Event, error)
+	// Agents lists the agent ids that have a log (the replay enumeration
+	// for registry startup, issue #197).
+	Agents() ([]string, error)
 	// Close releases the underlying file.
 	Close() error
 }
@@ -136,3 +139,15 @@ func (s *BoltEventStore) Replay(agentID string, after uint64) ([]Event, error) {
 
 // Close closes the database file.
 func (s *BoltEventStore) Close() error { return s.db.Close() }
+
+// Agents lists every agent bucket name — one bucket per agent id.
+func (s *BoltEventStore) Agents() ([]string, error) {
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+			out = append(out, string(name))
+			return nil
+		})
+	})
+	return out, err
+}

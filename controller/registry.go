@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -25,12 +28,16 @@ const (
 	ManagedByValue = "kape-controller"
 )
 
-// View sources: how the registry derived the view. "live" means the agent is
-// in memory (exec state available); "cr" means it came from gateway sandbox
-// state only (post-restart; no exec state — documented v1 semantics).
+// View sources: how the registry derived the view. "live" means the agent
+// is in memory and this process owns its exec stream; "replayed" means it
+// was rebuilt from the durable log at startup (issue #197: post-restart
+// views are first-class, full state, no exec stream); "cr" means it came
+// from gateway sandbox state only (legacy logs without the provisioning
+// payload).
 const (
-	SourceLive = "live"
-	SourceCR   = "cr"
+	SourceLive     = "live"
+	SourceReplayed = "replayed"
+	SourceCR       = "cr"
 )
 
 // AgentView is the JSON shape for list_agents and get_agent: the joined
@@ -53,10 +60,19 @@ type AgentView struct {
 	Source string `json:"source"`
 }
 
-// agentView builds the live in-memory view of an agent.
+// agentView builds the view of a registered agent: "live" when this process
+// owns the exec stream, "replayed" for a log-rehydrated agent (issue #197).
 func (a *Agent) agentView() AgentView {
-	created := a.Created
-	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Session: a.fsm.State(), Created: &created, Source: SourceLive}
+	var created *time.Time
+	if !a.Created.IsZero() {
+		c := a.Created
+		created = &c
+	}
+	source := SourceLive
+	if a.replayedOnly {
+		source = SourceReplayed
+	}
+	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Session: a.fsm.State(), Created: created, Source: source}
 }
 
 // crView derives a post-restart view from gateway sandbox state: status comes
@@ -92,8 +108,10 @@ func (m *AgentManager) owned(info SandboxInfo) bool {
 }
 
 // List implements list_agents: gateway ListSandboxes filtered by the
-// managed-by label, joined with in-memory live state. Agents not created by
-// this controller are never listed.
+// managed-by label, joined with in-memory state (live agents owned by this
+// process, and replayed agents rebuilt from the durable log at startup —
+// issue #197). CRs remain the enumeration/address source; agents not created
+// by this controller are never listed.
 func (m *AgentManager) List(ctx context.Context) ([]AgentView, error) {
 	infos, err := m.gw.ListSandboxes(ctx, LabelManagedBy+"="+m.managedBy)
 	if err != nil {
@@ -113,7 +131,13 @@ func (m *AgentManager) List(ctx context.Context) ([]AgentView, error) {
 		}
 		id := info.Labels[LabelAgentID]
 		if a, ok := live[id]; ok {
-			views = append(views, a.agentView())
+			view := a.agentView()
+			if view.Sandbox == "" {
+				// Legacy log without a recorded sandbox name: patch the view
+				// from the CR — the CR stays the address source.
+				view.Sandbox = info.Name
+			}
+			views = append(views, view)
 			continue
 		}
 		views = append(views, crView(info))
@@ -132,7 +156,12 @@ func (m *AgentManager) List(ctx context.Context) ([]AgentView, error) {
 // sandbox state, or ErrUnknownAgent if no owned sandbox carries the agent-id.
 func (m *AgentManager) GetView(ctx context.Context, id string) (AgentView, error) {
 	if a := m.Get(id); a != nil {
-		return a.agentView(), nil
+		view := a.agentView()
+		if view.Sandbox == "" {
+			// Legacy log: patch the sandbox name from the CR (address source).
+			view.Sandbox = m.crSandboxFor(ctx, id)
+		}
+		return view, nil
 	}
 	infos, err := m.gw.ListSandboxes(ctx, LabelManagedBy+"="+m.managedBy)
 	if err != nil {
@@ -144,4 +173,141 @@ func (m *AgentManager) GetView(ctx context.Context, id string) (AgentView, error
 		}
 	}
 	return AgentView{}, errUnknownAgent(id)
+}
+
+// crSandboxFor resolves the sandbox name for an agent from the CR labels —
+// the address-source join for replayed views whose log predates the recorded
+// sandbox payload (issue #197).
+func (m *AgentManager) crSandboxFor(ctx context.Context, id string) string {
+	infos, err := m.gw.ListSandboxes(ctx, LabelManagedBy+"="+m.managedBy)
+	if err != nil {
+		return ""
+	}
+	for _, info := range infos {
+		if m.owned(info) && info.Labels[LabelAgentID] == id {
+			return info.Name
+		}
+	}
+	return ""
+}
+
+// lifecycle event types whose order determines the replayed agent status.
+// (The session projection in fsm.go owns the same vocabulary for the session
+// dimension; these map onto the agent-liveness dimension instead.)
+const (
+	lifecycleProvisioned = "agent.provisioned"
+	lifecycleStarted     = "agent.started"
+	lifecycleTurnStarted = "agent.turn_started"
+	lifecycleSettled     = "agent.settled"
+	lifecycleFailed      = "agent.failed"
+	lifecycleTerminated  = "agent.terminated"
+)
+
+// ReplayAgentStatus folds the agent-liveness projection over a log slice:
+// the last status-carrying lifecycle event wins. Non-lifecycle records are
+// ignored; the log is causally complete, so the result is deterministic.
+func ReplayAgentStatus(evs []Event) AgentStatus {
+	status := StatusCreating
+	for i := range evs {
+		switch evs[i].Type {
+		case lifecycleProvisioned:
+			status = StatusCreating
+		case lifecycleStarted, lifecycleSettled:
+			status = StatusReady
+		case lifecycleTurnStarted:
+			status = StatusWorking
+		case lifecycleFailed:
+			status = StatusFailed
+		case lifecycleTerminated:
+			status = StatusTerminated
+		}
+	}
+	return status
+}
+
+// replayProvisionInfo extracts the provisioning payload from the log (sandbox
+// name and creation time), empty/nil for legacy logs that predate it.
+func replayProvisionInfo(evs []Event) (sandbox string, created *time.Time) {
+	for i := range evs {
+		if evs[i].Type != lifecycleProvisioned {
+			continue
+		}
+		var fields struct {
+			Sandbox string `json:"sandbox"`
+			Created string `json:"created"`
+		}
+		if err := json.Unmarshal(evs[i].Data, &fields); err != nil {
+			continue
+		}
+		sandbox = fields.Sandbox
+		if fields.Created != "" {
+			if t, err := time.Parse(time.RFC3339Nano, fields.Created); err == nil {
+				created = &t
+			}
+		}
+	}
+	return sandbox, created
+}
+
+// errRegistryReplayFailed wraps store/enumeration failures from startup
+// replay; the controller logs and continues (CR-derived views stay
+// available), rather than refusing to start.
+var errRegistryReplayFailed = fmt.Errorf("registry replay failed")
+
+// RebuildFromLog rehydrates the registry from the durable event log
+// (issue #197): every agent with a log — except a terminated session, whose
+// sandbox was deleted — is re-registered as a replayed-only agent with its
+// hub opened (seq recovered, no gap) and its session FSM and agent status
+// derived by replay. Post-restart agent views and event-surface reads
+// (read_events/stream_events after cursors) become reachable immediately;
+// the sandbox CRs remain the address source. A store read failure is
+// returned wrapped; the caller may degrade to CR-derived views.
+func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
+	ids, err := m.store.Agents()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errRegistryReplayFailed, err)
+	}
+	for _, id := range ids {
+		if m.Get(id) != nil {
+			continue // live agent already registered; live state wins
+		}
+		hub, err := NewEventHub(m.store, id)
+		if err != nil {
+			return fmt.Errorf("%w: open hub for %s: %v", errRegistryReplayFailed, id, err)
+		}
+		evs, err := hub.SubscribeSnapshot()
+		if err != nil {
+			hub.Close()
+			return fmt.Errorf("%w: replay %s: %v", errRegistryReplayFailed, id, err)
+		}
+		state := ReplaySession(evs)
+		if state == SessionTerminated {
+			// Deleted agent: no CR exists (the sandbox was deleted), so it
+			// must not re-enter the registry — get_agent stays unknown, as
+			// it was pre-restart.
+			hub.Close()
+			continue
+		}
+		sandbox, created := replayProvisionInfo(evs)
+		a := &Agent{
+			ID:           id,
+			Sandbox:      sandbox,
+			hub:          hub,
+			fsm:          NewSessionFSM(hub, id, state),
+			gw:           m.gw,
+			mgr:          m,
+			replayedOnly: true,
+		}
+		if created != nil {
+			a.Created = *created
+		}
+		a.mu.Lock()
+		a.status = ReplayAgentStatus(evs)
+		a.mu.Unlock()
+		m.mu.Lock()
+		m.agents[id] = a
+		m.mu.Unlock()
+		log.Printf("[registry] replayed agent %s (session %s, status %s)", id, state, a.status)
+	}
+	return nil
 }
