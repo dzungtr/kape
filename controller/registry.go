@@ -40,6 +40,11 @@ type AgentView struct {
 	ID      string      `json:"id"`
 	Sandbox string      `json:"sandbox"`
 	Status  AgentStatus `json:"status"`
+	// Session is the durable session lifecycle FSM state (issue #196):
+	// session = durable unit, agent = live instance. Derived from the FSM
+	// for live agents; omitted for CR-derived (post-restart) views — their
+	// replay is #197's scope.
+	Session SessionState `json:"session,omitempty"`
 	// Created is the controller-side creation time, known only for live
 	// agents; post-restart it is omitted (the registry keeps no DB).
 	Created *time.Time `json:"created,omitempty"`
@@ -51,7 +56,7 @@ type AgentView struct {
 // agentView builds the live in-memory view of an agent.
 func (a *Agent) agentView() AgentView {
 	created := a.Created
-	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Created: &created, Source: SourceLive}
+	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Session: a.fsm.State(), Created: &created, Source: SourceLive}
 }
 
 // crView derives a post-restart view from gateway sandbox state: status comes

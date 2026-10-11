@@ -62,7 +62,8 @@ type Agent struct {
 	sandboxID string // gateway sandbox UUID (used by exec RPCs)
 	piSeq     int    // last pi RPC prompt id issued
 
-	hub    *EventHub // buffered + fan-out of raw JSONL records from pi stdout
+	hub    *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
+	fsm    *SessionFSM // session lifecycle projection over the log (issue #196)
 	stdin  chan []byte
 	cancel context.CancelFunc
 	gw     GatewayClient
@@ -141,7 +142,7 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	if err != nil {
 		return nil, fmt.Errorf("open event log for %s: %w", id, err)
 	}
-	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: hub, gw: m.gw, mgr: m}
+	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: hub, fsm: NewSessionFSM(hub, id, SessionProvision), gw: m.gw, mgr: m}
 
 	agent.mu.Lock()
 	agent.status = StatusCreating
@@ -181,7 +182,11 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	m.agents[id] = agent
 	m.mu.Unlock()
 
-	agent.setStatusAndEmit(StatusReady, "agent.started")
+	if err := agent.fsm.Transition(SessionReady, "agent.started", nil); err != nil {
+		_ = m.gw.DeleteSandbox(context.Background(), name)
+		return nil, fmt.Errorf("record session started for %s: %w", id, err)
+	}
+	agent.status = StatusReady
 	return agent, nil
 }
 
@@ -236,10 +241,9 @@ func (m *AgentManager) Delete(ctx context.Context, id string) error {
 	agent.status = StatusTerminated
 	close(agent.stdin)
 	agent.mu.Unlock()
-	agent.hub.PublishLifecycle("agent.terminated", map[string]interface{}{
-		"agent_id": agent.ID,
-		"status":   StatusTerminated,
-	})
+	if err := agent.fsm.Transition(SessionTerminated, "agent.terminated", nil); err != nil {
+		log.Printf("[agent %s] record session terminated failed: %v", id, err)
+	}
 	agent.hub.Close()
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
@@ -259,18 +263,26 @@ func (m *AgentManager) Prompt(id, message string) error {
 	return agent.sendPrompt(message)
 }
 
-// sendPrompt atomically enforces the prompt policy and, if accepted, writes
-// the pi RPC prompt command to the exec stdin ({"id","type":"prompt",
-// "message"} — verified against local pi docs, docs/rpc-commands.md §prompt)
-// and flips the agent to working.
+// sendPrompt enforces the single in-flight prompt policy from the SESSION
+// FSM state (issue #196): a second prompt while the session is running is
+// rejected (HTTP 409 at the transport); ready and idle accept. If accepted,
+// the pi RPC prompt command ({"id","type":"prompt","message"} — verified
+// against local pi docs, docs/rpc-commands.md §prompt) is written to the
+// exec stdin, then the ready/idle → running transition appends its
+// lifecycle event before taking effect.
 func (a *Agent) sendPrompt(message string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	switch a.status {
-	case StatusWorking:
+	switch a.fsm.State() {
+	case SessionRunning:
 		return errTurnInFlight(a.ID)
-	case StatusReady:
-		// accepted below
+	case SessionReady, SessionIdle:
+		// accepted below, but only for a live, non-failed agent —
+		// failures are an agent-liveness condition the session vocabulary
+		// does not model (issue #196).
+		if a.status != StatusReady {
+			return errNotReady(a.ID, a.status)
+		}
 	default:
 		return errNotReady(a.ID, a.status)
 	}
@@ -283,6 +295,12 @@ func (a *Agent) sendPrompt(message string) error {
 	raw, _ := json.Marshal(cmd)
 	select {
 	case a.stdin <- append(raw, '\n'):
+		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
+			// The pi command was sent but the transition did not land in
+			// the log; surface it — the turn boundary is no longer
+			// derivable from replay alone.
+			log.Printf("[agent %s] record turn_started failed: %v", a.ID, err)
+		}
 		a.status = StatusWorking
 		log.Printf("[agent %s] prompt accepted: %q", a.ID, message)
 		return nil
@@ -425,13 +443,17 @@ func (m *AgentManager) onPiRecord(agent *Agent, raw json.RawMessage) {
 		return
 	}
 	agent.mu.Lock()
-	if agent.status == StatusWorking {
-		agent.status = StatusReady
+	if agent.status != StatusWorking {
 		agent.mu.Unlock()
-		log.Printf("[agent %s] turn settled", agent.ID)
 		return
 	}
+	agent.status = StatusReady
 	agent.mu.Unlock()
+	// running → idle in the session FSM (issue #196).
+	if err := agent.fsm.Transition(SessionIdle, "agent.settled", nil); err != nil {
+		log.Printf("[agent %s] record settled failed: %v", agent.ID, err)
+	}
+	log.Printf("[agent %s] turn settled", agent.ID)
 }
 
 // phasePoll watches the sandbox phase for the agent's lifetime; ERROR flips
@@ -466,6 +488,10 @@ func (m *AgentManager) fail(agent *Agent, reason string) {
 	}
 	agent.status = StatusFailed
 	agent.mu.Unlock()
+	// The session vocabulary has no failed state (issue #196: failures are
+	// an agent-liveness concern; Epic 3 owns paused/reviving recovery), so
+	// this lifecycle event is for the agent dimension and is ignored by the
+	// session replay projection.
 	log.Printf("[agent %s] failed: %s", agent.ID, reason)
 	agent.hub.PublishLifecycle("agent.failed", map[string]interface{}{
 		"agent_id": agent.ID,
