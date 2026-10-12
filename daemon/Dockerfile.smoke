@@ -19,4 +19,10 @@ COPY --from=builder /out/daemon /daemon
 # no chmod: rootless buildah cannot set mode bits; /etc/profile sources
 # profile.d files, executability is not required.
 COPY daemon/kape-daemon-profile.sh /etc/profile.d/kape-daemon.sh
+# Copies into bin paths (verified live on microk8s, #217): the sandbox
+# supervisor's landlock ruleset denies exec of arbitrary rootfs paths (EACCES
+# from the startup login shell), while bin dirs are allowed. The hook tries
+# /usr/local/bin, /opt/openshell/bin, then the raw /daemon binary.
+COPY --from=builder /out/daemon /usr/local/bin/kape-daemon
+COPY --from=builder /out/daemon /opt/openshell/bin/kape-daemon
 ENV KAPE_DAEMON_ADDR=0.0.0.0:9090
