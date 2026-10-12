@@ -47,6 +47,11 @@ type AgentView struct {
 	ID      string      `json:"id"`
 	Sandbox string      `json:"sandbox"`
 	Status  AgentStatus `json:"status"`
+	// Degraded is the transient pull-liveness flag (issue #213, D6): true
+	// while the pull loop has hit degradedFailureThreshold consecutive pull
+	// failures with no successful pull since. Never durable — a replayed or
+	// CR-derived agent is never degraded.
+	Degraded bool `json:"degraded,omitempty"`
 	// Session is the durable session lifecycle FSM state (issue #196):
 	// session = durable unit, agent = live instance. Derived from the FSM
 	// for live agents; omitted for CR-derived (post-restart) views — their
@@ -72,7 +77,10 @@ func (a *Agent) agentView() AgentView {
 	if a.replayedOnly {
 		source = SourceReplayed
 	}
-	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Session: a.fsm.State(), Created: created, Source: source}
+	a.mu.Lock()
+	degraded := a.degraded
+	a.mu.Unlock()
+	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Degraded: degraded, Session: a.fsm.State(), Created: created, Source: source}
 }
 
 // crView derives a post-restart view from gateway sandbox state: status comes

@@ -68,6 +68,15 @@ type Agent struct {
 	// "replayed".
 	replayedOnly bool
 
+	// bootID is the last observed daemon boot identity (issue #213, D6):
+	// learned by the puller's reconnect preflight, compared to detect daemon
+	// death (new boot_id + pi_running:false). In-memory only.
+	bootID string
+	// degraded is the transient liveness flag (issue #213, D6): set after
+	// degradedFailureThreshold consecutive pull failures, cleared by any
+	// successful pull. Surfaced on agent_view, never durable.
+	degraded bool
+
 	hub   *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
 	fsm   *SessionFSM // session lifecycle projection over the log (issue #196)
 	stdin chan []byte // exec break-glass path only; nil under the pull transport
@@ -209,6 +218,11 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		ctx, cancel := context.WithCancel(context.Background())
 		agent.cancel = cancel
 		agent.daemon = m.daemonClient()
+		// Learn the daemon's boot identity BEFORE the puller races against
+		// the world (issue #213 D6): the first boot_id comparison needs a
+		// known baseline. Unreachable daemon → tolerated; the puller's
+		// startup preflight retries.
+		m.noteBootID(agent, ctx)
 		go m.phasePoll(agent, ctx)
 		go m.runPuller(agent, ctx)
 	} else if err := m.startPi(agent, resolved.Model); err != nil { // break-glass exec path
