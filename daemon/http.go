@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,6 +124,14 @@ func NewRouter(agentID, bootID string, spool *Spool, pi *Pi, queue *CommandQueue
 		}
 		if err := queue.Accept(c); err != nil {
 			httpFieldError(w, err)
+			return
+		}
+		// Delivery: acceptance alone does not reach pi. Forward the accepted
+		// command to pi's stdin here (single call site). Idempotent re-posts
+		// re-deliver, which lets a client retry a failed send without a new
+		// command id (Accept is a no-op for a same-type re-post).
+		if err := pi.SendCommand(context.Background(), c); err != nil {
+			httpError(w, http.StatusInternalServerError, fmt.Errorf("deliver command to pi: %w", err))
 			return
 		}
 		stored, _ := queue.Get(c.ID)

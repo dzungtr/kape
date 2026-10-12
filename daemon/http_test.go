@@ -22,7 +22,7 @@ func newFixture(t *testing.T, token string) *fixture {
 	if err != nil {
 		t.Fatalf("spool: %v", err)
 	}
-	t.Cleanup(func() { spool.Close() })
+	t.Cleanup(func() { spool.Close() }) //nolint:errcheck
 	pi := NewPi([]string{"sh", "-c", "sleep 30"}, spool)
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start fake pi: %v", err)
@@ -125,13 +125,13 @@ func TestCommandsLifecycle(t *testing.T) {
 // /records serves the spool in ascending spool_id order with verbatim data.
 func TestRecordsEndpoint(t *testing.T) {
 	f := newFixture(t, "tok")
-	f.spool.Append(`{"type":"turn_started","turn_id":"t-0001"}`)
-	f.spool.Append(`{"type":"text_delta","text":"unfiltered delta"}`)
+	f.spool.Append(`{"type":"turn_started","turn_id":"t-0001"}`)      //nolint:errcheck
+	f.spool.Append(`{"type":"text_delta","text":"unfiltered delta"}`) //nolint:errcheck
 	rec := f.do(t, "GET", "/records?after=0", "tok", nil)
 	var resp struct {
 		Records []Record `json:"records"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil { //nolint:errcheck
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Records) != 2 {
@@ -148,11 +148,76 @@ func TestRecordsEndpoint(t *testing.T) {
 		t.Fatalf("text_delta not served unfiltered: %v %s", err, resp.Records[1].Data)
 	}
 	rec = f.do(t, "GET", "/records?after=1", "tok", nil)
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	json.Unmarshal(rec.Body.Bytes(), &resp) //nolint:errcheck
 	if len(resp.Records) != 1 || resp.Records[0].SpoolID != 2 {
 		t.Fatalf("after=1 got %d records, want 1 at spool_id 2", len(resp.Records))
 	}
 	if rec := f.do(t, "GET", "/records?after=-1", "tok", nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad after = %d, want 400", rec.Code)
 	}
+}
+
+// P0 regression: POST /commands must deliver the accepted command to pi, not
+// just enqueue it. A prompt through the HTTP surface spawns the built-in fake
+// pi (SendCommand respawns a dead pi) and its deterministic four-record turn
+// must land in the spool.
+func TestCommandsDeliveredToPi(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool.jsonl"), 100)
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	t.Cleanup(func() { spool.Close() }) //nolint:errcheck
+	// Scripted fake pi emitting the same deterministic turn as the built-in
+	// fake pi: the test binary's main() never runs runFakePi, so spawn an
+	// equivalent shell fake instead of the self-fakepi path.
+	fake := `while read line; do printf '{"type":"turn_started"}
+{"type":"tool_call"}
+{"type":"text_delta"}
+{"type":"agent_settled"}
+'; done`
+	pi := NewPi([]string{"sh", "-c", fake}, spool)
+	router := NewRouter("agent-1", "boot-abc", spool, pi, NewCommandQueue(), "tok")
+
+	req, _ := json.Marshal(Command{ID: "c1", Type: CommandPrompt, Payload: json.RawMessage(`"hello"`)})
+	httpReq := httptest.NewRequest("POST", "/commands", bytes.NewReader(req))
+	httpReq.Header.Set("Authorization", "Bearer tok")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httpReq)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /commands = %d, want 202", rec.Code)
+	}
+
+	// Long-poll the spool for the full deterministic turn.
+	deadline := time.Now().Add(5 * time.Second)
+	var recs []Record
+	for time.Now().Before(deadline) {
+		recs = spool.Read(0, 250*time.Millisecond)
+		if got := recordTypes(recs); len(got) >= 4 && got[3] == "agent_settled" {
+			break
+		}
+	}
+	types := recordTypes(recs)
+	want := []string{"turn_started", "tool_call", "text_delta", "agent_settled"}
+	if len(types) < 4 {
+		t.Fatalf("spool records %v, want at least %v", types, want)
+	}
+	for i, w := range want {
+		if types[i] != w {
+			t.Fatalf("record %d type = %q, want %q (all: %v)", i, types[i], w, types)
+		}
+	}
+}
+
+// recordTypes extracts the "type" field of each spool record's data.
+func recordTypes(recs []Record) []string {
+	var types []string
+	for _, r := range recs {
+		var v struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r.Data, &v) == nil {
+			types = append(types, v.Type)
+		}
+	}
+	return types
 }

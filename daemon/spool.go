@@ -65,7 +65,7 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 		}
 		var e spoolEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			f.Close()
+			f.Close() //nolint:errcheck
 			return nil, fmt.Errorf("spool %s: corrupt record at recovery: %w", path, err)
 		}
 		s.recs = append(s.recs, e)
@@ -74,7 +74,7 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		f.Close()
+		f.Close() //nolint:errcheck
 		return nil, fmt.Errorf("scan spool %s: %w", path, err)
 	}
 	return s, nil
@@ -175,4 +175,4 @@ func toRecords(recs []spoolEntry) []Record {
 }
 
 // Close releases the file.
-func (s *Spool) Close() error { return s.f.Close() }
+func (s *Spool) Close() error { return s.f.Close() } //nolint:errcheck

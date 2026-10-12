@@ -92,7 +92,7 @@ func run(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer spool.Close()
+	defer spool.Close() //nolint:errcheck
 	pi := NewPi(cfg.PiCommand, spool)
 	if err := pi.Start(); err != nil {
 		return fmt.Errorf("start pi: %w", err)

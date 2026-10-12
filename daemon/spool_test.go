@@ -13,7 +13,7 @@ func mustSpool(t *testing.T, path string, max int) *Spool {
 	if err != nil {
 		t.Fatalf("NewSpool: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { s.Close() }) //nolint:errcheck
 	return s
 }
 
@@ -32,7 +32,7 @@ func TestSpoolSeqContinuesAcrossRestart(t *testing.T) {
 	if r1.SpoolID != 1 {
 		t.Fatalf("first spool_id = %d, want 1", r1.SpoolID)
 	}
-	s1.Close() // hard close like a daemon restart
+	_ = s1.Close() // hard close like a daemon restart
 
 	s2 := mustSpool(t, path, 100)
 	r3, err := s2.Append(`{"type":"text_delta","text":"after restart"}`)
@@ -48,8 +48,8 @@ func TestSpoolSeqContinuesAcrossRestart(t *testing.T) {
 func TestSpoolReadLongPoll(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spool.jsonl")
 	s := mustSpool(t, path, 100)
-	s.Append(`{"a":1}`)
-	s.Append(`{"a":2}`)
+	s.Append(`{"a":1}`) //nolint:errcheck
+	s.Append(`{"a":2}`) //nolint:errcheck
 
 	if got := len(s.Read(0, 0)); got != 2 {
 		t.Fatalf("replay got %d records, want 2", got)
@@ -72,7 +72,7 @@ func TestSpoolReadLongPoll(t *testing.T) {
 	done := make(chan []Record, 1)
 	go func() { done <- s.Read(2, 5*time.Second) }()
 	time.Sleep(10 * time.Millisecond)
-	s.Append(`{"a":3}`)
+	s.Append(`{"a":3}`) //nolint:errcheck
 	select {
 	case recs := <-done:
 		if len(recs) != 1 || recs[0].SpoolID != 3 {

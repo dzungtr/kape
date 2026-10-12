@@ -74,26 +74,41 @@ func (p *Pi) Start() error {
 
 // relayStdout spools each pi stdout line verbatim — never re-wrapped. Malformed
 // lines are still spooled as raw text inside a JSON string (serving-time
-// problem, not transport).
+// problem, not transport). A stdout line larger than the scanner's 1MiB token
+// limit does not kill the relay: the oversize line is reported as a pi_stderr
+// notice and drained unbounded via bufio.Reader, then normal scanning resumes.
 func (p *Pi) relayStdout(r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" {
-			continue
-		}
-		// Verbatim: a well-formed JSON record is spooled as-is, never
-		// re-wrapped. Malformed output falls back to a JSON string so the
-		// envelope stays parseable (honest history, serving-time problem).
-		data := line
-		if !json.Valid([]byte(line)) {
-			if raw, err := json.Marshal(line); err == nil {
-				data = string(raw)
+	// bufio.Reader (not bufio.Scanner): Scanner's fixed token cap makes a
+	// >1MiB stdout line silently kill the relay. ReadString is unbounded, so
+	// oversized lines flow through and stdout keeps streaming until pi dies.
+	rd := bufio.NewReader(r)
+	for {
+		line, err := rd.ReadString('\n')
+		p.spoolStdoutLine(strings.TrimRight(line, "\n"))
+		if err != nil {
+			if err != io.EOF {
+				p.stderrNotice(fmt.Sprintf("pi stdout relay error: %v", err))
 			}
+			return
 		}
-		p.notices.Append(data) //nolint:errcheck // truncation is notice-path handled
 	}
+}
+
+// spoolStdoutLine spools one verbatim stdout line (see relayStdout).
+func (p *Pi) spoolStdoutLine(line string) {
+	if line == "" {
+		return
+	}
+	// Verbatim: a well-formed JSON record is spooled as-is, never
+	// re-wrapped. Malformed output falls back to a JSON string so the
+	// envelope stays parseable (honest history, serving-time problem).
+	data := line
+	if !json.Valid([]byte(line)) {
+		if raw, err := json.Marshal(line); err == nil {
+			data = string(raw)
+		}
+	}
+	p.notices.Append(data) //nolint:errcheck // truncation is notice-path handled
 }
 
 // relayStderr turns each pi stderr line into a pi_stderr notice record.
@@ -101,13 +116,17 @@ func (p *Pi) relayStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	for sc.Scan() {
-		line := sc.Text()
-		if line == "" {
-			continue
-		}
-		n, _ := json.Marshal(map[string]string{"type": "pi_stderr", "text": line})
-		p.notices.Append(string(n)) //nolint:errcheck
+		p.stderrNotice(sc.Text())
 	}
+}
+
+// stderrNotice spools text as a pi_stderr notice record.
+func (p *Pi) stderrNotice(text string) {
+	if text == "" {
+		return
+	}
+	n, _ := json.Marshal(map[string]string{"type": "pi_stderr", "text": text})
+	p.notices.Append(string(n)) //nolint:errcheck
 }
 
 // awaitExit emits a pi_exit notice when the process ends and flips pi_running.
@@ -183,7 +202,7 @@ type fakePiRecord struct {
 // accepted and no-op in the stub. Determinism: turn ids are ordinal counters.
 func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 	out := bufio.NewWriter(stdout)
-	defer out.Flush()
+	defer out.Flush() //nolint:errcheck
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	turn := 0
@@ -196,7 +215,7 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			fmt.Fprintf(stderr, "fakepi: bad command line: %v\n", err)
+			fmt.Fprintf(stderr, "fakepi: bad command line: %v\n", err) //nolint:errcheck
 			continue
 		}
 		if c.Type != CommandPrompt {
@@ -215,9 +234,9 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 			if err != nil {
 				return err
 			}
-			out.Write(b)
-			out.WriteByte('\n')
-			out.Flush()
+			out.Write(b)        //nolint:errcheck
+			out.WriteByte('\n') //nolint:errcheck
+			out.Flush()         //nolint:errcheck
 		}
 	}
 	return sc.Err()

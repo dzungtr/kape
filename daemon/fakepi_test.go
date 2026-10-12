@@ -44,7 +44,7 @@ func TestFakePiDeterministicTurns(t *testing.T) {
 
 	// Determinism: same input → byte-identical output.
 	var out2 bytes.Buffer
-	runFakePi(strings.NewReader(in), &out2, &bytes.Buffer{})
+	runFakePi(strings.NewReader(in), &out2, &bytes.Buffer{}) //nolint:errcheck
 	if out.String() != out2.String() {
 		t.Fatal("fake pi output is not deterministic across runs")
 	}
