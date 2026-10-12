@@ -44,7 +44,11 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "kape-controller", Version: "v1"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Create a sandbox agent running the pi coding agent. All profile fields optional; defaults from controller config. Returns the agent view {id, sandbox, status}.",
+		Description: "Create a sandbox agent running the pi coding agent. All profile fields optional; defaults from controller config, or from the parent's resolved profile when parent_id is set (spawning, issue #216). Returns the agent view {id, sandbox, status, parent, children}.",
+	}, handleCreateAgent(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_agent",
+		Description: "Get one sandbox agent's detail incl. current status and parent/children linkage. Errors if the agent id is unknown.",
 	}, handleCreateAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_agent",

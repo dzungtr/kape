@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -55,6 +56,15 @@ type Agent struct {
 	ID      string    `json:"id"`
 	Sandbox string    `json:"sandbox"`
 	Created time.Time `json:"created"`
+	// ParentID is the spawning parent (issue #216, D8): "" for a root agent.
+	// Restored from the durable provisioned event on replay, so depth caps
+	// and cascade termination survive a controller restart.
+	ParentID string
+	// resolved is the profile this agent was created with (fully resolved);
+	// the inheritance source for spawned children. Empty for replayed agents
+	// whose log predates the profile payload — their children fall back to
+	// config defaults.
+	resolved ResolvedProfile
 
 	mu     sync.Mutex
 	status AgentStatus
@@ -161,6 +171,21 @@ func (m *AgentManager) daemonClient() DaemonClient {
 // plane — the daemon puller (default, issue #212) or the pi-pump exec stream
 // (break-glass) — runs for the agent's lifetime.
 func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Agent, error) {
+	if profile == nil {
+		profile = &CreateProfile{}
+	}
+	parent, err := m.resolveParent(ctx, profile.ParentID)
+	if err != nil {
+		return nil, err
+	}
+	// Caps BEFORE any gateway call (D8): a rejected spawn never leaks a
+	// sandbox.
+	if err := m.checkSpawnCaps(ctx, profile.ParentID, parent); err != nil {
+		return nil, err
+	}
+	if parent != nil {
+		inheritProfile(profile, parent.resolved)
+	}
 	resolved, err := m.cfg.ResolveProfile(profile)
 	if err != nil {
 		return nil, err
@@ -176,7 +201,7 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	if err != nil {
 		return nil, fmt.Errorf("open event log for %s: %w", id, err)
 	}
-	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: hub, fsm: NewSessionFSM(hub, id, SessionProvision), gw: m.gw, mgr: m}
+	agent := &Agent{ID: id, Sandbox: name, Created: time.Now(), hub: hub, fsm: NewSessionFSM(hub, id, SessionProvision), gw: m.gw, mgr: m, ParentID: profile.ParentID, resolved: resolved}
 
 	agent.mu.Lock()
 	agent.status = StatusCreating
@@ -184,10 +209,16 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	log.Printf("[agent %s] creating sandbox %s (image %s, provider %s, cpu %s, memory %s, model %q)",
 		id, name, resolved.Image, resolved.Provider, resolved.Resources.CPU, resolved.Resources.Memory, resolved.Model)
 
-	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, map[string]string{
+	labels := map[string]string{
 		LabelManagedBy: m.managedBy, // ownership tag: the label registry's filter key
 		LabelAgentID:   id,          // agent-id: resolves sandbox → agent after restart
-	})
+	}
+	if parent != nil {
+		// Durable parent linkage (issue #216): drives the children cap count,
+		// CR-derived views, and post-restart cascade termination.
+		labels[LabelParentAgentID] = parent.ID
+	}
+	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -200,12 +231,23 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	// created and sandbox land in the log so a restart rebuilds the view
 	// from replay alone (issue #197); the sandbox CR stays the address
 	// source — this payload only lets the replayed view echo it.
-	agent.hub.PublishLifecycle("agent.provisioned", map[string]interface{}{
+	prov := map[string]interface{}{
 		"agent_id": agent.ID,
 		"status":   StatusCreating,
 		"sandbox":  agent.Sandbox,
 		"created":  agent.Created.UTC().Format(time.RFC3339Nano),
-	})
+		// Profile payload (issue #216): lets replay reconstruct the resolved
+		// profile so spawned children inherit it across a controller restart.
+		"image":    resolved.Image,
+		"provider": resolved.Provider,
+		"model":    resolved.Model,
+		"cpu":      resolved.Resources.CPU,
+		"memory":   resolved.Resources.Memory,
+	}
+	if parent != nil {
+		prov["parent"] = parent.ID
+	}
+	agent.hub.PublishLifecycle("agent.provisioned", prov)
 
 	if err := m.gw.ApplyModelGatewayPolicy(ctx, name); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
@@ -262,6 +304,103 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	return agent, nil
 }
 
+// resolveParent validates the optional parent_id (issue #216 D8) and returns
+// the registered parent, nil for a root create. Unknown or already-terminated
+// parents are a field-naming validation error — raised BEFORE any gateway
+// call, so a rejected spawn never leaks a sandbox.
+func (m *AgentManager) resolveParent(ctx context.Context, parentID string) (*Agent, error) {
+	if parentID == "" {
+		return nil, nil
+	}
+	parent := m.Get(parentID)
+	if parent == nil || parent.Status() == StatusTerminated {
+		return nil, fieldErr("parent_id", fmt.Sprintf("unknown parent agent %q", parentID))
+	}
+	return parent, nil
+}
+
+// checkSpawnCaps enforces the D8 caps against the parent's current linkage:
+// SPAWN_MAX_DEPTH (root=0, subagent=1, sub-subagent=2 by default) and
+// SPAWN_MAX_CHILDREN per parent. Called before any gateway call.
+func (m *AgentManager) checkSpawnCaps(ctx context.Context, parentID string, parent *Agent) error {
+	if parent == nil {
+		return nil
+	}
+	if parent.Depth()+1 > m.cfg.SpawnMaxDepth {
+		return fmt.Errorf("%w: spawning under %s would exceed SPAWN_MAX_DEPTH=%d", ErrSpawnDepthExceeded, parentID, m.cfg.SpawnMaxDepth)
+	}
+	if n := m.childCount(ctx, parentID); n >= m.cfg.SpawnMaxChildren {
+		return fmt.Errorf("%w: parent %s already has %d children (SPAWN_MAX_CHILDREN=%d)", ErrSpawnChildrenExceeded, parentID, n, m.cfg.SpawnMaxChildren)
+	}
+	return nil
+}
+
+// childCount counts the parent's children: the sandbox CRs are the durable
+// linkage source (parent-agent-id label), with the in-memory map as fallback
+// if the gateway listing fails.
+func (m *AgentManager) childCount(ctx context.Context, parentID string) int {
+	infos, err := m.gw.ListSandboxes(ctx, LabelParentAgentID+"="+parentID)
+	if err == nil {
+		n := 0
+		for _, info := range infos {
+			if m.owned(info) {
+				n++
+			}
+		}
+		return n
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, a := range m.agents {
+		if a.ParentID == parentID {
+			n++
+		}
+	}
+	return n
+}
+
+// Depth returns the agent's spawning depth: the number of ancestors in the
+// parent chain (root = 0). A dangling parent link ends the walk.
+func (a *Agent) Depth() int {
+	depth := 0
+	seen := map[string]bool{a.ID: true}
+	cur := a
+	for cur.ParentID != "" {
+		if seen[cur.ParentID] {
+			return depth // corrupt-linkage guard; no infinite loop
+		}
+		seen[cur.ParentID] = true
+		parent := a.mgr.Get(cur.ParentID)
+		if parent == nil {
+			return depth
+		}
+		cur = parent
+		depth++
+	}
+	return depth
+}
+
+// inheritProfile applies the D8 inheritance rule to the child's override
+// set: omitted fields take the parent's resolved value (Name excluded —
+// sandbox names must be unique). Explicit child fields win, matching the
+// existing partial-profile Create semantics.
+func inheritProfile(profile *CreateProfile, parent ResolvedProfile) {
+	if profile.Image == "" {
+		profile.Image = parent.Image
+	}
+	if profile.Provider == "" {
+		profile.Provider = parent.Provider
+	}
+	if profile.Model == "" {
+		profile.Model = parent.Model
+	}
+	if profile.Resources == nil {
+		r := parent.Resources
+		profile.Resources = &r
+	}
+}
+
 // waitReady polls the sandbox phase until READY; ERROR is surfaced as failure.
 func (m *AgentManager) waitReady(ctx context.Context, agent *Agent) error {
 	deadline := time.Now().Add(10 * time.Minute)
@@ -290,8 +429,56 @@ func (m *AgentManager) Get(id string) *Agent {
 	return m.agents[id]
 }
 
-// Delete aborts the exec stream, deletes the sandbox, removes the agent.
+// Delete terminates the agent and cascades to its spawned subtree
+// (issue #216, D8): children — and grandchildren, recursively — terminate
+// bottom-up, each child's sandbox deleted before its parent's. A standalone
+// child delete (no cascade) detaches it from the parent view.
 func (m *AgentManager) Delete(ctx context.Context, id string) error {
+	return m.deleteCascade(ctx, id, map[string]bool{})
+}
+
+// deleteCascade deletes descendants first (bottom-up), then the agent itself.
+// CR-only children (a registry whose replay lost their log) are torn down by
+// direct sandbox deletion — they are not registered, so there is nothing
+// else to terminate.
+func (m *AgentManager) deleteCascade(ctx context.Context, id string, visited map[string]bool) error {
+	if visited[id] {
+		return nil // corrupt-linkage guard (cycle in the parent chain)
+	}
+	visited[id] = true
+	m.mu.Lock()
+	var childIDs []string
+	for aid, a := range m.agents {
+		if a.ParentID == id {
+			childIDs = append(childIDs, aid)
+		}
+	}
+	m.mu.Unlock()
+	sort.Strings(childIDs) // deterministic bottom-up order
+	var firstErr error
+	for _, cid := range childIDs {
+		if err := m.deleteCascade(ctx, cid, visited); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Children whose log is gone (CR-derived only): delete their sandbox
+	// directly so a parent delete never orphans a live sandbox.
+	if infos, err := m.gw.ListSandboxes(ctx, LabelParentAgentID+"="+id); err == nil {
+		for _, info := range infos {
+			if m.owned(info) && m.Get(info.Labels[LabelAgentID]) == nil {
+				_ = m.gw.DeleteSandbox(ctx, info.Name)
+			}
+		}
+	}
+	if err := m.deleteOne(ctx, id); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// deleteOne aborts the exec stream, deletes the sandbox, removes the agent —
+// the single-agent teardown, no cascade.
+func (m *AgentManager) deleteOne(ctx context.Context, id string) error {
 	m.mu.Lock()
 	agent := m.agents[id]
 	delete(m.agents, id)
@@ -543,6 +730,10 @@ func (m *AgentManager) Abort(id string) error {
 var (
 	// ErrUnknownAgent: no agent with the given id is registered.
 	ErrUnknownAgent = errors.New("unknown agent")
+	// ErrSpawnDepthExceeded: the spawn would exceed SPAWN_MAX_DEPTH (issue #216).
+	ErrSpawnDepthExceeded = errors.New("spawn rejected: max depth exceeded")
+	// ErrSpawnChildrenExceeded: the parent is at SPAWN_MAX_CHILDREN (issue #216).
+	ErrSpawnChildrenExceeded = errors.New("spawn rejected: max children exceeded")
 	// ErrTurnInFlight: a turn is already in flight; the prompt policy rejected it.
 	ErrTurnInFlight = errors.New("has a turn in flight; abort or wait for settle")
 	// ErrNotReady: the agent's FSM status does not permit the operation
