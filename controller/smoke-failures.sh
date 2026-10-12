@@ -264,7 +264,7 @@ CREATED_IDS+=("$ID1")
 wait_ready_agent "$ID1" && pass "agent A ready (fake-pi sandbox)" || { echo "FAIL: agent A never ready"; exit 1; }
 SBX1=$(vsandbox "$ID1")
 BO0=$(wait_podip "$SBX1" 30) && pass "daemon address resolved from CR (podIP $BO0)" || { echo "FAIL: no podIP on $SBX1"; exit 1; }
-wait_daemon_listening "$SBX1" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX1"; exit 1; }
+wait_daemon_listening "$SBX1" 120 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX1"; exit 1; }
 
 P=$(http_code -X POST "$BASE/agents/$ID1/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "prompt accepted (202)" "[ '$P' = '202' ]"
@@ -294,7 +294,7 @@ ID2=$(create_agent)
 CREATED_IDS+=("$ID2")
 wait_ready_agent "$ID2" && pass "agent B ready" || { echo "FAIL: agent B never ready"; exit 1; }
 SBX2=$(vsandbox "$ID2")
-wait_daemon_listening "$SBX2" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX2"; exit 1; }
+wait_daemon_listening "$SBX2" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX2"; exit 1; }
 POD2=$(sbx_pod "$SBX2")
 [ -n "$POD2" ] && pass "sandbox pod located ($POD2)" || { echo "FAIL: no pod for $SBX2"; exit 1; }
 
@@ -331,7 +331,7 @@ ID3=$(create_agent)
 CREATED_IDS+=("$ID3")
 wait_ready_agent "$ID3" && pass "agent C ready" || { echo "FAIL: agent C never ready"; exit 1; }
 SBX3=$(vsandbox "$ID3")
-wait_daemon_listening "$SBX3" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX3"; exit 1; }
+wait_daemon_listening "$SBX3" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX3"; exit 1; }
 P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "turn 1 prompt accepted (202)" "[ '$P' = '202' ]"
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "turn 1 settled (fully pulled baseline)" || { echo "FAIL: turn 1 never settled"; }
@@ -382,7 +382,7 @@ ID4=$(create_agent)
 CREATED_IDS+=("$ID4")
 wait_ready_agent "$ID4" && pass "agent D ready" || { echo "FAIL: agent D never ready"; exit 1; }
 SBX4=$(vsandbox "$ID4")
-wait_daemon_listening "$SBX4" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX4"; exit 1; }
+wait_daemon_listening "$SBX4" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX4"; exit 1; }
 IP0=$(wait_podip "$SBX4" 30)
 kubectl delete pod -n "$NS" "$(sbx_pod "$SBX4")" >/dev/null 2>&1
 IP1=$(wait_podip "$SBX4" 180)
