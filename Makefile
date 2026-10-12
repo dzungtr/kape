@@ -16,6 +16,7 @@ build: ## Build all Go binaries, Python wheel, and dashboard
 	go build -o ./task-service/task-service ./task-service/cmd/main
 	go build ./adapters/cmd/...
 	go build ./kapeproxy/cmd/...
+	go build -o /dev/null ./daemon  # ./daemon is a directory; output to /dev/null
 	cd runtime && uv build
 	cd dashboard && bun run build
 
@@ -35,11 +36,12 @@ test: ## Run all tests (Go, Python, dashboard)
 	$(PODMAN_ENV) go test ./task-service/...
 	$(PODMAN_ENV) go test ./adapters/...
 	$(PODMAN_ENV) go test ./kapeproxy/...
+	$(PODMAN_ENV) go test ./daemon/...
 	cd runtime && conda run -n kape-runtime pytest
 	cd dashboard && bun run test -- --passWithNoTests
 
 lint: ## Run golangci-lint and ruff across all modules
-	golangci-lint run ./operator/... ./task-service/... ./adapters/... ./kapeproxy/...
+	golangci-lint run ./operator/... ./task-service/... ./adapters/... ./kapeproxy/... ./daemon/...
 	cd runtime && uv run ruff check . && uv run ruff format --check .
 	cd dashboard && bun run lint
 
@@ -47,6 +49,7 @@ build-images: ## Build all container images with podman
 	podman build -t kape-operator:dev -f operator/Dockerfile .
 	podman build -t kape-task-service:dev -f task-service/Dockerfile .
 	podman build -t kape-controller:dev -f controller/Dockerfile .
+	podman build -t kape-daemon:dev -f daemon/Dockerfile .
 	podman build -t kape-runtime:dev -f runtime/Dockerfile .
 	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
@@ -57,6 +60,7 @@ docker-build: ## Build all container images using docker
 	docker build -t kape-operator:dev -f operator/Dockerfile .
 	docker build -t kape-task-service:dev -f task-service/Dockerfile .
 	docker build -t kape-controller:dev -f controller/Dockerfile .
+	docker build -t kape-daemon:dev -f daemon/Dockerfile .
 	docker build -t kape-runtime:dev -f runtime/Dockerfile .
 	docker build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	docker build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
@@ -67,6 +71,7 @@ podman-build: ## Build all images using podman (local dev)
 	podman build -t kape-operator:dev -f operator/Dockerfile .
 	podman build -t kape-task-service:dev -f task-service/Dockerfile .
 	podman build -t kape-controller:dev -f controller/Dockerfile .
+	podman build -t kape-daemon:dev -f daemon/Dockerfile .
 	podman build -t kape-runtime:dev -f runtime/Dockerfile .
 	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
