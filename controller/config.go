@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -67,11 +68,15 @@ func (r Resources) Validate() error {
 // create_agent: every field is optional; omitted fields fall back to
 // Config defaults (env, then flag override).
 type CreateProfile struct {
-	Name      string     `json:"name"`      // sandbox name (DNS label); default "sbx-<id>"
-	Image     string     `json:"image"`     // OCI image reference; default Config.DefaultImage
-	Resources *Resources `json:"resources"` // cpu/memory quantities; default Config.DefaultResources
-	Provider  string     `json:"provider"`  // OpenShell provider name; default Config.DefaultProvider
-	Model     string     `json:"model"`     // model id patched into pi models.json + PI_MODEL; default: image's own selection
+	Name      string     `json:"name"`      // sandbox name (DNS label); default "sbx-<id>"; never inherited from the parent (names must be unique)
+	Image     string     `json:"image"`     // OCI image reference; default: parent's resolved image (child), else Config.DefaultImage
+	Resources *Resources `json:"resources"` // cpu/memory quantities; default: parent's resolved resources (child), else Config.DefaultResources
+	Provider  string     `json:"provider"`  // OpenShell provider name; default: parent's resolved provider (child), else Config.DefaultProvider
+	Model     string     `json:"model"`     // model id patched into pi models.json + PI_MODEL; default: parent's resolved model (child), else image's own selection
+	// ParentID (issue #216, ADR-0083 D8): optional parent agent for spawning.
+	// The child inherits the parent's profile unless overridden, and is
+	// subject to the spawn caps (Config.SpawnMaxDepth / SpawnMaxChildren).
+	ParentID string `json:"parent_id,omitempty"`
 }
 
 // Validation rules (consumed by the MCP create tool and smoke tests):
@@ -111,6 +116,9 @@ func (p *CreateProfile) Validate() error {
 	}
 	if p.Model != "" && !modelRe.MatchString(p.Model) {
 		return fieldErr("model", fmt.Sprintf("%q must contain only [A-Za-z0-9._:/-]", p.Model))
+	}
+	if p.ParentID != "" && !providerRe.MatchString(p.ParentID) {
+		return fieldErr("parent_id", fmt.Sprintf("%q must be a non-empty agent id", p.ParentID))
 	}
 	return nil
 }
@@ -188,6 +196,8 @@ type Config struct {
 	Transport        string    // data plane: pull (default) or exec (break-glass)
 	DaemonAddr       string    // daemon base URL (STATIC CONFIG in this slice; Sandbox CR resolution is #214)
 	DaemonToken      string    // static bearer token placeholder (ADR-0083 D5)
+	SpawnMaxDepth    int       // max spawning depth: root=0, subagent=1, sub-subagent=2 (issue #216)
+	SpawnMaxChildren int       // max children per parent agent (issue #216)
 }
 
 // DefaultConfig is the compiled-in baseline (matches the spike's flags).
@@ -202,6 +212,8 @@ func DefaultConfig() Config {
 		ModelGatewayURL:  "http://model-gateway-http.aperture.svc.cluster.local/v1",
 		EventStorePath:   "controller-events.db",
 		Transport:        TransportPull,
+		SpawnMaxDepth:    2, // D8: root → subagent → sub-subagent
+		SpawnMaxChildren: 8,
 	}
 }
 
@@ -244,6 +256,20 @@ func envConfig(def Config) Config {
 	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
 		def.DaemonToken = v
 	}
+	if v := os.Getenv("KAPE_SPAWN_MAX_DEPTH"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			panic(fmt.Sprintf("KAPE_SPAWN_MAX_DEPTH: %q must be a non-negative integer", v))
+		}
+		def.SpawnMaxDepth = n
+	}
+	if v := os.Getenv("KAPE_SPAWN_MAX_CHILDREN"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			panic(fmt.Sprintf("KAPE_SPAWN_MAX_CHILDREN: %q must be a positive integer", v))
+		}
+		def.SpawnMaxChildren = n
+	}
 	return def
 }
 
@@ -262,6 +288,8 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.Transport, "transport", c.Transport, "data plane: pull (default) or exec break-glass (env KAPE_TRANSPORT)")
 	fs.StringVar(&c.DaemonAddr, "daemon-addr", c.DaemonAddr, "daemon base URL, static in this slice (env KAPE_DAEMON_ADDR)")
 	fs.StringVar(&c.DaemonToken, "daemon-token", c.DaemonToken, "daemon bearer token placeholder (env KAPE_DAEMON_TOKEN)")
+	fs.IntVar(&c.SpawnMaxDepth, "spawn-max-depth", c.SpawnMaxDepth, "max spawning depth, root=0 (env KAPE_SPAWN_MAX_DEPTH)")
+	fs.IntVar(&c.SpawnMaxChildren, "spawn-max-children", c.SpawnMaxChildren, "max children per parent agent (env KAPE_SPAWN_MAX_CHILDREN)")
 	fs.Func("resources", "default resources JSON {\"cpu\":...,\"memory\":...} (env KAPE_DEFAULT_RESOURCES)", func(v string) error {
 		var r Resources
 		if err := json.Unmarshal([]byte(v), &r); err != nil {

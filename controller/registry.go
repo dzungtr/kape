@@ -23,6 +23,10 @@ const (
 	// LabelAgentID carries the controller-assigned agent id, so get_agent can
 	// resolve a sandbox back to an agent after a controller restart.
 	LabelAgentID = "agent-id"
+	// LabelParentAgentID carries the spawning parent's agent id (issue #216,
+	// ADR-0083 D8): the durable linkage behind the children cap, the agent
+	// view's parent field, and post-restart cascade termination.
+	LabelParentAgentID = "parent-agent-id"
 	// ManagedByValue is this controller's stable managed-by value. Recorded
 	// in spec #172 Handoffs; changing it orphans existing sandboxes.
 	ManagedByValue = "kape-controller"
@@ -60,6 +64,11 @@ type AgentView struct {
 	// Created is the controller-side creation time, known only for live
 	// agents; post-restart it is omitted (the registry keeps no DB).
 	Created *time.Time `json:"created,omitempty"`
+	// Parent is the spawning parent's agent id (issue #216, D8); omitted for
+	// root agents. Children lists the live children ids (terminated children
+	// are detached); omitted when empty.
+	Parent   string   `json:"parent,omitempty"`
+	Children []string `json:"children,omitempty"`
 	// Source records how this view was derived: "live" (in-memory agent,
 	// exec state available) or "cr" (gateway sandbox labels/phase only).
 	Source string `json:"source"`
@@ -80,7 +89,33 @@ func (a *Agent) agentView() AgentView {
 	a.mu.Lock()
 	degraded := a.degraded
 	a.mu.Unlock()
-	return AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Degraded: degraded, Session: a.fsm.State(), Created: created, Source: source}
+	view := AgentView{ID: a.ID, Sandbox: a.Sandbox, Status: a.Status(), Degraded: degraded, Session: a.fsm.State(), Created: created, Source: source}
+	// Parent linkage (issue #216): shown only while the parent is still
+	// registered (its deletion cascades, so a lingering parent id would
+	// dangle). Children are the live registered agents with this parent.
+	if p := a.mgr.Get(a.ParentID); p != nil && p.Status() != StatusTerminated {
+		view.Parent = a.ParentID
+	}
+	children := a.mgr.liveChildIDs(a.ID)
+	if len(children) > 0 {
+		view.Children = children
+	}
+	return view
+}
+
+// liveChildIDs returns the ids of registered, non-terminated children of the
+// given parent.
+func (m *AgentManager) liveChildIDs(parentID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for id, a := range m.agents {
+		if a.ParentID == parentID && a.Status() != StatusTerminated {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // crView derives a post-restart view from gateway sandbox state: status comes
@@ -88,7 +123,13 @@ func (a *Agent) agentView() AgentView {
 // sandbox looks ready even if pi is not running (documented v1 semantics:
 // in-flight turns die at restart, the registry survives).
 func crView(info SandboxInfo) AgentView {
-	return AgentView{ID: info.Labels[LabelAgentID], Sandbox: info.Name, Status: statusFromPhase(info.Phase), Source: SourceCR}
+	return AgentView{
+		ID:      info.Labels[LabelAgentID],
+		Sandbox: info.Name,
+		Status:  statusFromPhase(info.Phase),
+		Parent:  info.Labels[LabelParentAgentID], // durable parent linkage (issue #216)
+		Source:  SourceCR,
+	}
 }
 
 // statusFromPhase maps a gateway sandbox phase to the agent FSM status for
@@ -235,26 +276,42 @@ func ReplayAgentStatus(evs []Event) AgentStatus {
 
 // replayProvisionInfo extracts the provisioning payload from the log (sandbox
 // name and creation time), empty/nil for legacy logs that predate it.
-func replayProvisionInfo(evs []Event) (sandbox string, created *time.Time) {
+func replayProvisionInfo(evs []Event) (sandbox string, created *time.Time, parent string, resolved ResolvedProfile) {
 	for i := range evs {
 		if evs[i].Type != lifecycleProvisioned {
 			continue
 		}
 		var fields struct {
-			Sandbox string `json:"sandbox"`
-			Created string `json:"created"`
+			Sandbox  string `json:"sandbox"`
+			Created  string `json:"created"`
+			Parent   string `json:"parent"`
+			Image    string `json:"image"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			CPU      string `json:"cpu"`
+			Memory   string `json:"memory"`
 		}
 		if err := json.Unmarshal(evs[i].Data, &fields); err != nil {
 			continue
 		}
 		sandbox = fields.Sandbox
+		parent = fields.Parent
+		if fields.Image != "" || fields.Provider != "" || fields.Model != "" || fields.CPU != "" || fields.Memory != "" {
+			resolved = ResolvedProfile{
+				Name:      fields.Sandbox,
+				Image:     fields.Image,
+				Provider:  fields.Provider,
+				Model:     fields.Model,
+				Resources: Resources{CPU: fields.CPU, Memory: fields.Memory},
+			}
+		}
 		if fields.Created != "" {
 			if t, err := time.Parse(time.RFC3339Nano, fields.Created); err == nil {
 				created = &t
 			}
 		}
 	}
-	return sandbox, created
+	return sandbox, created, parent, resolved
 }
 
 // errRegistryReplayFailed wraps store/enumeration failures from startup
@@ -296,10 +353,12 @@ func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
 			hub.Close()
 			continue
 		}
-		sandbox, created := replayProvisionInfo(evs)
+		sandbox, created, parent, resolved := replayProvisionInfo(evs)
 		a := &Agent{
 			ID:           id,
 			Sandbox:      sandbox,
+			ParentID:     parent, // D8: depth caps + cascade survive a restart
+			resolved:     resolved,
 			hub:          hub,
 			fsm:          NewSessionFSM(hub, id, state),
 			gw:           m.gw,

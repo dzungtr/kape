@@ -39,7 +39,7 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			dec := json.NewDecoder(r.Body)
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&profile); err != nil {
-				httpFieldError(w, fieldErr("body", "must be an object with optional name, image, resources, provider, model"))
+				httpFieldError(w, fieldErr("body", "must be an object with optional name, image, resources, provider, model, parent_id"))
 				return
 			}
 		}
@@ -162,7 +162,8 @@ func statusForErr(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrUnknownAgent):
 		return http.StatusNotFound
-	case errors.Is(err, ErrTurnInFlight), errors.Is(err, ErrNotReady):
+	case errors.Is(err, ErrTurnInFlight), errors.Is(err, ErrNotReady),
+		errors.Is(err, ErrSpawnDepthExceeded), errors.Is(err, ErrSpawnChildrenExceeded):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
