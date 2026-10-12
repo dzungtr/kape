@@ -84,7 +84,10 @@ $GO build -o "$BIN" . || exit 1
 pass "go build"
 
 note "start controller on $LISTEN"
-"$BIN" -listen "$LISTEN" >"$NOTE/controller.log" 2>&1 &
+# The smoke drives the gateway exec stream directly, so it runs the
+# break-glass transport (issue #212): the daemon pull transport owns the
+# data plane and needs per-agent daemon addressing (#214).
+"$BIN" -listen "$LISTEN" -transport exec >"$NOTE/controller.log" 2>&1 &
 CTRL_PID=$!
 for i in $(seq 1 20); do
     [ "$(http_code "$BASE/agents")" = "200" ] && break

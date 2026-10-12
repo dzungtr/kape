@@ -14,6 +14,9 @@ func testConfig() Config {
 	cfg := DefaultConfig()
 	cfg.DefaultImage = "pi-image"
 	cfg.DefaultProvider = "openrouter-spike"
+	// The exec-pump tests exercise the demoted break-glass transport path
+	// (issue #212); pull-transport tests use pullTestConfig in puller_test.
+	cfg.Transport = TransportExec
 	return cfg
 }
 

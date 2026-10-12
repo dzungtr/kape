@@ -68,9 +68,14 @@ type Agent struct {
 	// "replayed".
 	replayedOnly bool
 
-	hub    *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
-	fsm    *SessionFSM // session lifecycle projection over the log (issue #196)
-	stdin  chan []byte
+	hub   *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
+	fsm   *SessionFSM // session lifecycle projection over the log (issue #196)
+	stdin chan []byte // exec break-glass path only; nil under the pull transport
+	// daemon is set under the pull transport (issue #212): the per-agent
+	// puller drains its spool into the hub and commands ride POST /commands.
+	// Its non-nilness is the pull/exec branch test.
+	daemon DaemonClient
+	cmdSeq int // monotonic per-agent daemon command_id counter (pull path)
 	cancel context.CancelFunc
 	gw     GatewayClient
 	mgr    *AgentManager
@@ -119,10 +124,23 @@ type AgentManager struct {
 	// store is the durable event log shared by every agent's hub (issue #195):
 	// one controller-owned file, one writer per agent bucket.
 	store EventStore
+	// daemon is the shared pull-transport client (issue #212); nil until
+	// first used.
+	daemon     DaemonClient
+	daemonOnce sync.Once
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
 	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store}
+}
+
+// daemonClient lazily builds the shared daemon HTTP client from static
+// config (issue #212: Sandbox CR address resolution is #214).
+func (m *AgentManager) daemonClient() DaemonClient {
+	m.daemonOnce.Do(func() {
+		m.daemon = NewHTTPDaemonClient(m.cfg.DaemonAddr, m.cfg.DaemonToken)
+	})
+	return m.daemon
 }
 
 // Create provisions a sandbox for the (possibly partial) profile override
@@ -130,8 +148,9 @@ func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManag
 // the long-lived pi exec stream. Validation happens BEFORE any gateway call,
 // so a rejected create never leaks a sandbox. On later (gateway) failure the
 // sandbox is deleted and an error returned. On success the agent is
-// StatusReady; a phase-poll goroutine watches for ERROR phases and a pi-pump
-// goroutine watches the exec stream for the agent's lifetime.
+// StatusReady; a phase-poll goroutine watches for ERROR phases and the data
+// plane — the daemon puller (default, issue #212) or the pi-pump exec stream
+// (break-glass) — runs for the agent's lifetime.
 func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Agent, error) {
 	resolved, err := m.cfg.ResolveProfile(profile)
 	if err != nil {
@@ -184,7 +203,15 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		return nil, fmt.Errorf("apply network policy: %w", err)
 	}
 
-	if err := m.startPi(agent, resolved.Model); err != nil {
+	if m.cfg.Transport == TransportPull {
+		// Pull transport (issue #212): the per-agent puller owns the data
+		// plane; commands ride POST /commands through agent.daemon.
+		ctx, cancel := context.WithCancel(context.Background())
+		agent.cancel = cancel
+		agent.daemon = m.daemonClient()
+		go m.phasePoll(agent, ctx)
+		go m.runPuller(agent, ctx)
+	} else if err := m.startPi(agent, resolved.Model); err != nil { // break-glass exec path
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, err
 	}
@@ -195,13 +222,16 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 
 	if err := agent.fsm.Transition(SessionReady, "agent.started", nil); err != nil {
 		// The agent is already registered: remove the zombie entry, stop the
-		// pumps, and close the hub before returning.
+		// pumps, and close the hub before returning (stdin is nil under the
+		// pull transport).
 		if agent.cancel != nil {
 			agent.cancel()
 		}
 		agent.mu.Lock()
 		agent.status = StatusTerminated
-		close(agent.stdin)
+		if agent.stdin != nil {
+			close(agent.stdin)
+		}
 		agent.mu.Unlock()
 		agent.hub.Close()
 		m.mu.Lock()
@@ -295,14 +325,50 @@ func (m *AgentManager) Prompt(id, message string) error {
 
 // sendPrompt enforces the single in-flight prompt policy from the SESSION
 // FSM state (issue #196): a second prompt while the session is running is
-// rejected (HTTP 409 at the transport); ready and idle accept. If accepted,
-// the pi RPC prompt command ({"id","type":"prompt","message"} — verified
-// against local pi docs, docs/rpc-commands.md §prompt) is written to the
-// exec stdin, then the ready/idle → running transition appends its
-// lifecycle event before taking effect.
+// rejected (HTTP 409 at the transport); ready and idle accept.
+//
+// Pull transport (issue #212, ADR-0083 D4): the 409-equivalent is enforced
+// controller-side BEFORE the POST — the daemon never sees a rejected prompt.
+// An accepted prompt rides POST /commands as
+// {command_id, type: "prompt", payload: {"message"}} — 202 on acceptance —
+// then the ready/idle → running transition appends its lifecycle event.
+//
+// Exec break-glass path: the pi RPC prompt command
+// ({"id","type":"prompt","message"} — verified against local pi docs,
+// docs/rpc-commands.md §prompt) is written to the exec stdin before the
+// transition.
 func (a *Agent) sendPrompt(message string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.daemon != nil {
+		// Pull transport: the daemon is the command path; there is no stdin.
+		switch a.fsm.State() {
+		case SessionRunning:
+			return errTurnInFlight(a.ID)
+		case SessionReady, SessionIdle:
+			if a.status != StatusReady {
+				return errNotReady(a.ID, a.status)
+			}
+		default:
+			return errNotReady(a.ID, a.status)
+		}
+		a.cmdSeq++
+		payload, _ := json.Marshal(map[string]string{"message": message})
+		cmd := DaemonCommand{ID: randID("cmd"), Type: "prompt", Payload: payload}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := a.daemon.Command(ctx, cmd); err != nil {
+			return fmt.Errorf("daemon rejected prompt: %w", err)
+		}
+		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
+			// The 202 landed but the transition did not make the log; surface
+			// it — the turn boundary is no longer derivable from replay alone.
+			log.Printf("[agent %s] record turn_started failed: %v", a.ID, err)
+		}
+		a.status = StatusWorking
+		log.Printf("[agent %s] prompt accepted via daemon: %q", a.ID, message)
+		return nil
+	}
 	if a.stdin == nil {
 		// Replayed-only agent (issue #197): no exec stream in this process.
 		return errNotReady(a.ID, a.status)
@@ -343,16 +409,39 @@ func (a *Agent) sendPrompt(message string) error {
 	}
 }
 
-// Abort stops the in-flight turn by sending the pi RPC abort command
-// ({"type":"abort"}). The exec stream stays open: pi settles the turn and
-// subsequent records still reach the event stream, flipping the agent back
-// to ready on the settled record.
+// Abort stops the in-flight turn. Pull transport (issue #212, ADR-0083 D4):
+// POST {command_id, type: "abort"} to the daemon — 202 on acceptance. Exec
+// break-glass path: the pi RPC abort command ({"type":"abort"}) is written
+// to the exec stdin, which stays open: pi settles the turn and subsequent
+// records still reach the event stream, flipping the agent back to ready on
+// the settled record.
 func (m *AgentManager) Abort(id string) error {
 	agent := m.Get(id)
 	if agent == nil {
 		return errUnknownAgent(id)
 	}
-	if agent.Status() != StatusWorking || agent.stdin == nil {
+	if agent.Status() != StatusWorking {
+		return errNotReady(id, agent.Status())
+	}
+	if agent.daemon != nil {
+		// Pull transport: abort rides POST /commands (D4). The daemon never
+		// tracks settlement — the turn boundary flows via the records stream.
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		if agent.status != StatusWorking {
+			return errNotReady(id, agent.status)
+		}
+		agent.cmdSeq++
+		cmd := DaemonCommand{ID: randID("cmd"), Type: "abort"}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := agent.daemon.Command(ctx, cmd); err != nil {
+			return fmt.Errorf("daemon rejected abort: %w", err)
+		}
+		log.Printf("[agent %s] abort accepted via daemon", id)
+		return nil
+	}
+	if agent.stdin == nil {
 		return errNotReady(id, agent.Status()) // fast path (also replayed-only)
 	}
 	raw, _ := json.Marshal(piAbortCommand{Type: "abort"})

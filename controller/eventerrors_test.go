@@ -16,6 +16,10 @@ func (failingStore) Agents() ([]string, error) { return nil, nil }
 
 func (failingStore) NextSeq(string) (uint64, error) { return 0, nil }
 func (failingStore) Append(string, Event) error     { return nil }
+func (failingStore) AppendWithOrigin(string, Event, uint64) error {
+	return nil
+}
+func (failingStore) OriginWatermark(string) (uint64, error) { return 0, nil }
 func (failingStore) Replay(string, uint64) ([]Event, error) {
 	return nil, errors.New("store read failed")
 }
