@@ -102,6 +102,22 @@ sbx_pod() { # $1 = sandbox name → pod name (empty if absent)
 sbx_podip() { # $1 = sandbox name → first status.podIPs entry (may be empty)
     kubectl get sandbox -n "$NS" -l "openshell.ai/sandbox-name=$1" -o jsonpath='{.items[0].status.podIPs[0]}' 2>/dev/null
 }
+wait_daemon_listening() { # $1 = sandbox name, $2 = timeout s → 0 once the in-sandbox daemon answers GET /healthz
+    # PR #228 NEXT note: the profile-hook daemon boots asynchronously, so the
+    # prompt must wait until the daemon actually listens. Polled from the
+    # privileged killer pod (busybox wget): host has no pod-network route, and
+    # the sandbox container itself is distroless.
+    local name=$1 t=$2 i ip
+    ip=$(wait_podip "$name" 30) || return 1
+    for i in $(seq 1 $((t*2))); do
+        if kubectl exec -n default kape-smoke-killer -- wget -q -O /dev/null -T 2 "http://${ip}:${DAEMON_PORT}/healthz" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "daemon not listening on ${ip}:${DAEMON_PORT} after ${t}s"
+    return 1
+}
 wait_podip() { # $1 = sandbox name, $2 = timeout s → echoes ip, non-zero when never
     local name=$1 t=$2 i ip=""
     for i in $(seq 1 $((t*2))); do
@@ -248,6 +264,7 @@ CREATED_IDS+=("$ID1")
 wait_ready_agent "$ID1" && pass "agent A ready (fake-pi sandbox)" || { echo "FAIL: agent A never ready"; exit 1; }
 SBX1=$(vsandbox "$ID1")
 BO0=$(wait_podip "$SBX1" 30) && pass "daemon address resolved from CR (podIP $BO0)" || { echo "FAIL: no podIP on $SBX1"; exit 1; }
+wait_daemon_listening "$SBX1" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX1"; exit 1; }
 
 P=$(http_code -X POST "$BASE/agents/$ID1/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "prompt accepted (202)" "[ '$P' = '202' ]"
@@ -277,6 +294,7 @@ ID2=$(create_agent)
 CREATED_IDS+=("$ID2")
 wait_ready_agent "$ID2" && pass "agent B ready" || { echo "FAIL: agent B never ready"; exit 1; }
 SBX2=$(vsandbox "$ID2")
+wait_daemon_listening "$SBX2" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX2"; exit 1; }
 POD2=$(sbx_pod "$SBX2")
 [ -n "$POD2" ] && pass "sandbox pod located ($POD2)" || { echo "FAIL: no pod for $SBX2"; exit 1; }
 
@@ -313,6 +331,7 @@ ID3=$(create_agent)
 CREATED_IDS+=("$ID3")
 wait_ready_agent "$ID3" && pass "agent C ready" || { echo "FAIL: agent C never ready"; exit 1; }
 SBX3=$(vsandbox "$ID3")
+wait_daemon_listening "$SBX3" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX3"; exit 1; }
 P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "turn 1 prompt accepted (202)" "[ '$P' = '202' ]"
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "turn 1 settled (fully pulled baseline)" || { echo "FAIL: turn 1 never settled"; }
@@ -363,6 +382,7 @@ ID4=$(create_agent)
 CREATED_IDS+=("$ID4")
 wait_ready_agent "$ID4" && pass "agent D ready" || { echo "FAIL: agent D never ready"; exit 1; }
 SBX4=$(vsandbox "$ID4")
+wait_daemon_listening "$SBX4" 60 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX4"; exit 1; }
 IP0=$(wait_podip "$SBX4" 30)
 kubectl delete pod -n "$NS" "$(sbx_pod "$SBX4")" >/dev/null 2>&1
 IP1=$(wait_podip "$SBX4" 180)
