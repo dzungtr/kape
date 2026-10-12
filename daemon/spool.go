@@ -63,6 +63,7 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 	// makes a >1MiB record permanently boot-loop the daemon (same unbounded
 	// pattern as Pi.relayStdout). ReadString has no size limit.
 	rd := bufio.NewReader(f)
+	complete := int64(0) // bytes of fully-terminated lines consumed so far
 	for {
 		line, rerr := rd.ReadString('\n')
 		trimmed := strings.TrimRight(line, "\n")
@@ -71,6 +72,7 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 				if rerr == io.EOF {
 					break
 				}
+				complete += int64(len(line)) // blank line is fully terminated
 				continue
 			}
 			f.Close() //nolint:errcheck
@@ -81,8 +83,20 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 			// append. The fragment never completed, so discard it and resync
 			// to the last newline; the lost fragment is logged, not served.
 			log.Printf("spool %s: torn final line discarded (%d bytes): %.80s", path, len(trimmed), trimmed)
+			// Truncate the fragment off the file: the handle is O_APPEND, so a
+			// later Append would otherwise concatenate onto the fragment and
+			// leave a corrupt record that fails the next recovery (boot loop).
+			if err := f.Truncate(complete); err != nil {
+				f.Close() //nolint:errcheck
+				return nil, fmt.Errorf("spool %s: truncate torn final line: %w", path, err)
+			}
+			if _, err := f.Seek(complete, io.SeekStart); err != nil {
+				f.Close() //nolint:errcheck
+				return nil, fmt.Errorf("spool %s: seek past torn final line: %w", path, err)
+			}
 			break
 		}
+		complete += int64(len(line))
 		var e spoolEntry
 		if err := json.Unmarshal([]byte(trimmed), &e); err != nil {
 			f.Close() //nolint:errcheck

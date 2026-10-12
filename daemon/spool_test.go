@@ -144,6 +144,26 @@ func TestSpoolTornFinalLineRecovers(t *testing.T) {
 	if r.SpoolID != 3 {
 		t.Fatalf("spool_id after torn line = %d, want 3 (no reuse of the torn id)", r.SpoolID)
 	}
+
+	// The torn fragment must be gone from the file: the handle is O_APPEND, so
+	// a naive append would have concatenated onto the fragment and the next
+	// boot would fail with "corrupt record at recovery". Reopen to prove the
+	// next daemon start succeeds and keeps serving the full history.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	s2 := mustSpool(t, path, 100)
+	recs2 := s2.Read(0, 0)
+	if len(recs2) != 3 || recs2[2].SpoolID != 3 {
+		t.Fatalf("reopen after torn-line append recovered %d records, want 3 (ids 1-3)", len(recs2))
+	}
+	r2, err := s2.Append(`{"a":5}`)
+	if err != nil {
+		t.Fatalf("append after reopen: %v", err)
+	}
+	if r2.SpoolID != 4 {
+		t.Fatalf("spool_id after reopen = %d, want 4", r2.SpoolID)
+	}
 }
 
 // Beyond the cap the oldest records drop and a spool_truncated notice lands.

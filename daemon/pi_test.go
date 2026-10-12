@@ -115,3 +115,43 @@ func TestPiPromptAndRespawn(t *testing.T) {
 		t.Fatalf("respawned pi record = %s, want c2 echo", recs[2].Data)
 	}
 }
+
+// Regression: a stale generation's awaitExit must not clear pi_running after a
+// respawn. If the old process's Wait() returns after SendCommand has already
+// spawned the next generation, the unguarded Store(false) would wedge
+// pi_running false forever (ADR-0083 D6 reconnect preflight).
+func TestPiStaleExitDoesNotClobberRunning(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool.jsonl"), 100)
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	defer spool.Close() //nolint:errcheck
+	pi := NewPi([]string{"sh", "-c", "true"}, spool)
+	if err := pi.Start(); err != nil {
+		t.Fatalf("start pi: %v", err)
+	}
+	pi.mu.Lock()
+	oldCmd := pi.cmd
+	pi.mu.Unlock()
+
+	// Let generation 1 die and its real awaitExit complete.
+	deadline := time.Now().Add(5 * time.Second)
+	for pi.Running() && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if pi.Running() {
+		t.Fatal("pi did not exit")
+	}
+
+	// Respawn (generation 2), then simulate the stale waiter firing late.
+	if err := pi.Start(); err != nil {
+		t.Fatalf("respawn: %v", err)
+	}
+	if !pi.Running() {
+		t.Fatal("respawned pi reports not running before stale exit fires")
+	}
+	pi.awaitExit(oldCmd) // stale waiter: Wait on an already-reaped process
+	if !pi.Running() {
+		t.Fatal("stale awaitExit clobbered pi_running for the live generation")
+	}
+}

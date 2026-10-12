@@ -135,9 +135,17 @@ func (p *Pi) stderrNotice(text string) {
 }
 
 // awaitExit emits a pi_exit notice when the process ends and flips pi_running.
+// The Store is guarded: a stale waiter (an older generation's cmd that was
+// already dead when SendCommand respawned) must not clear pi_running for the
+// live generation — that would wedge ADR-0083 D6's reconnect preflight on a
+// permanently false pi_running.
 func (p *Pi) awaitExit(cmd *exec.Cmd) {
 	err := cmd.Wait()
-	p.running.Store(false)
+	p.mu.Lock()
+	if p.cmd == cmd {
+		p.running.Store(false)
+	}
+	p.mu.Unlock()
 	code := 0
 	if err != nil {
 		code = 1
