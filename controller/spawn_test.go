@@ -260,7 +260,10 @@ func TestStandaloneChildDeleteDetachesFromParent(t *testing.T) {
 func TestSpawnCapsConfig(t *testing.T) {
 	t.Setenv("KAPE_SPAWN_MAX_DEPTH", "3")
 	t.Setenv("KAPE_SPAWN_MAX_CHILDREN", "5")
-	cfg := ConfigFromEnv()
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
 	if cfg.SpawnMaxDepth != 3 || cfg.SpawnMaxChildren != 5 {
 		t.Fatalf("env caps = depth %d children %d, want 3/5", cfg.SpawnMaxDepth, cfg.SpawnMaxChildren)
 	}

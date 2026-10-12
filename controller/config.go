@@ -227,8 +227,10 @@ func DefaultConfig() Config {
 	}
 }
 
-// envConfig applies KAPE_* environment overrides on top of def.
-func envConfig(def Config) Config {
+// envConfig applies KAPE_* environment overrides on top of def. A malformed
+// numeric override is returned as an error instead of being silently
+// swallowed (review round 1, P2).
+func envConfig(def Config) (Config, error) {
 	if v := os.Getenv("KAPE_GATEWAY_ADDR"); v != "" {
 		def.GatewayAddr = v
 	}
@@ -270,10 +272,11 @@ func envConfig(def Config) Config {
 		def.ControllerServiceHost = v
 	}
 	if v := os.Getenv("KAPE_CONTROLLER_SERVICE_PORT"); v != "" {
-		var p int
-		if _, err := fmt.Sscanf(v, "%d", &p); err == nil {
-			def.ControllerServicePort = p
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return def, fmt.Errorf("KAPE_CONTROLLER_SERVICE_PORT %q is not an integer: %w", v, err)
 		}
+		def.ControllerServicePort = p
 	}
 	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
 		def.DaemonToken = v
@@ -281,22 +284,22 @@ func envConfig(def Config) Config {
 	if v := os.Getenv("KAPE_SPAWN_MAX_DEPTH"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			panic(fmt.Sprintf("KAPE_SPAWN_MAX_DEPTH: %q must be a non-negative integer", v))
+			return def, fmt.Errorf("KAPE_SPAWN_MAX_DEPTH %q must be a non-negative integer", v)
 		}
 		def.SpawnMaxDepth = n
 	}
 	if v := os.Getenv("KAPE_SPAWN_MAX_CHILDREN"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
-			panic(fmt.Sprintf("KAPE_SPAWN_MAX_CHILDREN: %q must be a positive integer", v))
+			return def, fmt.Errorf("KAPE_SPAWN_MAX_CHILDREN %q must be a positive integer", v)
 		}
 		def.SpawnMaxChildren = n
 	}
-	return def
+	return def, nil
 }
 
 // ConfigFromEnv resolves the full config: compiled defaults, then KAPE_* env.
-func ConfigFromEnv() Config { return envConfig(DefaultConfig()) }
+func ConfigFromEnv() (Config, error) { return envConfig(DefaultConfig()) }
 
 // RegisterFlags adds flag overrides (local dev) onto fs. Flags win over env.
 func (c *Config) RegisterFlags(fs *flag.FlagSet) {

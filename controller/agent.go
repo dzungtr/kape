@@ -622,6 +622,10 @@ func (a *Agent) sendPrompt(message string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if _, err := dc.Command(ctx, cmd); err != nil {
+			// Mirror the puller (D7): a command failure drops the cached
+			// client so the next prompt re-resolves the address from the
+			// Sandbox CR instead of re-dialing a stale podIP.
+			a.mgr.invalidateDaemon(a)
 			return fmt.Errorf("daemon rejected prompt: %w", err)
 		}
 		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
@@ -772,6 +776,10 @@ func (m *AgentManager) Abort(id string) error {
 			return fmt.Errorf("resolve daemon address for %s: %w", agent.Sandbox, err)
 		}
 		if _, err := dc.Command(ctx, cmd); err != nil {
+			// Mirror the puller (D7): a command failure drops the cached
+			// client so the next abort re-resolves the address from the
+			// Sandbox CR instead of re-dialing a stale podIP.
+			agent.mgr.invalidateDaemon(agent)
 			return fmt.Errorf("daemon rejected abort: %w", err)
 		}
 		log.Printf("[agent %s] abort accepted via daemon", id)

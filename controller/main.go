@@ -19,7 +19,10 @@ import (
 
 func main() {
 	// Config resolution: compiled defaults → KAPE_* env → flags (flags win).
-	cfg := ConfigFromEnv()
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		log.Fatalf("invalid config: %v", err)
+	}
 	cfg.RegisterFlags(flag.CommandLine)
 	flag.Parse()
 	if err := cfg.Validate(); err != nil {

@@ -49,6 +49,23 @@ func TestResolveDaemonAddrPodIPsPrimary(t *testing.T) {
 	}
 }
 
+// IPv6 podIP literals must be bracketed in the URL (RFC 3986 §3.2.2),
+// otherwise url.Parse of the daemon base URL drops the port.
+func TestResolveDaemonAddrBracketsIPv6PodIP(t *testing.T) {
+	r := resolverForCR(t, `{
+		"apiVersion":"agents.x-k8s.io/v1beta1","kind":"Sandbox",
+		"spec":{"service":true},
+		"status":{"podIPs":["fd00::7"]}
+	}`)
+	base, err := r.ResolveDaemonAddr(context.Background(), "sbx-x")
+	if err != nil {
+		t.Fatalf("ResolveDaemonAddr: %v", err)
+	}
+	if base != "http://[fd00::7]:9090" {
+		t.Fatalf("base = %q, want http://[fd00::7]:9090", base)
+	}
+}
+
 func TestResolveDaemonAddrServiceFQDNFallback(t *testing.T) {
 	// spec.service: true (headless Service exists) and no podIPs: the
 	// fallback is the headless-Service DNS name.

@@ -30,6 +30,8 @@ type FakeGateway struct {
 	created          []string
 	requests         []CreateRequest
 	controllerDenies []ControllerDeny
+	// denyErr, when set, is returned by ApplyControllerEgressDeny.
+	denyErr error
 	piModels         []string
 	// stream, if set, is returned by every StartPi call.
 	stream *FakeStream
@@ -209,7 +211,15 @@ func (f *FakeGateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.controllerDenies = append(f.controllerDenies, ControllerDeny{Name: sandboxName, Host: host, Port: port})
-	return nil
+	return f.denyErr
+}
+
+// FailControllerEgressDeny makes ApplyControllerEgressDeny return err after
+// recording the request — models a deny-rule merge failure.
+func (f *FakeGateway) FailControllerEgressDeny(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.denyErr = err
 }
 
 // ControllerDeny is one recorded ApplyControllerEgressDeny request.

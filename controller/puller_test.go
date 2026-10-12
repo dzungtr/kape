@@ -552,7 +552,10 @@ func TestConfigTransportEnvAndFlags(t *testing.T) {
 	t.Setenv("KAPE_TRANSPORT", "exec")
 	t.Setenv("KAPE_DAEMON_PORT", "9100")
 	t.Setenv("KAPE_SANDBOX_NAMESPACE", "sbx-ns")
-	cfg := ConfigFromEnv()
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
 	if cfg.Transport != TransportExec || cfg.DaemonPort != "9100" || cfg.SandboxNamespace != "sbx-ns" {
 		t.Fatalf("env transport config = %q/%q/%q, want exec/9100/sbx-ns", cfg.Transport, cfg.DaemonPort, cfg.SandboxNamespace)
 	}

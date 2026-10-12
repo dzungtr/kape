@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -89,6 +90,15 @@ type sandboxCR struct {
 	} `json:"status"`
 }
 
+// hostLiteral brackets IPv6 literals so the URL host is parseable
+// (RFC 3986 §3.2.2); IPv4 and unparseable values pass through unchanged.
+func hostLiteral(ip string) string {
+	if p := net.ParseIP(ip); p != nil && p.To4() == nil {
+		return "[" + ip + "]"
+	}
+	return ip
+}
+
 // ResolveDaemonAddr resolves the daemon base URL for sandbox.
 func (r *CRDaemonAddressResolver) ResolveDaemonAddr(ctx context.Context, sandbox string) (string, error) {
 	raw, err := r.rc.Get().
@@ -102,7 +112,7 @@ func (r *CRDaemonAddressResolver) ResolveDaemonAddr(ctx context.Context, sandbox
 		return "", fmt.Errorf("decode Sandbox %s/%s: %w", r.ns, sandbox, err)
 	}
 	if len(sb.Status.PodIPs) > 0 {
-		return "http://" + sb.Status.PodIPs[0] + ":" + r.port, nil
+		return "http://" + hostLiteral(sb.Status.PodIPs[0]) + ":" + r.port, nil
 	}
 	if sb.Spec.Service != nil && *sb.Spec.Service {
 		fqdn := sb.Status.ServiceFQDN
