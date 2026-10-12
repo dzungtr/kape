@@ -48,10 +48,6 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 	}, handleCreateAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_agent",
-		Description: "Get one sandbox agent's detail incl. current status and parent/children linkage. Errors if the agent id is unknown.",
-	}, handleCreateAgent(mgr))
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "get_agent",
 		Description: "Get one sandbox agent's detail incl. current status. Errors if the agent id is unknown.",
 	}, handleGetAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
