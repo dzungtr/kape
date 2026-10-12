@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -44,6 +45,34 @@ func TestCreateProvisionsAndReachesReady(t *testing.T) {
 	}
 	if agent.Status() != StatusReady {
 		t.Fatalf("status = %q, want ready", agent.Status())
+	}
+	// Structural sandbox→controller egress deny (issue #214, AC4): Create
+	// must merge the deny with the configured controller host/port.
+	denies := gw.ControllerDenies()
+	if len(denies) != 1 {
+		t.Fatalf("controller denies = %d, want 1", len(denies))
+	}
+	want := testConfig()
+	if denies[0].Name != agent.Sandbox || denies[0].Host != want.ControllerServiceHost || denies[0].Port != want.ControllerServicePort {
+		t.Fatalf("deny = %+v, want name=%s host=%s port=%d", denies[0], agent.Sandbox, want.ControllerServiceHost, want.ControllerServicePort)
+	}
+}
+
+// TestCreateRollsBackSandboxWhenControllerEgressDenyFails: a failed deny-rule
+// merge must delete the just-created sandbox and fail the Create (agent.go
+// rollback path, issue #214 AC4).
+func TestCreateRollsBackSandboxWhenControllerEgressDenyFails(t *testing.T) {
+	gw := NewFakeGateway()
+	gw.SetStream(NewFakeStream())
+	gw.FailControllerEgressDeny(fmt.Errorf("deny merge failed"))
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
+
+	if _, err := mgr.Create(context.Background(), nil); err == nil {
+		t.Fatal("Create succeeded despite deny failure, want error")
+	}
+	deleted := gw.DeletedSandboxes()
+	if len(deleted) != 1 {
+		t.Fatalf("deleted sandboxes = %v, want one rollback delete", deleted)
 	}
 }
 

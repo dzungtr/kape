@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -90,14 +91,19 @@ type Agent struct {
 	hub   *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
 	fsm   *SessionFSM // session lifecycle projection over the log (issue #196)
 	stdin chan []byte // exec break-glass path only; nil under the pull transport
-	// daemon is set under the pull transport (issue #212): the per-agent
+	// daemon is the pull-transport client (issues #212/#214): the per-agent
 	// puller drains its spool into the hub and commands ride POST /commands.
-	// Its non-nilness is the pull/exec branch test.
-	daemon DaemonClient
-	cmdSeq int // monotonic per-agent daemon command_id counter (pull path)
-	cancel context.CancelFunc
-	gw     GatewayClient
-	mgr    *AgentManager
+	// It is built lazily via the resolver and dropped on pull failure, so a
+	// reconnect re-resolves the address from the Sandbox CR (podIPs churn on
+	// pod restart). pullTransport marks the pull path (daemon may be nil).
+	daemonMu sync.Mutex
+	daemon   DaemonClient
+
+	pullTransport bool
+	cmdSeq        int // monotonic per-agent daemon command_id counter (pull path)
+	cancel        context.CancelFunc
+	gw            GatewayClient
+	mgr           *AgentManager
 }
 
 // Status returns the agent's current FSM status.
@@ -143,23 +149,66 @@ type AgentManager struct {
 	// store is the durable event log shared by every agent's hub (issue #195):
 	// one controller-owned file, one writer per agent bucket.
 	store EventStore
-	// daemon is the shared pull-transport client (issue #212); nil until
-	// first used.
-	daemon     DaemonClient
-	daemonOnce sync.Once
+	// daemon is the shared pull-transport client — TEST SEAM only: when set,
+	// daemonFor hands it out to every agent instead of resolving addresses
+	// (production builds never set it; issue #214 removed static addressing).
+	daemon DaemonClient
+	// daemonTransport is the test HTTP transport handed to resolved clients.
+	daemonTransport http.RoundTripper
+	// resolver resolves the per-agent daemon address from the Sandbox CR
+	// (issue #214, D7). Set in main when transport is pull.
+	resolver DaemonAddressResolver
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
 	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store}
 }
 
-// daemonClient lazily builds the shared daemon HTTP client from static
-// config (issue #212: Sandbox CR address resolution is #214).
-func (m *AgentManager) daemonClient() DaemonClient {
-	m.daemonOnce.Do(func() {
-		m.daemon = NewHTTPDaemonClient(m.cfg.DaemonAddr, m.cfg.DaemonToken)
-	})
-	return m.daemon
+// WithResolver sets the daemon address resolver (issue #214, D7).
+func (m *AgentManager) WithResolver(r DaemonAddressResolver) *AgentManager {
+	m.resolver = r
+	return m
+}
+
+// daemonFor returns the agent's pull-transport client, building it from the
+// Sandbox CR-resolved address on first use. Callers drop the client via
+// invalidateDaemon on failure so the next reconnect re-resolves from the CR
+// (podIPs churn on pod restart, D7).
+func (m *AgentManager) daemonFor(ctx context.Context, a *Agent) (DaemonClient, error) {
+	a.daemonMu.Lock()
+	dc := a.daemon
+	a.daemonMu.Unlock()
+	if dc != nil {
+		return dc, nil
+	}
+	if m.daemon != nil {
+		return m.daemon, nil // test seam: static shared client
+	}
+	if m.resolver == nil {
+		return nil, fmt.Errorf("no daemon address resolver configured")
+	}
+	base, err := m.resolver.ResolveDaemonAddr(ctx, a.Sandbox)
+	if err != nil {
+		return nil, err
+	}
+	dc = NewHTTPDaemonClient(base, m.cfg.DaemonToken)
+	if m.daemonTransport != nil {
+		dc.(*HTTPDaemonClient).hc.Transport = m.daemonTransport
+	}
+	a.daemonMu.Lock()
+	if a.daemon == nil {
+		a.daemon = dc
+	}
+	a.daemonMu.Unlock()
+	return dc, nil
+}
+
+// invalidateDaemon drops the cached daemon client so the next use re-resolves
+// the address from the Sandbox CR.
+func (m *AgentManager) invalidateDaemon(a *Agent) {
+	a.daemonMu.Lock()
+	a.daemon = nil
+	a.daemonMu.Unlock()
 }
 
 // Create provisions a sandbox for the (possibly partial) profile override
@@ -253,17 +302,27 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, fmt.Errorf("apply network policy: %w", err)
 	}
+	// Structural sandbox→controller egress deny (issue #214, ADR-0083 D2/D7):
+	// the daemon never dials the controller; the deny takes precedence over
+	// any future allow rule.
+	if err := m.gw.ApplyControllerEgressDeny(ctx, name, m.cfg.ControllerServiceHost, m.cfg.ControllerServicePort); err != nil {
+		_ = m.gw.DeleteSandbox(context.Background(), name)
+		return nil, fmt.Errorf("apply controller egress deny: %w", err)
+	}
 
 	if m.cfg.Transport == TransportPull {
-		// Pull transport (issue #212): the per-agent puller owns the data
-		// plane; commands ride POST /commands through agent.daemon.
+		// Pull transport (issues #212/#214): the per-agent puller owns the
+		// data plane and resolves the daemon address from the Sandbox CR on
+		// every reconnect; commands ride POST /commands through the same client.
 		ctx, cancel := context.WithCancel(context.Background())
 		agent.cancel = cancel
-		agent.daemon = m.daemonClient()
+		agent.pullTransport = true
 		// Learn the daemon's boot identity BEFORE the puller races against
 		// the world (issue #213 D6): the first boot_id comparison needs a
-		// known baseline. Unreachable daemon → tolerated; the puller's
-		// startup preflight retries.
+		// known baseline. The preflight dials the daemonFor-resolved client
+		// (issue #214 D7 — the address comes from the Sandbox CR); an
+		// unreachable daemon is tolerated — the puller's startup preflight
+		// retries.
 		m.noteBootID(agent, ctx)
 		go m.phasePoll(agent, ctx)
 		go m.runPuller(agent, ctx)
@@ -541,8 +600,12 @@ func (m *AgentManager) Prompt(id, message string) error {
 func (a *Agent) sendPrompt(message string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.daemon != nil {
+	if a.pullTransport {
 		// Pull transport: the daemon is the command path; there is no stdin.
+		dc, err := a.mgr.daemonFor(context.Background(), a)
+		if err != nil {
+			return fmt.Errorf("resolve daemon address for %s: %w", a.Sandbox, err)
+		}
 		switch a.fsm.State() {
 		case SessionRunning:
 			return errTurnInFlight(a.ID)
@@ -558,7 +621,11 @@ func (a *Agent) sendPrompt(message string) error {
 		cmd := DaemonCommand{ID: randID("cmd"), Type: "prompt", Payload: payload}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, err := a.daemon.Command(ctx, cmd); err != nil {
+		if _, err := dc.Command(ctx, cmd); err != nil {
+			// Mirror the puller (D7): a command failure drops the cached
+			// client so the next prompt re-resolves the address from the
+			// Sandbox CR instead of re-dialing a stale podIP.
+			a.mgr.invalidateDaemon(a)
 			return fmt.Errorf("daemon rejected prompt: %w", err)
 		}
 		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
@@ -634,17 +701,21 @@ func (m *AgentManager) Steer(id, message string) error {
 func (a *Agent) sendSteer(message string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.daemon != nil {
+	if a.pullTransport {
 		// Pull transport: the daemon is the command path; there is no stdin.
 		if a.fsm.State() != SessionRunning || a.status != StatusWorking {
 			return errNotReady(a.ID, a.status) // idle: nothing to steer (409-equivalent)
+		}
+		dc, err := a.mgr.daemonFor(context.Background(), a)
+		if err != nil {
+			return fmt.Errorf("resolve daemon address for %s: %w", a.Sandbox, err)
 		}
 		a.cmdSeq++
 		payload, _ := json.Marshal(map[string]string{"message": message})
 		cmd := DaemonCommand{ID: randID("cmd"), Type: "steer", Payload: payload}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, err := a.daemon.Command(ctx, cmd); err != nil {
+		if _, err := dc.Command(ctx, cmd); err != nil {
 			return fmt.Errorf("daemon rejected steer: %w", err)
 		}
 		log.Printf("[agent %s] steer accepted via daemon: %q", a.ID, message)
@@ -686,7 +757,7 @@ func (m *AgentManager) Abort(id string) error {
 	if agent.Status() != StatusWorking {
 		return errNotReady(id, agent.Status())
 	}
-	if agent.daemon != nil {
+	if agent.pullTransport {
 		// Pull transport: abort rides POST /commands (D4). The daemon never
 		// tracks settlement — the turn boundary flows via the records stream.
 		agent.mu.Lock()
@@ -696,9 +767,19 @@ func (m *AgentManager) Abort(id string) error {
 		}
 		agent.cmdSeq++
 		cmd := DaemonCommand{ID: randID("cmd"), Type: "abort"}
+		// daemonFor also re-resolves the address when the cached client was
+		// dropped after a pull failure (D7).
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, err := agent.daemon.Command(ctx, cmd); err != nil {
+		dc, err := agent.mgr.daemonFor(ctx, agent)
+		if err != nil {
+			return fmt.Errorf("resolve daemon address for %s: %w", agent.Sandbox, err)
+		}
+		if _, err := dc.Command(ctx, cmd); err != nil {
+			// Mirror the puller (D7): a command failure drops the cached
+			// client so the next abort re-resolves the address from the
+			// Sandbox CR instead of re-dialing a stale podIP.
+			agent.mgr.invalidateDaemon(agent)
 			return fmt.Errorf("daemon rejected abort: %w", err)
 		}
 		log.Printf("[agent %s] abort accepted via daemon", id)

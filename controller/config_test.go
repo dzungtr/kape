@@ -26,7 +26,10 @@ func TestConfigFromEnvOverridesDefaults(t *testing.T) {
 	t.Setenv("KAPE_LISTEN_ADDR", ":9999")
 	t.Setenv("KAPE_DEFAULT_RESOURCES", `{"cpu":"2","memory":"4Gi"}`)
 
-	cfg := ConfigFromEnv()
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
 	if cfg.DefaultImage != "env-image" || cfg.DefaultProvider != "env-provider" || cfg.ListenAddr != ":9999" {
 		t.Fatalf("env not applied: %+v", cfg)
 	}
@@ -35,9 +38,21 @@ func TestConfigFromEnvOverridesDefaults(t *testing.T) {
 	}
 }
 
+// A malformed KAPE_CONTROLLER_SERVICE_PORT must surface as an error, not be
+// silently swallowed (review round 1, P2).
+func TestConfigFromEnvRejectsGarbageControllerPort(t *testing.T) {
+	t.Setenv("KAPE_CONTROLLER_SERVICE_PORT", "not-a-number")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("ConfigFromEnv accepted garbage KAPE_CONTROLLER_SERVICE_PORT, want error")
+	}
+}
+
 func TestFlagOverridesEnv(t *testing.T) {
 	t.Setenv("KAPE_DEFAULT_IMAGE", "env-image")
-	cfg := ConfigFromEnv()
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
 	fs := newTestFlagSet()
 	cfg.RegisterFlags(fs)
 	if err := fs.Parse([]string{"-image", "flag-image"}); err != nil {

@@ -1,0 +1,34 @@
+# RBAC for the controller's first k8s API usage (issue #214, ADR-0083 D7):
+# the controller reads agent-sandbox Sandbox CRs (agents.x-k8s.io/v1beta1) to
+# resolve the in-sandbox daemon address. Minimal grant: get/watch on
+# sandboxes in the sandbox namespace only. The Role lives in the sandbox
+# namespace; the ServiceAccount in the controller's namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kape-controller
+  namespace: openshell
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kape-controller-sandbox-reader
+  namespace: openshell
+rules:
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kape-controller-sandbox-reader
+  namespace: openshell
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kape-controller-sandbox-reader
+subjects:
+- kind: ServiceAccount
+  name: kape-controller
+  namespace: openshell
