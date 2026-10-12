@@ -62,6 +62,14 @@ func NewRouter(mgr *AgentManager) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, views)
 	})
+	mux.HandleFunc("GET /providers", func(w http.ResponseWriter, r *http.Request) {
+		names, err := mgr.ListProviders(r.Context())
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, names)
+	})
 	mux.HandleFunc("GET /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		view, err := mgr.GetView(r.Context(), r.PathValue("id"))
 		if err != nil {

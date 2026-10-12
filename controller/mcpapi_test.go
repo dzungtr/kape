@@ -87,6 +87,7 @@ var toolContract = map[string]any{
 	"read_events":   readEventsInput{},
 	"delete_agent":  agentIDInput{},
 	"list_agents":   struct{}{},
+	"list_providers": struct{}{},
 }
 
 // structParams extracts (properties, required) from a shared input struct's

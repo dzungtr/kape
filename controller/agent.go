@@ -448,9 +448,6 @@ func inheritProfile(profile *CreateProfile, parent ResolvedProfile) {
 	if profile.Image == "" {
 		profile.Image = parent.Image
 	}
-	if profile.Provider == "" {
-		profile.Provider = parent.Provider
-	}
 	if profile.Model == "" {
 		profile.Model = parent.Model
 	}

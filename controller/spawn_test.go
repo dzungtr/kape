@@ -19,12 +19,12 @@ func newSpawnManager(t *testing.T) (*AgentManager, *FakeGateway) {
 
 // TestCreateChildInheritsParentProfile verifies D8 profile inheritance: a
 // child spawned with parent_id and no overrides gets the parent's resolved
-// profile (image/resources/provider/model), not config defaults.
+// profile (image/resources/model); provider is always the deployment default
+// (issue #220, option B — not inherited, not caller-set).
 func TestCreateChildInheritsParentProfile(t *testing.T) {
 	mgr, gw := newSpawnManager(t)
 	parent, err := mgr.Create(context.Background(), &CreateProfile{
 		Image:     "parent-image:v1",
-		Provider:  "parent-provider",
 		Model:     "z-ai/glm-5.2",
 		Resources: &Resources{CPU: "2", Memory: "4Gi"},
 	})
@@ -40,8 +40,8 @@ func TestCreateChildInheritsParentProfile(t *testing.T) {
 		t.Fatalf("created %d sandboxes, want 2", len(reqs))
 	}
 	c := reqs[1]
-	if c.Image != "parent-image:v1" || c.Provider != "parent-provider" || c.Resources != (Resources{CPU: "2", Memory: "4Gi"}) {
-		t.Fatalf("child spec = %+v, want parent profile inherited", c)
+	if c.Image != "parent-image:v1" || c.Provider != "openrouter-spike" || c.Resources != (Resources{CPU: "2", Memory: "4Gi"}) {
+		t.Fatalf("child spec = %+v, want parent profile inherited with deployment-fixed provider", c)
 	}
 	if got := gw.PiModels()[1]; got != "z-ai/glm-5.2" {
 		t.Fatalf("child model = %q, want parent model inherited", got)
@@ -57,8 +57,7 @@ func TestCreateChildInheritsParentProfile(t *testing.T) {
 func TestCreateChildOverridesParentProfile(t *testing.T) {
 	mgr, gw := newSpawnManager(t)
 	parent, err := mgr.Create(context.Background(), &CreateProfile{
-		Image:    "parent-image:v1",
-		Provider: "parent-provider",
+		Image: "parent-image:v1",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -73,8 +72,8 @@ func TestCreateChildOverridesParentProfile(t *testing.T) {
 	if reqs[1].Image != "child-image:v1" {
 		t.Fatalf("child image = %q, want explicit override", reqs[1].Image)
 	}
-	if reqs[1].Provider != "parent-provider" {
-		t.Fatalf("child provider = %q, want inherited from parent", reqs[1].Provider)
+	if reqs[1].Provider != "openrouter-spike" {
+		t.Fatalf("child provider = %q, want deployment-fixed default (issue #220, option B)", reqs[1].Provider)
 	}
 }
 

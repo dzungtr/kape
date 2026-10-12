@@ -9,8 +9,9 @@ import (
 )
 
 // TestCreatePartialOverridesCoexist verifies the #177 acceptance criterion:
-// two agents with different image/resources/provider/model coexist, and
-// omitted fields use config defaults.
+// two agents with different image/resources/model coexist, and omitted fields
+// use config defaults. Provider is deployment-fixed (issue #220, option B):
+// both agents get Config.DefaultProvider regardless.
 func TestCreatePartialOverridesCoexist(t *testing.T) {
 	gw := NewFakeGateway()
 	stream := NewFakeStream()
@@ -25,8 +26,7 @@ func TestCreatePartialOverridesCoexist(t *testing.T) {
 		t.Fatalf("create A: %v", err)
 	}
 	_, err = mgr.Create(context.Background(), &CreateProfile{
-		Provider: "custom-provider",
-		Model:    "z-ai/glm-5.2",
+		Model: "z-ai/glm-5.2",
 	})
 	if err != nil {
 		t.Fatalf("create B: %v", err)
@@ -40,8 +40,8 @@ func TestCreatePartialOverridesCoexist(t *testing.T) {
 	if a.Image != "agent-a-image:v1" || a.Provider != "openrouter-spike" || a.Resources != (Resources{CPU: "2", Memory: "4Gi"}) {
 		t.Fatalf("agent A spec = %+v, want overridden image/resources, default provider", a)
 	}
-	if b.Image != "pi-image" || b.Provider != "custom-provider" || b.Resources != (Resources{CPU: "1", Memory: "2Gi"}) {
-		t.Fatalf("agent B spec = %+v, want default image/resources, overridden provider", b)
+	if b.Image != "pi-image" || b.Provider != "openrouter-spike" || b.Resources != (Resources{CPU: "1", Memory: "2Gi"}) {
+		t.Fatalf("agent B spec = %+v, want default image/resources/provider (deployment-fixed)", b)
 	}
 	models := gw.PiModels()
 	if models[0] != "" || models[1] != "z-ai/glm-5.2" {

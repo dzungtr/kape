@@ -33,6 +33,7 @@ func RestVerbs() []string {
 		"read_events",
 		"delete_agent",
 		"list_agents",
+		"list_providers",
 	}
 }
 
@@ -44,7 +45,7 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "kape-controller", Version: "v1"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_agent",
-		Description: "Create a sandbox agent running the pi coding agent. All profile fields optional; defaults from controller config, or from the parent's resolved profile when parent_id is set (spawning, issue #216). Returns the agent view {id, sandbox, status, parent, children}.",
+		Description: "Create a sandbox agent running the pi coding agent. All profile fields optional; defaults from controller config, or from the parent's resolved profile when parent_id is set (spawning, issue #216). Inference provider is deployment-fixed — no provider field; use list_providers to see the configured set. Returns the agent view {id, sandbox, status, parent, children}.",
 	}, handleCreateAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_agent",
@@ -78,6 +79,10 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 		Name:        "list_agents",
 		Description: "List the sandbox agents owned by this controller: gateway sandboxes carrying the managed-by ownership label, joined with in-memory live state. Includes post-restart CR-derived views.",
 	}, handleListAgents(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_providers",
+		Description: "List the inference providers configured on the OpenShell gateway. Call before create_agent if a specific model routing matters; new sandboxes always use the deployment's fixed provider.",
+	}, handleListProviders(mgr))
 	return srv
 }
 
@@ -195,6 +200,22 @@ func handleListAgents(mgr *AgentManager) mcp.ToolHandlerFor[struct{}, listAgents
 			views = []AgentView{}
 		}
 		return nil, listAgentsOutput{Agents: views}, nil
+	}
+}
+
+// listProvidersOutput gives list_providers a top-level object schema (same
+// outputSchema reason as listAgentsOutput).
+type listProvidersOutput struct {
+	Providers []string `json:"providers"`
+}
+
+func handleListProviders(mgr *AgentManager) mcp.ToolHandlerFor[struct{}, listProvidersOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listProvidersOutput, error) {
+		names, err := mgr.ListProviders(ctx)
+		if err != nil {
+			return nil, listProvidersOutput{}, err
+		}
+		return nil, listProvidersOutput{Providers: names}, nil
 	}
 }
 

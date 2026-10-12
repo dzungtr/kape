@@ -67,11 +67,15 @@ func (r Resources) Validate() error {
 // CreateProfile is the create-time override set for POST /agents /
 // create_agent: every field is optional; omitted fields fall back to
 // Config defaults (env, then flag override).
+//
+// Provider is intentionally NOT a caller field (issue #220, option B):
+// inference routing is deployment config — every sandbox attaches
+// Config.DefaultProvider. Callers discover valid providers via
+// list_providers / GET /providers.
 type CreateProfile struct {
 	Name      string     `json:"name"`      // sandbox name (DNS label); default "sbx-<id>"; never inherited from the parent (names must be unique)
 	Image     string     `json:"image"`     // OCI image reference; default: parent's resolved image (child), else Config.DefaultImage
 	Resources *Resources `json:"resources"` // cpu/memory quantities; default: parent's resolved resources (child), else Config.DefaultResources
-	Provider  string     `json:"provider"`  // OpenShell provider name; default: parent's resolved provider (child), else Config.DefaultProvider
 	Model     string     `json:"model"`     // model id patched into pi models.json + PI_MODEL; default: parent's resolved model (child), else image's own selection
 	// ParentID (issue #216, ADR-0083 D8): optional parent agent for spawning.
 	// The child inherits the parent's profile unless overridden, and is
@@ -85,7 +89,6 @@ type CreateProfile struct {
 //   - image:       optional; OCI-style reference with optional tag and
 //     sha256 digest, no whitespace or uppercase-host nonsense
 //   - resources:   optional; cpu/memory as Kubernetes quantities
-//   - provider:    optional; non-empty, [A-Za-z0-9._-] only
 //   - model:       optional; non-empty, [A-Za-z0-9._:/-] only (provider-
 //     qualified ids like "openrouter/z-ai/glm-5.2" allowed)
 var (
@@ -110,9 +113,6 @@ func (p *CreateProfile) Validate() error {
 		if err := p.Resources.Validate(); err != nil {
 			return err
 		}
-	}
-	if p.Provider != "" && !providerRe.MatchString(p.Provider) {
-		return fieldErr("provider", fmt.Sprintf("%q must contain only [A-Za-z0-9._-]", p.Provider))
 	}
 	if p.Model != "" && !modelRe.MatchString(p.Model) {
 		return fieldErr("model", fmt.Sprintf("%q must contain only [A-Za-z0-9._:/-]", p.Model))
@@ -146,7 +146,7 @@ func (c *Config) ResolveProfile(p *CreateProfile) (ResolvedProfile, error) {
 	r := ResolvedProfile{
 		Name:      p.Name,
 		Image:     p.Image,
-		Provider:  p.Provider,
+		Provider:  c.DefaultProvider, // never caller-supplied (issue #220, option B)
 		Model:     p.Model,
 		Resources: c.DefaultResources,
 	}
@@ -156,15 +156,12 @@ func (c *Config) ResolveProfile(p *CreateProfile) (ResolvedProfile, error) {
 	if r.Image == "" {
 		r.Image = c.DefaultImage
 	}
-	if r.Provider == "" {
-		r.Provider = c.DefaultProvider
-	}
 	if p.Resources != nil {
 		r.Resources = *p.Resources
 	}
 	// Re-validate the resolved values: bad config defaults surface with the
 	// same field-naming contract as bad request overrides.
-	resolved := &CreateProfile{Name: r.Name, Image: r.Image, Provider: r.Provider, Model: r.Model, Resources: &r.Resources}
+	resolved := &CreateProfile{Name: r.Name, Image: r.Image, Model: r.Model, Resources: &r.Resources}
 	if err := resolved.Validate(); err != nil {
 		return ResolvedProfile{}, err
 	}
@@ -331,7 +328,10 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 // Validate checks the resolved config itself (flag/env mistakes surface at
 // startup, not at first create).
 func (c *Config) Validate() error {
-	p := &CreateProfile{Image: c.DefaultImage, Provider: c.DefaultProvider, Resources: &c.DefaultResources}
+	if c.DefaultProvider == "" || !providerRe.MatchString(c.DefaultProvider) {
+		return fieldErr("provider", fmt.Sprintf("%q must be a non-empty provider name ([A-Za-z0-9._-]) — must match a gateway provider profile (list_providers)", c.DefaultProvider))
+	}
+	p := &CreateProfile{Image: c.DefaultImage, Resources: &c.DefaultResources}
 	if err := p.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
