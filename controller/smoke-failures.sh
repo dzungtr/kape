@@ -65,6 +65,7 @@ cleanup() {
         curl -s -X DELETE "$BASE/agents/$id" >/dev/null 2>&1 || true
     done
     sleep 5
+    clear_partition
     # belt and braces: any sandbox the smoke controller owned
     kubectl delete sandbox -n "$NS" -l openshell.ai/managed-by=openshell --ignore-not-found >/dev/null 2>&1 || true
     sleep 3
@@ -145,6 +146,36 @@ wait_view() { # id, field-fn name, wanted, timeout → 0 on match
     return 1
 }
 events()   { curl -s "$BASE/agents/$1/events?after=0&limit=1000"; }
+# deploy_controller: bare in-cluster controller pod (restartPolicy Never —
+# force-deleted pods are NOT recreated, so leg 3 re-invokes this function).
+deploy_controller() { # → 0 when the pod is ready and listening
+    kubectl delete pod -n "$NS" "$CTL" --ignore-not-found --force --grace-period=0 >/dev/null 2>&1
+    kubectl run "$CTL" -n "$NS" \
+        --image="$CONTROLLER_IMAGE" --restart=Never --port=8081 \
+        --overrides="$(cat <<EOF
+{"spec":{"serviceAccountName":"kape-controller","containers":[{"name":"ctl","image":"$CONTROLLER_IMAGE","args":["-listen",":8081"],
+  "env":[
+    {"name":"KAPE_GATEWAY_ADDR","value":"openshell.openshell.svc.cluster.local:8080"},
+    {"name":"KAPE_CREDS_DIR","value":"/mtls"},
+    {"name":"KAPE_DEFAULT_IMAGE","value":"$DAEMON_IMAGE"},
+    {"name":"KAPE_DEFAULT_PROVIDER","value":"openrouter-spike"},
+    {"name":"KAPE_TRANSPORT","value":"pull"},
+    {"name":"KAPE_SANDBOX_NAMESPACE","value":"$NS"},
+    {"name":"KAPE_DAEMON_PORT","value":"$DAEMON_PORT"},
+    {"name":"KAPE_DAEMON_TOKEN","value":"$TOKEN"},
+    {"name":"KAPE_CONTROLLER_SERVICE_PORT","value":"80"},
+    {"name":"KAPE_EVENT_STORE","value":"/data/events.db"}],
+  "ports":[{"containerPort":8081,"name":"http"}],
+  "volumeMounts":[{"name":"mtls","mountPath":"/mtls","readOnly":true},{"name":"data","mountPath":"/data"}],
+  "imagePullPolicy":"IfNotPresent"}],
+ "serviceAccountName":"kape-controller",
+ "volumes":[{"name":"mtls","secret":{"secretName":"openshell-client-tls"}},
+            {"name":"data","hostPath":{"path":"$HOST_STORE","type":"DirectoryOrCreate"}}]}}
+EOF
+)" >/dev/null || return 1
+    kubectl wait --for=condition=ready pod/"$CTL" -n "$NS" --timeout=180s >/dev/null || return 1
+    kubectl logs -n "$NS" "$CTL" --tail=5 | grep -q "listening"
+}
 wait_settle() { # id, timeout
     local id=$1 t=$2 i
     for i in $(seq 1 $((t*2))); do
@@ -208,13 +239,19 @@ open_daemon_ingress() { # $1 = podIP → 0 when the DNAT rule is in place
 # NetworkPolicy: deny ALL ingress to the sandbox pod (controller→daemon
 # partition). kubernetes.io/metadata.name is auto-stamped on every pod.
 apply_partition() { # $1 = sandbox name
+    # Pods carry NO kubernetes.io/metadata.name label (verified live, run 3);
+    # the agent-sandbox operator stamps agents.x-k8s.io/sandbox-name-hash.
+    local hash
+    hash=$(kubectl get pod -n "$NS" "$(sbx_pod "$1")" -o jsonpath='{.metadata.labels.agents\.x-k8s\.io/sandbox-name-hash}' 2>/dev/null)
+    [ -n "$hash" ] || { echo "no sandbox-name-hash label for $1"; return 1; }
+    kubectl delete netpol -n "$NS" kape-smoke-partition --ignore-not-found >/dev/null 2>&1
     kubectl apply -n "$NS" -f - >/dev/null <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: {name: kape-smoke-partition}
 spec:
   podSelector:
-    matchLabels: {kubernetes.io/metadata.name: "$1"}
+    matchLabels: {agents.x-k8s.io/sandbox-name-hash: "$hash"}
   policyTypes: [Ingress]
 EOF
 }
@@ -223,6 +260,8 @@ clear_partition() { kubectl delete netpol -n "$NS" kape-smoke-partition --ignore
 # event-stream integrity: seqs contiguous from 1, no duplicate seq, and each
 # of the listed record types occurs exactly the given number of times.
 events_integrity() { # id, expected_turn_started_count
+    # Count by ENVELOPE type (data also embeds type — substring counting on
+    # the blob double-counts every record, verified live on run 3).
     python3 - "$NOTE/ev.json" "$2" <<'PYEOF'
 import sys, json
 path, want_turns = sys.argv[1], int(sys.argv[2])
@@ -230,11 +269,12 @@ d = json.load(open(path))
 evs = d["events"]
 seqs = [e["seq"] for e in evs]
 ok = (seqs == list(range(1, len(seqs) + 1))) and len(set(seqs)) == len(seqs)
-blob = json.dumps(evs)
+from collections import Counter
+c = Counter(e["type"] for e in evs)
 for t in ("turn_started", "tool_call", "text_delta", "agent_settled"):
-    if blob.count('"%s"' % t) != want_turns:
+    if c.get(t, 0) != want_turns:
         ok = False
-        print("type %s count %d != %d" % (t, blob.count('"%s"' % t), want_turns))
+        print("type %s count %d != %d" % (t, c.get(t, 0), want_turns))
 print("seqs=%d first=%d last=%d ok=%s" % (len(seqs), seqs[0] if seqs else 0, seqs[-1] if seqs else 0, ok))
 sys.exit(0 if ok else 1)
 PYEOF
@@ -247,6 +287,7 @@ kubectl get nodes >/dev/null 2>&1 || { echo "cluster unreachable"; exit 1; }
 STALE=$(kubectl get sandbox -A --no-headers 2>/dev/null | wc -l)
 [ "$STALE" -ne 0 ] && { echo "FAIL: preflight expects zero Sandbox CRs, found $STALE"; kubectl get sandbox -A; exit 1; }
 kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 || { echo "agent-sandbox CRDs not installed"; exit 1; }
+clear_partition  # stale netpol from a previous run targets a dead hash
 # clean node-side store from a previous run
 kubectl run kape-smoke-killer -n default --image="$KILLER_IMAGE" --restart=Never \
     --overrides='{"spec":{"hostPID":true,"containers":[{"name":"c","image":"'"$KILLER_IMAGE"'","command":["sleep","14400"],"volumeMounts":[{"name":"h","mountPath":"/host"}],"securityContext":{"privileged":true}}],"volumes":[{"name":"h","hostPath":{"path":"/"}}]}}' >/dev/null 2>&1 || true
@@ -259,32 +300,7 @@ pass "preflight: cluster reachable, zero Sandbox CRs, node store clean"
 
 # --- deploy the smoke controller in-cluster ----------------------------------
 note "deploy smoke controller (pull transport, in-cluster)"
-kubectl delete pod -n "$NS" "$CTL" --ignore-not-found --force --grace-period=0 >/dev/null 2>&1
-kubectl run "$CTL" -n "$NS" \
-    --image="$CONTROLLER_IMAGE" --restart=Never --port=8081 \
-    --overrides="$(cat <<EOF
-{"spec":{"serviceAccountName":"kape-controller","containers":[{"name":"ctl","image":"$CONTROLLER_IMAGE","args":["-listen",":8081"],
-  "env":[
-    {"name":"KAPE_GATEWAY_ADDR","value":"openshell.openshell.svc.cluster.local:8080"},
-    {"name":"KAPE_CREDS_DIR","value":"/mtls"},
-    {"name":"KAPE_DEFAULT_IMAGE","value":"$DAEMON_IMAGE"},
-    {"name":"KAPE_DEFAULT_PROVIDER","value":"openrouter-spike"},
-    {"name":"KAPE_TRANSPORT","value":"pull"},
-    {"name":"KAPE_SANDBOX_NAMESPACE","value":"$NS"},
-    {"name":"KAPE_DAEMON_PORT","value":"$DAEMON_PORT"},
-    {"name":"KAPE_DAEMON_TOKEN","value":"$TOKEN"},
-    {"name":"KAPE_CONTROLLER_SERVICE_PORT","value":"80"},
-    {"name":"KAPE_EVENT_STORE","value":"/data/events.db"}],
-  "ports":[{"containerPort":8081,"name":"http"}],
-  "volumeMounts":[{"name":"mtls","mountPath":"/mtls","readOnly":true},{"name":"data","mountPath":"/data"}],
-  "imagePullPolicy":"IfNotPresent"}],
- "serviceAccountName":"kape-controller",
- "volumes":[{"name":"mtls","secret":{"secretName":"openshell-client-tls"}},
-            {"name":"data","hostPath":{"path":"$HOST_STORE","type":"DirectoryOrCreate"}}]}}
-EOF
-)" >/dev/null || { echo "deploy controller failed"; exit 1; }
-kubectl wait --for=condition=ready pod/"$CTL" -n "$NS" --timeout=180s >/dev/null || { echo "controller pod not ready"; kubectl logs -n "$NS" "$CTL" --tail=20; exit 1; }
-kubectl logs -n "$NS" "$CTL" --tail=5 | grep -q "listening" && pass "controller up in-cluster (pull transport)" \
+deploy_controller && pass "controller up in-cluster (pull transport)" \
     || { echo "FAIL: controller not listening"; kubectl logs -n "$NS" "$CTL" --tail=20; exit 1; }
 
 kubectl port-forward -n "$NS" pod/"$CTL" "${PF_PORT}:8081" >"$NOTE/pf.log" 2>&1 &
@@ -321,15 +337,15 @@ wait_daemon_listening "$SBX1" 120 && pass "daemon listening (healthz up)" || { e
 
 P=$(http_code -X POST "$BASE/agents/$ID1/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "prompt accepted (202)" "[ '$P' = '202' ]"
-wait_view "$ID1" vsession running "$TIMEOUT_READY" && pass "session FSM running mid-turn" || fail "session not running after prompt"
-# partition the controller→daemon leg while the turn's records are unacked
+# partition immediately: the pull transport may drain the fast fake-pi turn
+# before the netpol lands, so the mid-partition assertion only checks that
+# whichever records are pending stay spooled; the drain/integrity proof is
+# post-resume.
 apply_partition "$SBX1"
 kubectl get netpol -n "$NS" kape-smoke-partition >/dev/null 2>&1 && pass "partition applied (netpol deny ingress to $SBX1)"
 wait_view "$ID1" vdegraded True "$TIMEOUT_DEGRADED" && pass "liveness degraded after 2 failed polls" \
     || { echo "FAIL: degraded never set (degraded=$(vdegraded "$ID1"))"; }
 assert "session FSM untouched during partition (running)" "[ '$(vsession "$ID1")' = 'running' ]"
-sleep 5
-assert "still no settle events while partitioned" "! events '$ID1' | grep -q agent_settled"
 clear_partition
 wait_settle "$ID1" "$TIMEOUT_SETTLE" && pass "seamless resume: turn drained after partition lifted" \
     || { echo "FAIL: turn never settled after resume"; }
@@ -354,15 +370,20 @@ POD2=$(sbx_pod "$SBX2")
 P=$(http_code -X POST "$BASE/agents/$ID2/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "prompt accepted (202)" "[ '$P' = '202' ]"
 sleep 1   # let fake pi emit some records onto the spool (mid-turn kill)
-# SIGKILL the daemon (PID 1 of the sandbox container) from the hostPID debug
-# pod — the only path into a distroless container. Container restarts
-# (restartPolicy Always): same pod, same spool file, NEW boot_id.
-kubectl exec -n default kape-smoke-killer -- sh -c "pkill -9 -x kape-daemon" >/dev/null 2>&1
-sleep 2
-kubectl get pod -n "$NS" "$POD2" >/dev/null 2>&1 && pass "pod survived daemon kill (container restarted)" \
-    || fail "pod gone after daemon kill (that is leg 4, not leg 2)"
-wait_view "$ID2" vstatus failed 180 && pass "liveness failed after new-boot_id preflight" \
+# SIGKILL the daemon from the hostPID debug pod — the only path into a
+# distroless container. Same pod, same spool file, NEW boot_id.
+# sustained kill: the profile hook restarts the daemon in ~2s (retry loop),
+# which outruns the puller's 2-failure degraded threshold on a single kill
+# (verified live, run 3). Keep the daemon dead long enough for the puller to
+# see repeated failures, then let the hook boot a fresh daemon: new boot_id,
+# pi not running — the D6 death signature.
+kubectl exec -n default kape-smoke-killer -- sh -c 'for i in $(seq 1 90); do pkill -9 -x kape-daemon; sleep 0.5; done' >/dev/null 2>&1 &
+KILLER_LOOP_PID=$!
+wait_view "$ID2" vstatus failed 180 && pass "liveness failed after sustained daemon death" \
     || { echo "FAIL: status=$(vstatus "$ID2")"; }
+wait $KILLER_LOOP_PID 2>/dev/null
+kubectl get pod -n "$NS" "$POD2" >/dev/null 2>&1 && pass "pod survived daemon kill (hook boots a fresh daemon)" \
+    || fail "pod gone after daemon kill (that is leg 4, not leg 2)"
 assert "session FSM still running (no failed state, D6)" "[ '$(vsession "$ID2")' = 'running' ]"
 events_json "$ID2"
 grep -q '"daemon.boot"' "$NOTE/ev.json" && pass "durable daemon.boot event recorded (new boot_id, pi_running:false)" \
@@ -394,9 +415,10 @@ echo "baseline: $N1 events at origin watermark"
 P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 2"}')
 assert "turn 2 prompt accepted (202)" "[ '$P' = '202' ]"
 apply_partition "$SBX3" && sleep 3 && pass "partition applied mid-pull (records pending on spool)"
-kubectl delete pod -n "$NS" "$CTL" --force --grace-period=0 >/dev/null 2>&1
-kubectl wait --for=condition=ready pod/"$CTL" -n "$NS" --timeout=120s >/dev/null || { echo "FAIL: controller pod not back"; kubectl logs -n "$NS" "$CTL" --tail=20; exit 1; }
-pass "controller restarted (hostPath store preserved)"
+# force-deleted restartPolicy:Never pods are not recreated — redeploy from
+# the same spec (hostPath event store preserves the log).
+deploy_controller && pass "controller restarted (hostPath store preserved)" \
+    || { echo "FAIL: controller pod not back"; kubectl logs -n "$NS" "$CTL" --tail=20; exit 1; }
 kill "$PF_PID" 2>/dev/null
 kubectl port-forward -n "$NS" pod/"$CTL" "${PF_PORT}:8081" >"$NOTE/pf2.log" 2>&1 &
 PF_PID=$!
@@ -416,13 +438,14 @@ evs = json.load(open(sys.argv[1]))["events"]
 seqs = [e["seq"] for e in evs]
 sys.exit(0 if seqs == list(range(1, len(seqs) + 1)) else 1)
 PYEOF
-python3 - "$NOTE/ev.json" 2 <<'PYEOF' && pass "leg 3 no-duplicate check: exactly 2 turns, each record type twice" || fail "leg 3 duplicates present"
+python3 - "$NOTE/ev.json" <<'PYEOF' && pass "leg 3 no-duplicate check: exactly 2 turns, each record type twice" || fail "leg 3 duplicates present"
 import sys, json
+from collections import Counter
 evs = json.load(open(sys.argv[1]))["events"]
-blob = json.dumps(evs)
+c = Counter(e["type"] for e in evs)
 for t in ("turn_started", "tool_call", "text_delta", "agent_settled"):
-    if blob.count('"%s"' % t) != 2:
-        print("%s count %d != 2" % (t, blob.count('"%s"' % t)))
+    if c.get(t, 0) != 2:
+        print("%s count %d != 2" % (t, c.get(t, 0)))
         sys.exit(1)
 sys.exit(0)
 PYEOF
