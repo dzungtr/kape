@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -56,15 +59,32 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 	}
 	s := &Spool{path: path, f: f, maxRecs: maxRecords, next: 1, waiters: map[chan struct{}]struct{}{}} // ids start at 1
 	// Recover-from-file: scan the whole log; the highest spool_id is the tail.
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	// bufio.Reader + ReadString (not bufio.Scanner): Scanner's fixed token cap
+	// makes a >1MiB record permanently boot-loop the daemon (same unbounded
+	// pattern as Pi.relayStdout). ReadString has no size limit.
+	rd := bufio.NewReader(f)
+	for {
+		line, rerr := rd.ReadString('\n')
+		trimmed := strings.TrimRight(line, "\n")
+		if trimmed == "" {
+			if rerr == nil || rerr == io.EOF {
+				if rerr == io.EOF {
+					break
+				}
+				continue
+			}
+			f.Close() //nolint:errcheck
+			return nil, fmt.Errorf("read spool %s: %w", path, rerr)
+		}
+		if !strings.HasSuffix(line, "\n") {
+			// Torn final line: the daemon died between Write and Sync of an
+			// append. The fragment never completed, so discard it and resync
+			// to the last newline; the lost fragment is logged, not served.
+			log.Printf("spool %s: torn final line discarded (%d bytes): %.80s", path, len(trimmed), trimmed)
+			break
 		}
 		var e spoolEntry
-		if err := json.Unmarshal(line, &e); err != nil {
+		if err := json.Unmarshal([]byte(trimmed), &e); err != nil {
 			f.Close() //nolint:errcheck
 			return nil, fmt.Errorf("spool %s: corrupt record at recovery: %w", path, err)
 		}
@@ -72,10 +92,13 @@ func NewSpool(path string, maxRecords int) (*Spool, error) {
 		if e.SpoolID >= s.next {
 			s.next = e.SpoolID + 1
 		}
-	}
-	if err := sc.Err(); err != nil {
-		f.Close() //nolint:errcheck
-		return nil, fmt.Errorf("scan spool %s: %w", path, err)
+		if rerr != nil {
+			if rerr == io.EOF {
+				break
+			}
+			f.Close() //nolint:errcheck
+			return nil, fmt.Errorf("read spool %s: %w", path, rerr)
+		}
 	}
 	return s, nil
 }
@@ -118,7 +141,9 @@ func (s *Spool) Append(data string) (Record, error) {
 		// The notice itself is appended and always retained (one per
 		// truncation event; a fresh cap of >=1 keeps it in the window).
 		if err := s.appendLocked(spoolEntry{SpoolID: s.next, Data: string(notice)}); err != nil {
-			return Record{}, err
+			// The primary record landed; a failed truncation notice must not
+			// mask that success. Log it so a broken spool stays observable.
+			log.Printf("spool truncation notice append failed: %v", err)
 		}
 	}
 	// Wake long-pollers: arrival means any /records call returns immediately.

@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,6 +90,59 @@ func TestSpoolReadLongPoll(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("long-poll did not return on arrival")
+	}
+}
+
+// A >1MiB record in the spool file must not boot-loop the daemon: recovery
+// scanning is unbounded (bufio.Reader, not Scanner), and spool_id continues.
+func TestSpoolOversizedRecordRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spool.jsonl")
+	big := fmt.Sprintf(`{"type":"text_delta","text":"%s"}`, strings.Repeat("x", 1<<20+512))
+	env, err := json.Marshal(spoolEntry{SpoolID: 7, Data: big})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if err := os.WriteFile(path, append(env, '\n'), 0o600); err != nil {
+		t.Fatalf("write spool: %v", err)
+	}
+
+	s := mustSpool(t, path, 100)
+	recs := s.Read(0, 0)
+	if len(recs) != 1 || recs[0].SpoolID != 7 || len(recs[0].Data) <= 1<<20 {
+		t.Fatalf("recovered records = %d (first id %d, len %d), want the full oversized record", len(recs), recs[0].SpoolID, len(recs[0].Data))
+	}
+	r, err := s.Append(`{"type":"agent_settled"}`)
+	if err != nil {
+		t.Fatalf("append after recovery: %v", err)
+	}
+	if r.SpoolID != 8 {
+		t.Fatalf("spool_id after oversized record = %d, want 8 (continues)", r.SpoolID)
+	}
+}
+
+// A torn final line (crash between Write and Sync) must not fail recovery:
+// the daemon resyncs to the last newline and discards the fragment.
+func TestSpoolTornFinalLineRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spool.jsonl")
+	good1, _ := json.Marshal(spoolEntry{SpoolID: 1, Data: `{"a":1}`})
+	good2, _ := json.Marshal(spoolEntry{SpoolID: 2, Data: `{"a":2}`})
+	torn, _ := json.Marshal(spoolEntry{SpoolID: 3, Data: `{"a":3}`})
+	body := string(good1) + "\n" + string(good2) + "\n" + string(torn[:len(torn)/2]) // no trailing newline
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write spool: %v", err)
+	}
+
+	s := mustSpool(t, path, 100)
+	recs := s.Read(0, 0)
+	if len(recs) != 2 || recs[1].SpoolID != 2 {
+		t.Fatalf("recovered %d records, want the 2 complete ones (torn fragment discarded)", len(recs))
+	}
+	r, err := s.Append(`{"a":4}`)
+	if err != nil {
+		t.Fatalf("append after recovery: %v", err)
+	}
+	if r.SpoolID != 3 {
+		t.Fatalf("spool_id after torn line = %d, want 3 (no reuse of the torn id)", r.SpoolID)
 	}
 }
 

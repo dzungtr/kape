@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -108,7 +109,9 @@ func (p *Pi) spoolStdoutLine(line string) {
 			data = string(raw)
 		}
 	}
-	p.notices.Append(data) //nolint:errcheck // truncation is notice-path handled
+	if _, err := p.notices.Append(data); err != nil {
+		log.Printf("spool append failed: %v", err)
+	}
 }
 
 // relayStderr turns each pi stderr line into a pi_stderr notice record.
@@ -126,7 +129,9 @@ func (p *Pi) stderrNotice(text string) {
 		return
 	}
 	n, _ := json.Marshal(map[string]string{"type": "pi_stderr", "text": text})
-	p.notices.Append(string(n)) //nolint:errcheck
+	if _, err := p.notices.Append(string(n)); err != nil {
+		log.Printf("spool append failed: %v", err)
+	}
 }
 
 // awaitExit emits a pi_exit notice when the process ends and flips pi_running.
@@ -141,7 +146,9 @@ func (p *Pi) awaitExit(cmd *exec.Cmd) {
 		}
 	}
 	n, _ := json.Marshal(map[string]any{"type": "pi_exit", "exit_code": code})
-	p.notices.Append(string(n)) //nolint:errcheck
+	if _, err := p.notices.Append(string(n)); err != nil {
+		log.Printf("spool append failed: %v", err)
+	}
 }
 
 // SendCommand writes a command to pi's stdin as one JSON line. A prompt on a
