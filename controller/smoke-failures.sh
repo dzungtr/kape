@@ -30,7 +30,7 @@ cd "$(dirname "$0")"
 
 NS="${NS:-openshell}"
 CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/dzungtr/kape-controller:smoke-217}"
-DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217b}"
+DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217c}"  # KAPE_PI_AUTOSTART=0
 KILLER_IMAGE="${KILLER_IMAGE:-alpine:3.20}"
 PF_PORT="${PF_PORT:-3000}"            # host side of the controller port-forward (nono only opens 3000)
 DAEMON_PORT="${DAEMON_PORT:-9090}"    # fixed daemon port (D7)
@@ -133,7 +133,7 @@ wait_podip() { # $1 = sandbox name, $2 = timeout s → echoes ip, non-zero when 
 # view / status / degraded / session / events helpers
 view()     { curl -s "$BASE/agents/$1"; }
 vstatus()  { view "$1" | jqpy 'd["status"]' 2>/dev/null; }
-vdegraded(){ view "$1" | jqpy 'd["degraded"]' 2>/dev/null; }
+vdegraded(){ view "$1" | jqpy 'd.get("degraded", False)' 2>/dev/null; }
 vsession() { view "$1" | jqpy 'd["session"]' 2>/dev/null; }
 vsandbox() { view "$1" | jqpy 'd["sandbox"]' 2>/dev/null; }
 wait_view() { # id, field-fn name, wanted, timeout → 0 on match
@@ -343,9 +343,22 @@ assert "prompt accepted (202)" "[ '$P' = '202' ]"
 # post-resume.
 apply_partition "$SBX1"
 kubectl get netpol -n "$NS" kape-smoke-partition >/dev/null 2>&1 && pass "partition applied (netpol deny ingress to $SBX1)"
+# wait until the deny is actually programmed: the daemon was reachable a
+# moment ago (healthz wait), so the first failing probe = block in effect
+BRC=1
+for i in $(seq 1 60); do
+    if ! kubectl exec -n default kape-smoke-killer -- wget -q -O /dev/null -T 2 "http://$(sbx_podip "$SBX1"):${DAEMON_PORT}/healthz" >/dev/null 2>&1; then BRC=0; break; fi
+    sleep 1
+done
+[ "$BRC" = 0 ] && pass "partition effective (healthz blocked)" || fail "partition never blocked (netpol not enforced?)"
 wait_view "$ID1" vdegraded True "$TIMEOUT_DEGRADED" && pass "liveness degraded after 2 failed polls" \
     || { echo "FAIL: degraded never set (degraded=$(vdegraded "$ID1"))"; }
 assert "session FSM untouched during partition (running)" "[ '$(vsession "$ID1")' = 'running' ]"
+if events "$ID1" | grep -q '"agent_settled"'; then
+    echo "note: turn records drained before the netpol programmed (fast fake-pi); resume assertions cover both branches"
+else
+    assert "no settle events while partitioned (records spooled)" "! events '$ID1' | grep -q agent_settled"
+fi
 clear_partition
 wait_settle "$ID1" "$TIMEOUT_SETTLE" && pass "seamless resume: turn drained after partition lifted" \
     || { echo "FAIL: turn never settled after resume"; }
@@ -377,7 +390,7 @@ sleep 1   # let fake pi emit some records onto the spool (mid-turn kill)
 # (verified live, run 3). Keep the daemon dead long enough for the puller to
 # see repeated failures, then let the hook boot a fresh daemon: new boot_id,
 # pi not running — the D6 death signature.
-kubectl exec -n default kape-smoke-killer -- sh -c 'for i in $(seq 1 90); do pkill -9 -x kape-daemon; sleep 0.5; done' >/dev/null 2>&1 &
+kubectl exec -n default kape-smoke-killer -- sh -c 'for i in $(seq 1 90); do n=0; for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)" = "kape-daemon" ] && kill -9 ${d#/proc/} && n=$((n+1)); done; sleep 0.5; done' >/dev/null 2>&1 &
 KILLER_LOOP_PID=$!
 wait_view "$ID2" vstatus failed 180 && pass "liveness failed after sustained daemon death" \
     || { echo "FAIL: status=$(vstatus "$ID2")"; }
@@ -409,7 +422,7 @@ wait_daemon_listening "$SBX3" 180 && pass "daemon listening (healthz up)" || { e
 P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
 assert "turn 1 prompt accepted (202)" "[ '$P' = '202' ]"
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "turn 1 settled (fully pulled baseline)" || { echo "FAIL: turn 1 never settled"; }
-events_json "$ID3"; N1=$(jqpy 'len(d["events"])')
+events_json "$ID3"; N1=$(jqpy 'len(d["events"])' <"$NOTE/ev.json")
 echo "baseline: $N1 events at origin watermark"
 # turn 2 accepted, then partition, then kill the controller MID-PULL
 P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 2"}')
@@ -425,13 +438,13 @@ PF_PID=$!
 sleep 3
 V=$(view "$ID3")
 assert "agent view first-class post-restart (source replayed)" "echo '$V' | grep -q 'replayed'"
-assert "session FSM running (turn 2 unsettled)" "[ '$(vsession "$ID3")' = 'running' ]"
+wait_view "$ID3" vsession running 60 && pass "session FSM running (turn 2 unsettled)" || fail "session not running post-restart ($(vsession "$ID3"))"
 clear_partition
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "post-restart resume drained turn 2 from the spool" \
     || { echo "FAIL: turn 2 never settled after restart"; }
 wait_view "$ID3" vstatus ready 60 && pass "liveness ready after resume" || fail "liveness stuck ($(vstatus "$ID3"))"
 events_json "$ID3"
-N3=$(jqpy 'len(d["events"])')
+N3=$(jqpy 'len(d["events"])' <"$NOTE/ev.json")
 python3 - "$NOTE/ev.json" <<'PYEOF' && pass "leg 3 no-gap check: seqs contiguous 1..N" || fail "leg 3 seqs have gaps"
 import sys, json
 evs = json.load(open(sys.argv[1]))["events"]
@@ -459,6 +472,11 @@ CREATED_IDS+=("$ID4")
 wait_ready_agent "$ID4" && pass "agent D ready" || { echo "FAIL: agent D never ready"; exit 1; }
 SBX4=$(vsandbox "$ID4")
 wait_daemon_listening "$SBX4" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX4"; exit 1; }
+# mid-turn churn: the D6 pod-churn semantics (failed, FSM still running)
+# only apply while a turn is in flight
+P=$(http_code -X POST "$BASE/agents/$ID4/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
+assert "prompt accepted (202)" "[ '$P' = '202' ]"
+wait_view "$ID4" vsession running 30 && pass "session FSM running before churn" || fail "session not running after prompt"
 IP0=$(wait_podip "$SBX4" 30)
 kubectl delete pod -n "$NS" "$(sbx_pod "$SBX4")" >/dev/null 2>&1
 IP1=$(wait_podip "$SBX4" 180)
@@ -468,6 +486,7 @@ if [ -n "$IP1" ]; then
     open_daemon_ingress "$IP1" && pass "daemon ingress shim re-applied for new pod" || echo "note: ingress shim re-apply failed"
     wait_view "$ID4" vstatus failed 240 && pass "reconnect detected daemon death on churn (failed)" \
         || { echo "FAIL: status=$(vstatus "$ID4")"; }
+    sleep 5   # let the death path drain the spool and record the boot event
     assert "session FSM still running (D6 pod-churn semantics)" "[ '$(vsession "$ID4")' = 'running' ]"
     events_json "$ID4"
     grep -q '"daemon.boot"' "$NOTE/ev.json" && pass "daemon.boot recorded after churn" || fail "no daemon.boot event"
@@ -480,9 +499,14 @@ CREATED_IDS=("${CREATED_IDS[@]/$ID4/}")
 
 # =============================================================================
 note "LEG 5: teardown — zero Sandbox CRs left"
-sleep 3
-KOUT=$(kubectl get sandbox -A --no-headers 2>/dev/null); KRC=$?
-assert "zero Sandbox CRs after all legs" "[ '$KRC' = '0' ] && [ \"\$(echo \"\$KOUT\" | grep -c .)\" = '0' ]"
+# the leg-4 Delete's CR finalization can lag; wait bounded
+ZRC=1
+for i in $(seq 1 60); do
+    KOUT=$(kubectl get sandbox -A --no-headers 2>/dev/null); KRC=$?
+    [ "$KRC" = 0 ] && [ -z "$KOUT" ] && { ZRC=0; break; }
+    sleep 2
+done
+assert "zero Sandbox CRs after all legs" "[ '$ZRC' = '0' ]"
 CREATED_IDS=()
 
 [ "$FAIL" -eq 0 ] || exit 1

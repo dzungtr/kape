@@ -26,3 +26,7 @@ COPY daemon/kape-daemon-profile.sh /etc/profile.d/kape-daemon.sh
 COPY --from=builder /out/daemon /usr/local/bin/kape-daemon
 COPY --from=builder /out/daemon /opt/openshell/bin/kape-daemon
 ENV KAPE_DAEMON_ADDR=0.0.0.0:9090
+# pi_running:false on a fresh boot is the D6 daemon-death signature the
+# matrix asserts (legs 2/4); pi spawns on the first prompt via SendCommand,
+# so the record-emitting legs (1/3) are unaffected.
+ENV KAPE_PI_AUTOSTART=0
