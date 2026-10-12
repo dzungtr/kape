@@ -30,13 +30,13 @@ cd "$(dirname "$0")"
 
 NS="${NS:-openshell}"
 CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/dzungtr/kape-controller:smoke-217}"
-DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217}"
+DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217b}"
 KILLER_IMAGE="${KILLER_IMAGE:-alpine:3.20}"
-PF_PORT="${PF_PORT:-18081}"           # host side of the controller port-forward
+PF_PORT="${PF_PORT:-3000}"            # host side of the controller port-forward (nono only opens 3000)
 DAEMON_PORT="${DAEMON_PORT:-9090}"    # fixed daemon port (D7)
 TOKEN="smoke-217-$(head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')"
 HOST_STORE=/var/tmp/kape-smoke217     # node-side event store (survives pod restart)
-CTL=KapeSmokeCtl                      # object name (lowercased by k8s)
+CTL=kape-smoke-ctl                    # in-cluster smoke controller pod name
 NOTE=/tmp/kape-smoke-failures
 TIMEOUT_READY=300
 TIMEOUT_DEGRADED=240
@@ -66,7 +66,7 @@ cleanup() {
     done
     sleep 5
     # belt and braces: any sandbox the smoke controller owned
-    kubectl delete sandbox -n "$NS" -l managed-by=kape-controller --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete sandbox -n "$NS" -l openshell.ai/managed-by=openshell --ignore-not-found >/dev/null 2>&1 || true
     sleep 3
     local remaining
     if ! remaining=$(kubectl get sandbox -A --no-headers 2>/dev/null); then
@@ -89,11 +89,18 @@ trap cleanup EXIT
 BASE="http://localhost:${PF_PORT}"
 
 # --- k8s observation helpers ------------------------------------------------
-sbx_pod() { # $1 = sandbox name → pod name
-    kubectl get pod -n "$NS" -l "openshell.ai/sandbox-name=$1" -o name 2>/dev/null | head -1 | cut -d/ -f2
+# CR/pod names (verified live, issue #217): the agent-sandbox operator names
+# them "<workspace>--<sandbox>" and labels pods only with a name hash, so
+# logical sandbox names resolve via the CR's openshell.ai/sandbox-name label
+# and a pod-name suffix match.
+sbx_cr() { # $1 = sandbox name → CR name (empty if absent)
+    kubectl get sandbox -n "$NS" -l "openshell.ai/sandbox-name=$1" -o name 2>/dev/null | head -1 | cut -d/ -f2
+}
+sbx_pod() { # $1 = sandbox name → pod name (empty if absent)
+    kubectl get pod -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -- "--${1}$" | head -1
 }
 sbx_podip() { # $1 = sandbox name → first status.podIPs entry (may be empty)
-    kubectl get sandbox -n "$NS" "$1" -o jsonpath='{.status.podIPs[0]}' 2>/dev/null
+    kubectl get sandbox -n "$NS" -l "openshell.ai/sandbox-name=$1" -o jsonpath='{.items[0].status.podIPs[0]}' 2>/dev/null
 }
 wait_podip() { # $1 = sandbox name, $2 = timeout s → echoes ip, non-zero when never
     local name=$1 t=$2 i ip=""
@@ -176,7 +183,9 @@ kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 || { echo "agent-sandb
 kubectl run kape-smoke-killer -n default --image="$KILLER_IMAGE" --restart=Never \
     --overrides='{"spec":{"hostPID":true,"containers":[{"name":"c","image":"'"$KILLER_IMAGE"'","command":["sleep","14400"],"volumeMounts":[{"name":"h","mountPath":"/host"}],"securityContext":{"privileged":true}}],"volumes":[{"name":"h","hostPath":{"path":"/"}}]}}' >/dev/null 2>&1 || true
 kubectl wait --for=condition=ready pod/kape-smoke-killer -n default --timeout=120s >/dev/null || { echo "killer pod not ready"; exit 1; }
-kubectl exec -n default kape-smoke-killer -- rm -rf "$HOST_STORE" >/dev/null 2>&1
+# the killer pod sees the node's root fs under /host (hostPath /); the
+# controller runs as nonroot, so the store dir must be world-writable on the node
+kubectl exec -n default kape-smoke-killer -- sh -c "rm -rf '/host$HOST_STORE' && mkdir -p '/host$HOST_STORE' && chmod 777 '/host$HOST_STORE'" >/dev/null 2>&1
 pass "preflight: cluster reachable, zero Sandbox CRs, node store clean"
 
 # --- deploy the smoke controller in-cluster ----------------------------------
@@ -184,8 +193,8 @@ note "deploy smoke controller (pull transport, in-cluster)"
 kubectl delete pod -n "$NS" "$CTL" --ignore-not-found --force --grace-period=0 >/dev/null 2>&1
 kubectl run "$CTL" -n "$NS" \
     --image="$CONTROLLER_IMAGE" --restart=Never --port=8081 \
-    --serviceaccount=kape-controller --overrides="$(cat <<EOF
-{"spec":{"containers":[{"name":"ctl","image":"$CONTROLLER_IMAGE","args":["-listen",":8081"],
+    --overrides="$(cat <<EOF
+{"spec":{"serviceAccountName":"kape-controller","containers":[{"name":"ctl","image":"$CONTROLLER_IMAGE","args":["-listen",":8081"],
   "env":[
     {"name":"KAPE_GATEWAY_ADDR","value":"openshell.openshell.svc.cluster.local:8080"},
     {"name":"KAPE_CREDS_DIR","value":"/mtls"},
@@ -195,6 +204,7 @@ kubectl run "$CTL" -n "$NS" \
     {"name":"KAPE_SANDBOX_NAMESPACE","value":"$NS"},
     {"name":"KAPE_DAEMON_PORT","value":"$DAEMON_PORT"},
     {"name":"KAPE_DAEMON_TOKEN","value":"$TOKEN"},
+    {"name":"KAPE_CONTROLLER_SERVICE_PORT","value":"80"},
     {"name":"KAPE_EVENT_STORE","value":"/data/events.db"}],
   "ports":[{"containerPort":8081,"name":"http"}],
   "volumeMounts":[{"name":"mtls","mountPath":"/mtls","readOnly":true},{"name":"data","mountPath":"/data"}],
@@ -294,7 +304,7 @@ assert "prompt while FSM running → 409 (session untouched)" "[ '$P' = '409' ]"
 assert "Delete recovers the dead session (204)" "[ '$(http_code -X DELETE "$BASE/agents/$ID2")' = '204' ]"
 CREATED_IDS=("${CREATED_IDS[@]/$ID2/}")
 sleep 3
-kubectl get sandbox -n "$NS" "$SBX2" >/dev/null 2>&1 && fail "sandbox CR $SBX2 still present" || pass "sandbox CR $SBX2 deleted"
+[ -n "$(sbx_cr "$SBX2")" ] && fail "sandbox CR $SBX2 still present" || pass "sandbox CR $SBX2 deleted"
 
 # =============================================================================
 note "LEG 3: controller restart mid-pull → origin watermark → no gaps, no duplicates"

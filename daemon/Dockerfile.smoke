@@ -1,0 +1,22 @@
+# daemon smoke image (issue #217): same build as Dockerfile but layered on
+# the pi-openshell sandbox image — the openshell k8s compute driver overrides
+# the workload container command to /opt/openshell/bin/openshell-sandbox,
+# which only exists in that image (a plain alpine/distroless base exits 1
+# with "exec format / not found" and the sandbox never becomes ready).
+FROM golang:1.25.10-alpine AS builder
+WORKDIR /src
+COPY daemon/go.mod ./
+RUN true
+COPY daemon/ .
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/daemon .
+
+FROM ghcr.io/dzungtr/pi-openshell:openrouter
+COPY --from=builder /out/daemon /daemon
+# The openshell k8s compute driver overrides the container command with the
+# sandbox supervisor (main process: bash -l), so the daemon is started from a
+# login-shell profile instead of the image entrypoint. It must bind 0.0.0.0:
+# the controller reaches it on the pod IP (status.podIPs, #214).
+# no chmod: rootless buildah cannot set mode bits; /etc/profile sources
+# profile.d files, executability is not required.
+COPY daemon/kape-daemon-profile.sh /etc/profile.d/kape-daemon.sh
+ENV KAPE_DAEMON_ADDR=0.0.0.0:9090
