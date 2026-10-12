@@ -244,6 +244,57 @@ func TestPullTransportAbortRidesCommand(t *testing.T) {
 	}
 }
 
+// --- AC (#215): mid-turn steer reaches the daemon leg as type:steer; an
+// idle steer is rejected controller-side and never POSTed ---
+
+func TestPullTransportSteerRidesCommand(t *testing.T) {
+	mgr, _, d, agent := pullTestAgent(t)
+
+	// Idle steer: rejected before the POST, like the prompt 409 (D4).
+	if err := mgr.Steer(agent.ID, "too early"); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("idle Steer err = %v, want ErrNotReady", err)
+	}
+	if got := len(d.Commands()); got != 0 {
+		t.Fatalf("daemon saw %d commands for idle steer, want 0", got)
+	}
+
+	if err := mgr.Prompt(agent.ID, "work"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if err := mgr.Steer(agent.ID, "use the test file"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	cmds := d.Commands()
+	if len(cmds) != 2 || cmds[1].Type != "steer" || cmds[1].ID == "" {
+		t.Fatalf("daemon commands = %+v, want prompt+steer with command ids", cmds)
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(cmds[1].Payload, &payload); err != nil || payload.Message != "use the test file" {
+		t.Fatalf("steer payload = %s (%v), want message", cmds[1].Payload, err)
+	}
+	// Steer is mid-turn: the FSM keeps running and status stays working.
+	if agent.Status() != StatusWorking {
+		t.Fatalf("status after steer = %q, want working", agent.Status())
+	}
+
+	// The fake pi leg consumes the steer record end-to-end: the daemon-side
+	// fake pi accepts a steer line without error (daemon test path); here we
+	// pin the settled turn still flows after the steer.
+	d.Append(`{"type":"agent_settled","turn_id":"t-1"}`)
+	waitFor(t, func() bool { return agent.Status() == StatusReady }, "settle via pulled records after steer")
+}
+
+// TestSteerOnTerminatedAgentErrors mirrors the prompt policy for steer: a
+// terminated agent errors as unknown (already removed) or not-ready.
+func TestSteerOnUnknownAgentErrors(t *testing.T) {
+	mgr, _, _, _ := pullTestAgent(t)
+	if err := mgr.Steer("agent-nope", "x"); !errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("Steer unknown err = %v, want ErrUnknownAgent", err)
+	}
+}
+
 // --- AC: SIGKILL mid-pull → restart → replay + re-pull from watermark → no
 // gaps, no duplicates ---
 

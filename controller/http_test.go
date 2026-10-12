@@ -79,6 +79,66 @@ func TestHTTPPromptToUnknownAgentIs404(t *testing.T) {
 	}
 }
 
+// TestHTTPSteerRouteAndPolicy covers the #215 front-door steer endpoint:
+// 202 mid-turn, 409 on an idle agent, 404 unknown, 400 empty message.
+func TestHTTPSteerRouteAndPolicy(t *testing.T) {
+	h, mgr, _, stream := newTestHandler(t)
+
+	_, create := doJSON(t, h, "POST", "/agents", nil)
+	id := create["id"].(string)
+
+	// Idle: 409-equivalent, and no steer reaches pi.
+	code, _ := doJSON(t, h, "POST", "/agents/"+id+"/steer", []byte(`{"message":"focus"}`))
+	if code != http.StatusConflict {
+		t.Fatalf("steer on idle agent status = %d, want 409", code)
+	}
+
+	// Mid-turn: 202, and the pi steer command is on the exec stdin.
+	code, _ = doJSON(t, h, "POST", "/agents/"+id+"/prompt", []byte(`{"message":"turn one"}`))
+	if code != http.StatusAccepted {
+		t.Fatalf("prompt status = %d, want 202", code)
+	}
+	code, _ = doJSON(t, h, "POST", "/agents/"+id+"/steer", []byte(`{"message":"switch to the test file"}`))
+	if code != http.StatusAccepted {
+		t.Fatalf("mid-turn steer status = %d, want 202", code)
+	}
+	agent := mgr.Get(id)
+	if agent == nil || agent.Status() != StatusWorking {
+		t.Fatalf("status after steer = %q, want working", agent.Status())
+	}
+	// The pi RPC steer command rides the exec stdin (prompt's shape, type
+	// steer) so real pi consumes it (README rpc-commands shapes). The stdin
+	// pump is async — wait for the record to land on the stream.
+	var steerSent []byte
+	waitFor(t, func() bool {
+		for _, s := range stream.SentPayloads() {
+			if bytes.Contains(s, []byte(`"type":"steer"`)) {
+				steerSent = s
+				return true
+			}
+		}
+		return false
+	}, "steer record on exec stdin")
+	var cmd struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if steerSent == nil || json.Unmarshal(steerSent, &cmd) != nil || cmd.Type != "steer" || cmd.ID == "" || cmd.Message != "switch to the test file" {
+		t.Fatalf("pi steer command = %q, want {id,type:steer,message}", steerSent)
+	}
+
+	// Validation and routing edges.
+	code, _ = doJSON(t, h, "POST", "/agents/"+id+"/steer", []byte(`{"message":""}`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("empty-message steer status = %d, want 400", code)
+	}
+	code, _ = doJSON(t, h, "POST", "/agents/agent-nope/steer", []byte(`{"message":"x"}`))
+	if code != http.StatusNotFound {
+		t.Fatalf("steer unknown agent status = %d, want 404", code)
+	}
+}
+
 func TestHTTPAbortWhenIdleIs409Not500(t *testing.T) {
 	h, _, _, _ := newTestHandler(t)
 

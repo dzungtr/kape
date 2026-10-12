@@ -26,6 +26,7 @@ Parent spec: dzungtr/kape#172 (Controller v1).
 | `get_agent` | `GET /agents/{id}` | live view when in memory; post-restart CR-derived view; 404 unknown |
 | `list_agents` | `GET /agents` | gateway sandboxes carrying the `managed-by=kape-controller` ownership label, joined with live state — survives restart |
 | `prompt_agent` | `POST /agents/{id}/prompt` | 202; **409 if a turn is in flight** (single in-flight prompt, no queueing in v1) |
+| `steer_agent` | `POST /agents/{id}/steer` | mid-turn steering: injects a message into the in-flight turn (202); **409 when idle** — no turn to steer (issue #215). `clear_queue` stays daemon-leg ops vocabulary only, never a front-door tool |
 | `abort` | `POST /agents/{id}/abort` | stops the in-flight turn; agent returns to `ready` |
 | `stream_events` | `GET /agents/{id}/events` (SSE) | replayed history then live; `Last-Event-ID`/`after` re-attach. Over MCP this returns the buffered replay as one batch (tool results cannot stream); live push is REST-only |
 | `read_events` | `GET /agents/{id}/events?after=…` | cursor pull (below) |
@@ -251,8 +252,9 @@ cd controller && ./smoke.sh   # MODEL/LISTEN/BASE env overrides available
 - **pi RPC shapes (verified against pi 0.87.1 `docs/rpc-commands.md`)**:
   prompt `{"id","type":"prompt","message"}` (baseline shape correct; `id`
   echoed in the response); abort `{"type":"abort"}` — a bare object, **no
-  `id` field**; queued steering messages continue unless `clear_queue` is
-  sent first (not done in v1).
+  `id` field**; steer follows the prompt shape with `type:"steer"
+  ({"id","type":"steer","message"}, issue #215); queued steering messages
+  continue unless `clear_queue` is sent first (not done in v1).
 
 ## Tech debt: working tokens leak into host-agent context
 

@@ -7,7 +7,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MCP transport (spec #172, issue #178): the eight-tool contract exposed as
+// MCP transport (spec #172, issue #178, #215): the nine-tool contract
+// exposed as
 // MCP tools on Streamable HTTP, same port and process as REST. Every tool is
 // a thin wrapper over the shared AgentManager/EventHub core — one tool
 // implementation per verb, two transports (REST in http.go, MCP here).
@@ -26,6 +27,7 @@ func RestVerbs() []string {
 		"create_agent",
 		"get_agent",
 		"prompt_agent",
+		"steer_agent",
 		"abort",
 		"stream_events",
 		"read_events",
@@ -52,6 +54,10 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 		Name:        "prompt_agent",
 		Description: "Send a prompt (work item) to an agent. Returns once the turn is accepted; a tool error is returned when a turn is already in flight (409-equivalent) or the agent cannot accept work.",
 	}, handlePromptAgent(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "steer_agent",
+		Description: "Inject a mid-turn steering message into an agent's in-flight turn. The agent keeps running; the settle flow is unchanged. A tool error is returned when no turn is in flight (409-equivalent) — steer only a working agent.",
+	}, handleSteerAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "abort",
 		Description: "Abort the agent's in-flight turn. The stream stays open; the turn settles.",
@@ -86,6 +92,14 @@ type agentIDInput struct {
 }
 
 type promptInput struct {
+	AgentID string `json:"agent_id"`
+	Message string `json:"message"`
+}
+
+// steerInput is identical to promptInput on the wire; it is a separate type
+// so the steer_agent tool's schema and its REST twin's params stay named
+// one-to-one in the contract-equality test.
+type steerInput struct {
 	AgentID string `json:"agent_id"`
 	Message string `json:"message"`
 }
@@ -193,6 +207,21 @@ func handlePromptAgent(mgr *AgentManager) mcp.ToolHandlerFor[promptInput, map[st
 			return nil, nil, errUnknownAgent(input.AgentID)
 		}
 		if err := mgr.Prompt(input.AgentID, input.Message); err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]string{"status": "accepted"}, nil
+	}
+}
+
+func handleSteerAgent(mgr *AgentManager) mcp.ToolHandlerFor[steerInput, map[string]string] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, input steerInput) (*mcp.CallToolResult, map[string]string, error) {
+		if input.Message == "" {
+			return nil, nil, errors.New("message must be a non-empty string")
+		}
+		if mgr.Get(input.AgentID) == nil {
+			return nil, nil, errUnknownAgent(input.AgentID)
+		}
+		if err := mgr.Steer(input.AgentID, input.Message); err != nil {
 			return nil, nil, err
 		}
 		return nil, map[string]string{"status": "accepted"}, nil
