@@ -47,6 +47,7 @@ build-images: ## Build all container images with podman
 	podman build -t kape-operator:dev -f operator/Dockerfile .
 	podman build -t kape-task-service:dev -f task-service/Dockerfile .
 	podman build -t kape-controller:dev -f controller/Dockerfile .
+	podman build -t kape-daemon:dev -f daemon/Dockerfile .
 	podman build -t kape-runtime:dev -f runtime/Dockerfile .
 	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
@@ -57,6 +58,7 @@ docker-build: ## Build all container images using docker
 	docker build -t kape-operator:dev -f operator/Dockerfile .
 	docker build -t kape-task-service:dev -f task-service/Dockerfile .
 	docker build -t kape-controller:dev -f controller/Dockerfile .
+	docker build -t kape-daemon:dev -f daemon/Dockerfile .
 	docker build -t kape-runtime:dev -f runtime/Dockerfile .
 	docker build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	docker build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .
@@ -67,6 +69,7 @@ podman-build: ## Build all images using podman (local dev)
 	podman build -t kape-operator:dev -f operator/Dockerfile .
 	podman build -t kape-task-service:dev -f task-service/Dockerfile .
 	podman build -t kape-controller:dev -f controller/Dockerfile .
+	podman build -t kape-daemon:dev -f daemon/Dockerfile .
 	podman build -t kape-runtime:dev -f runtime/Dockerfile .
 	podman build -t kape-dashboard:dev -f dashboard/Dockerfile .
 	podman build -t kape-adapter-falco:dev -f adapters/Dockerfile.falco .

@@ -66,3 +66,6 @@ playground/runtime/settings.toml
 .pi-subagents
 
 node_modules
+
+# daemon binary
+/daemon/daemon
