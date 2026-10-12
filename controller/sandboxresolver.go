@@ -79,6 +79,28 @@ func NewCRDaemonAddressResolverForClient(rc rest.Interface, ns, port string) *CR
 	return &CRDaemonAddressResolver{rc: rc, ns: ns, port: port}
 }
 
+// resolveCRName maps the logical sandbox name to the Sandbox CR name: label
+// lookup on openshell.ai/sandbox-name, falling back to the literal name.
+func (r *CRDaemonAddressResolver) resolveCRName(ctx context.Context, sandbox string) string {
+	raw, err := r.rc.Get().
+		AbsPath("/apis/agents.x-k8s.io/v1beta1/namespaces/" + r.ns + "/sandboxes").
+		Param("labelSelector", "openshell.ai/sandbox-name="+sandbox).
+		Do(ctx).Raw()
+	if err == nil {
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if json.Unmarshal(raw, &list) == nil && len(list.Items) == 1 {
+			return list.Items[0].Metadata.Name
+		}
+	}
+	return sandbox
+}
+
 // sandboxCR is the slice of the agent-sandbox Sandbox CR the resolver reads.
 type sandboxCR struct {
 	Spec struct {
@@ -100,9 +122,16 @@ func hostLiteral(ip string) string {
 }
 
 // ResolveDaemonAddr resolves the daemon base URL for sandbox.
+//
+// CR name (verified live on microk8s, issue #217): the agent-sandbox operator
+// names the Sandbox CR "<workspace>--<name>" (workspace label
+// openshell.ai/sandbox-workspace), so the logical sandbox name never matches a
+// GET by name. The CR carries the logical name on the openshell.ai/sandbox-name
+// label — resolve through a label lookup, falling back to the literal name.
 func (r *CRDaemonAddressResolver) ResolveDaemonAddr(ctx context.Context, sandbox string) (string, error) {
+	name := r.resolveCRName(ctx, sandbox)
 	raw, err := r.rc.Get().
-		AbsPath("/apis/agents.x-k8s.io/v1beta1/namespaces/" + r.ns + "/sandboxes/" + sandbox).
+		AbsPath("/apis/agents.x-k8s.io/v1beta1/namespaces/" + r.ns + "/sandboxes/" + name).
 		Do(ctx).Raw()
 	if err != nil {
 		return "", fmt.Errorf("get Sandbox %s/%s: %w", r.ns, sandbox, err)

@@ -1,0 +1,32 @@
+# daemon smoke image (issue #217): same build as Dockerfile but layered on
+# the pi-openshell sandbox image — the openshell k8s compute driver overrides
+# the workload container command to /opt/openshell/bin/openshell-sandbox,
+# which only exists in that image (a plain alpine/distroless base exits 1
+# with "exec format / not found" and the sandbox never becomes ready).
+FROM golang:1.25.10-alpine AS builder
+WORKDIR /src
+COPY daemon/go.mod ./
+RUN true
+COPY daemon/ .
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/daemon .
+
+FROM ghcr.io/dzungtr/pi-openshell:openrouter
+COPY --from=builder /out/daemon /daemon
+# The openshell k8s compute driver overrides the container command with the
+# sandbox supervisor (main process: bash -l), so the daemon is started from a
+# login-shell profile instead of the image entrypoint. It must bind 0.0.0.0:
+# the controller reaches it on the pod IP (status.podIPs, #214).
+# no chmod: rootless buildah cannot set mode bits; /etc/profile sources
+# profile.d files, executability is not required.
+COPY daemon/kape-daemon-profile.sh /etc/profile.d/kape-daemon.sh
+# Copies into bin paths (verified live on microk8s, #217): the sandbox
+# supervisor's landlock ruleset denies exec of arbitrary rootfs paths (EACCES
+# from the startup login shell), while bin dirs are allowed. The hook tries
+# /usr/local/bin, /opt/openshell/bin, then the raw /daemon binary.
+COPY --from=builder /out/daemon /usr/local/bin/kape-daemon
+COPY --from=builder /out/daemon /opt/openshell/bin/kape-daemon
+ENV KAPE_DAEMON_ADDR=0.0.0.0:9090
+# pi_running:false on a fresh boot is the D6 daemon-death signature the
+# matrix asserts (legs 2/4); pi spawns on the first prompt via SendCommand,
+# so the record-emitting legs (1/3) are unaffected.
+ENV KAPE_PI_AUTOSTART=0

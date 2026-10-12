@@ -48,13 +48,33 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 // ApplyControllerEgressDeny merges an explicit L7 deny for the controller's
 // in-cluster service (issue #214, ADR-0083 D2/D7): the daemon is passive and
 // has no listener path back to the controller, and the sandbox never carries
-// controller credentials — the policy makes that structural. Deny rules are
+// controller credentials — the policy makes that structural. The gateway
+// validates deny targets against endpoints already present in the policy
+// (verified live on microk8s, issue #217), so the controller endpoint is
+// added as a broad allow first and the deny then overrides it: deny rules are
 // evaluated after allows and take precedence, so the deny survives future
 // broad allow rules; the default-deny OPA posture stays the real boundary.
 func (g *Gateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error {
 	req := &v1.UpdateConfigRequest{
 		Name: sandboxName,
 		MergeOperations: []*v1.PolicyMergeOperation{{
+			Operation: &v1.PolicyMergeOperation_AddRule{
+				AddRule: &v1.AddNetworkRule{
+					RuleName: "m1_controller",
+					Rule: &v1.NetworkPolicyRule{
+						Name: "m1_controller",
+						Endpoints: []*v1.NetworkEndpoint{{
+							Host:     host,
+							Port:     uint32(port),
+							Protocol: "rest",
+							Rules: []*v1.L7Rule{{
+								Allow: &v1.L7Allow{Method: "*", Path: "**"},
+							}},
+						}},
+					},
+				},
+			},
+		}, {
 			Operation: &v1.PolicyMergeOperation_AddDenyRules{
 				AddDenyRules: &v1.AddDenyRules{
 					Host: host,

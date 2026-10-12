@@ -94,8 +94,10 @@ func run(cfg Config) error {
 	}
 	defer spool.Close() //nolint:errcheck
 	pi := NewPi(cfg.PiCommand, spool)
-	if err := pi.Start(); err != nil {
-		return fmt.Errorf("start pi: %w", err)
+	if piAutostart() {
+		if err := pi.Start(); err != nil {
+			return fmt.Errorf("start pi: %w", err)
+		}
 	}
 	queue := NewCommandQueue()
 	srv := &http.Server{
@@ -106,3 +108,10 @@ func run(cfg Config) error {
 	log.Printf("daemon listening on %s (agent_id=%s spool=%s)", cfg.Addr, cfg.AgentID, cfg.SpoolPath)
 	return srv.ListenAndServe()
 }
+
+// piAutostart: pi autostart mirrors the real deployment (pi rides the
+// sandbox session, not the daemon boot). The smoke image sets
+// KAPE_PI_AUTOSTART=0 so a fresh boot reports pi_running:false — the D6
+// daemon-death signature the failure matrix (issue #217) exercises; pi then
+// spawns on the first prompt command via SendCommand.
+func piAutostart() bool { return os.Getenv("KAPE_PI_AUTOSTART") != "0" }
