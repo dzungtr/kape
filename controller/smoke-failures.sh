@@ -30,7 +30,7 @@ cd "$(dirname "$0")"
 
 NS="${NS:-openshell}"
 CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/dzungtr/kape-controller:smoke-217}"
-DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217c}"  # KAPE_PI_AUTOSTART=0
+DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/dzungtr/kape-daemon:smoke-217d}"  # KAPE_PI_AUTOSTART=0 + fakepi hold_ms
 KILLER_IMAGE="${KILLER_IMAGE:-alpine:3.20}"
 PF_PORT="${PF_PORT:-3000}"            # host side of the controller port-forward (nono only opens 3000)
 DAEMON_PORT="${DAEMON_PORT:-9090}"    # fixed daemon port (D7)
@@ -236,6 +236,28 @@ open_daemon_ingress() { # $1 = podIP → 0 when the DNAT rule is in place
     " >/dev/null 2>&1
 }
 
+# Partition mechanics (verified live, runs 4-5): a deny-all ingress netpol
+# matches the sandbox pod's agents.x-k8s.io/sandbox-name-hash label and
+# blocks NEW dials, but the puller's cached http.Client keeps the established
+# long-poll conn alive — the pull transport never notices. The deterministic
+# partition is a SIGSTOP/CONT freeze of the daemon process (hostPID debug
+# pod): the same boot_id survives (no death misdetection), the conn breaks,
+# and the spool stays intact — the D6 partition semantics.
+freeze_daemon() { # $1 = sandbox name → freeze the daemon's HTTP server (not fakepi)
+    kubectl exec -n default kape-smoke-killer -- sh -c '
+        for d in /proc/[0-9]*; do
+            c=$(tr "\0" " " </proc/$d/cmdline 2>/dev/null)
+            case "$c" in */kape-daemon*) case "$c" in *fakepi*) ;; *) kill -STOP ${d#/proc/} 2>/dev/null;; esac;; esac
+        done' >/dev/null 2>&1
+}
+thaw_daemon() {
+    kubectl exec -n default kape-smoke-killer -- sh -c '
+        for d in /proc/[0-9]*; do
+            c=$(tr "\0" " " </proc/$d/cmdline 2>/dev/null)
+            case "$c" in */kape-daemon*) case "$c" in *fakepi*) ;; *) kill -CONT ${d#/proc/} 2>/dev/null;; esac;; esac
+        done' >/dev/null 2>&1
+}
+
 # NetworkPolicy: deny ALL ingress to the sandbox pod (controller→daemon
 # partition). kubernetes.io/metadata.name is auto-stamped on every pod.
 apply_partition() { # $1 = sandbox name
@@ -335,31 +357,16 @@ SBX1=$(vsandbox "$ID1")
 BO0=$(wait_podip "$SBX1" 30) && pass "daemon address resolved from CR (podIP $BO0)" || { echo "FAIL: no podIP on $SBX1"; exit 1; }
 wait_daemon_listening "$SBX1" 120 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX1"; exit 1; }
 
-P=$(http_code -X POST "$BASE/agents/$ID1/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
-assert "prompt accepted (202)" "[ '$P' = '202' ]"
-# partition immediately: the pull transport may drain the fast fake-pi turn
-# before the netpol lands, so the mid-partition assertion only checks that
-# whichever records are pending stay spooled; the drain/integrity proof is
-# post-resume.
-apply_partition "$SBX1"
-kubectl get netpol -n "$NS" kape-smoke-partition >/dev/null 2>&1 && pass "partition applied (netpol deny ingress to $SBX1)"
-# wait until the deny is actually programmed: the daemon was reachable a
-# moment ago (healthz wait), so the first failing probe = block in effect
-BRC=1
-for i in $(seq 1 60); do
-    if ! kubectl exec -n default kape-smoke-killer -- wget -q -O /dev/null -T 2 "http://$(sbx_podip "$SBX1"):${DAEMON_PORT}/healthz" >/dev/null 2>&1; then BRC=0; break; fi
-    sleep 1
-done
-[ "$BRC" = 0 ] && pass "partition effective (healthz blocked)" || fail "partition never blocked (netpol not enforced?)"
-wait_view "$ID1" vdegraded True "$TIMEOUT_DEGRADED" && pass "liveness degraded after 2 failed polls" \
+P=$(http_code -X POST "$BASE/agents/$ID1/prompt" -H 'Content-Type: application/json' -d '{"message":"{\"hold_ms\":90000}"}')
+assert "prompt accepted (202, held mid-turn)" "[ '$P' = '202' ]"
+wait_view "$ID1" vsession running "$TIMEOUT_READY" && pass "session FSM running mid-turn" || fail "session not running after prompt"
+sleep 3   # first half of the turn emits onto the spool
+freeze_daemon "$SBX1" && pass "partition applied (daemon frozen, boot_id intact)"
+wait_view "$ID1" vdegraded True "$TIMEOUT_DEGRADED" && pass "liveness degraded after failed polls" \
     || { echo "FAIL: degraded never set (degraded=$(vdegraded "$ID1"))"; }
 assert "session FSM untouched during partition (running)" "[ '$(vsession "$ID1")' = 'running' ]"
-if events "$ID1" | grep -q '"agent_settled"'; then
-    echo "note: turn records drained before the netpol programmed (fast fake-pi); resume assertions cover both branches"
-else
-    assert "no settle events while partitioned (records spooled)" "! events '$ID1' | grep -q agent_settled"
-fi
-clear_partition
+assert "no settle events while partitioned" "! events '$ID1' | grep -q agent_settled"
+thaw_daemon "$SBX1"
 wait_settle "$ID1" "$TIMEOUT_SETTLE" && pass "seamless resume: turn drained after partition lifted" \
     || { echo "FAIL: turn never settled after resume"; }
 wait_view "$ID1" vdegraded False 60 && pass "degraded cleared by successful pull" || fail "degraded stuck"
@@ -419,15 +426,17 @@ CREATED_IDS+=("$ID3")
 wait_ready_agent "$ID3" && pass "agent C ready" || { echo "FAIL: agent C never ready"; exit 1; }
 SBX3=$(vsandbox "$ID3")
 wait_daemon_listening "$SBX3" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX3"; exit 1; }
-P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
+P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"{\"hold_ms\":90000}"}')
 assert "turn 1 prompt accepted (202)" "[ '$P' = '202' ]"
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "turn 1 settled (fully pulled baseline)" || { echo "FAIL: turn 1 never settled"; }
 events_json "$ID3"; N1=$(jqpy 'len(d["events"])' <"$NOTE/ev.json")
 echo "baseline: $N1 events at origin watermark"
 # turn 2 accepted, then partition, then kill the controller MID-PULL
-P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 2"}')
+P=$(http_code -X POST "$BASE/agents/$ID3/prompt" -H 'Content-Type: application/json' -d '{"message":"{\"hold_ms\":90000}"}')
 assert "turn 2 prompt accepted (202)" "[ '$P' = '202' ]"
-apply_partition "$SBX3" && sleep 3 && pass "partition applied mid-pull (records pending on spool)"
+# freeze the daemon mid-pull: turn 2's records stay pending on the spool
+# while the controller dies and comes back
+freeze_daemon "$SBX3" && sleep 3 && pass "daemon frozen mid-pull (records pending on spool)"
 # force-deleted restartPolicy:Never pods are not recreated — redeploy from
 # the same spec (hostPath event store preserves the log).
 deploy_controller && pass "controller restarted (hostPath store preserved)" \
@@ -439,7 +448,7 @@ sleep 3
 V=$(view "$ID3")
 assert "agent view first-class post-restart (source replayed)" "echo '$V' | grep -q 'replayed'"
 wait_view "$ID3" vsession running 60 && pass "session FSM running (turn 2 unsettled)" || fail "session not running post-restart ($(vsession "$ID3"))"
-clear_partition
+thaw_daemon "$SBX3"
 wait_settle "$ID3" "$TIMEOUT_SETTLE" && pass "post-restart resume drained turn 2 from the spool" \
     || { echo "FAIL: turn 2 never settled after restart"; }
 wait_view "$ID3" vstatus ready 60 && pass "liveness ready after resume" || fail "liveness stuck ($(vstatus "$ID3"))"
@@ -474,8 +483,8 @@ SBX4=$(vsandbox "$ID4")
 wait_daemon_listening "$SBX4" 180 && pass "daemon listening (healthz up)" || { echo "FAIL: daemon never listening on $SBX4"; exit 1; }
 # mid-turn churn: the D6 pod-churn semantics (failed, FSM still running)
 # only apply while a turn is in flight
-P=$(http_code -X POST "$BASE/agents/$ID4/prompt" -H 'Content-Type: application/json' -d '{"message":"turn 1"}')
-assert "prompt accepted (202)" "[ '$P' = '202' ]"
+P=$(http_code -X POST "$BASE/agents/$ID4/prompt" -H 'Content-Type: application/json' -d '{"message":"{\"hold_ms\":90000}"}')
+assert "prompt accepted (202, held mid-turn)" "[ '$P' = '202' ]"
 wait_view "$ID4" vsession running 30 && pass "session FSM running before churn" || fail "session not running after prompt"
 IP0=$(wait_podip "$SBX4" 30)
 kubectl delete pod -n "$NS" "$(sbx_pod "$SBX4")" >/dev/null 2>&1
@@ -486,7 +495,11 @@ if [ -n "$IP1" ]; then
     open_daemon_ingress "$IP1" && pass "daemon ingress shim re-applied for new pod" || echo "note: ingress shim re-apply failed"
     wait_view "$ID4" vstatus failed 240 && pass "reconnect detected daemon death on churn (failed)" \
         || { echo "FAIL: status=$(vstatus "$ID4")"; }
-    sleep 5   # let the death path drain the spool and record the boot event
+    # the exec-stream break marks failed before the death path; force the
+    # puller's post-churn preflight (new boot_id + pi_running:false) with a
+    # short sustained kill so the durable daemon.boot event is recorded
+    kubectl exec -n default kape-smoke-killer -- sh -c 'for i in $(seq 1 30); do for d in /proc/[0-9]*; do c=$(tr "\0" " " </proc/$d/cmdline 2>/dev/null); case "$c" in */kape-daemon*) case "$c" in *fakepi*) ;; *) kill -9 ${d#/proc/} 2>/dev/null;; esac;; esac; done; sleep 0.5; done' >/dev/null 2>&1
+    sleep 5
     assert "session FSM still running (D6 pod-churn semantics)" "[ '$(vsession "$ID4")' = 'running' ]"
     events_json "$ID4"
     grep -q '"daemon.boot"' "$NOTE/ev.json" && pass "daemon.boot recorded after churn" || fail "no daemon.boot event"

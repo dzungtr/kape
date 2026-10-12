@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Pi is the live RPC subprocess inside the sandbox (ADR-0083 D3): the daemon
@@ -227,7 +228,10 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 			continue
 		}
 		var c struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Payload struct {
+				Message string `json:"message"`
+			} `json:"payload"`
 		}
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
 			fmt.Fprintf(stderr, "fakepi: bad command line: %v\n", err) //nolint:errcheck
@@ -238,9 +242,34 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		turn++
 		turnID := fmt.Sprintf("t-%04d", turn)
+		// hold_ms: mid-turn pacing for the failure matrix (issue #217) — the
+		// first half of the turn emits, then the turn pauses before settling,
+		// so a mid-turn outage sees records still pending (un-spooled or
+		// un-acked) instead of a turn that settles in milliseconds.
+		// The controller sends the prompt payload verbatim ({message}), so
+		// the smoke drives pacing via a JSON-encoded message body.
+		var msg struct {
+			HoldMs int `json:"hold_ms"`
+		}
+		_ = json.Unmarshal([]byte(c.Payload.Message), &msg)
+		hold := time.Duration(msg.HoldMs) * time.Millisecond
 		recs := []fakePiRecord{
 			{Type: "turn_started", TurnID: turnID},
 			{Type: "tool_call", TurnID: turnID, Name: "read_file", Args: map[string]any{"path": "README.md"}},
+		}
+		for _, rec := range recs {
+			b, err := json.Marshal(rec)
+			if err != nil {
+				return err
+			}
+			out.Write(b)        //nolint:errcheck
+			out.WriteByte('\n') //nolint:errcheck
+			out.Flush()         //nolint:errcheck
+		}
+		if hold > 0 {
+			time.Sleep(hold)
+		}
+		recs = []fakePiRecord{
 			{Type: "text_delta", TurnID: turnID, Text: "Working on it."},
 			{Type: "agent_settled", TurnID: turnID},
 		}
