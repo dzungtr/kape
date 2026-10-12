@@ -40,7 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("grpc dial %s: %v", cfg.GatewayAddr, err)
 	}
-	gw := NewGateway(conn, cfg.ModelGatewayURL)
+	gw := NewGateway(conn, cfg.ModelGatewayURL).WithDaemonToken(cfg.DaemonToken)
 
 	// Durable event store (issue #195): one controller-local single-file log,
 	// opened before any agent can publish; closed when the process exits.

@@ -65,10 +65,21 @@ type SandboxInfo struct {
 type Gateway struct {
 	client          v1.OpenShellClient
 	modelGatewayURL string // base URL patched into the pi wrapper's models.json
+	daemonToken     string // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
 }
 
 func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
 	return &Gateway{client: v1.NewOpenShellClient(conn), modelGatewayURL: modelGatewayURL}
+}
+
+// WithDaemonToken sets the D5 placeholder credential the daemon inside every
+// newly created sandbox receives as KAPE_DAEMON_TOKEN template environment
+// (issue #217 smoke requirement: the daemon's static-bearer check refuses an
+// empty configured token, and the gRPC surface has no other env channel).
+// Empty token (exec break-glass) leaves sandbox creation byte-identical.
+func (g *Gateway) WithDaemonToken(token string) *Gateway {
+	g.daemonToken = token
+	return g
 }
 
 // CreateSandbox creates a sandbox running the pi image with the named
@@ -90,6 +101,14 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 				},
 			},
 		},
+	}
+	// Pull transport (ADR-0083 D5/D7): the daemon's placeholder bearer check
+	// needs the token the controller will present on every pull/command.
+	if g.daemonToken != "" {
+		req.Spec.Template.Environment = map[string]string{
+			"KAPE_DAEMON_TOKEN": g.daemonToken,
+			"KAPE_AGENT_ID":     labels[LabelAgentID],
+		}
 	}
 	resp, err := g.client.CreateSandbox(ctx, req)
 	if err != nil {
