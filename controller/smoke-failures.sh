@@ -109,6 +109,7 @@ wait_daemon_listening() { # $1 = sandbox name, $2 = timeout s → 0 once the in-
     # the sandbox container itself is distroless.
     local name=$1 t=$2 i ip
     ip=$(wait_podip "$name" 30) || return 1
+    open_daemon_ingress "$ip" || { echo "daemon ingress shim failed for $ip"; return 1; }
     for i in $(seq 1 $((t*2))); do
         if kubectl exec -n default kape-smoke-killer -- wget -q -O /dev/null -T 2 "http://${ip}:${DAEMON_PORT}/healthz" >/dev/null 2>&1; then
             return 0
@@ -151,6 +152,57 @@ wait_settle() { # id, timeout
         sleep 0.5
     done
     return 1
+}
+
+# Daemon reachability shim (issue #217, verified live): the openshell sandbox
+# supervisor puts the workload (and thus the daemon) in a per-sandbox netns
+# (veth-s 10.200.0.2) behind the pod main netns (podIP on eth0, ip_forward=0),
+# so the controller's podIP:9090 pull target is connection-refused. DNAT
+# podIP:9090 → sandbox-netns:9090 inside the pod netns bridges the pull
+# transport; the partition netpol still applies (traffic enters pod eth0).
+# Needs the privileged killer pod: hostPID nsenter + iptables.
+apk_killer() { kubectl exec -n default kape-smoke-killer -- sh -c "apk add -q iptables 2>/dev/null"; }
+sbx_sup_pid() { # $1 = podIP → host PID of the openshell-sandbox supervisor owning it
+    kubectl exec -n default kape-smoke-killer -- sh -c '
+        for p in $(ls /proc | grep -E "^[0-9]+$"); do
+            cmd=$(tr "\0" " " </proc/$p/cmdline 2>/dev/null)
+            case "$cmd" in *"openshell-sandbox --workdir"*)
+                nsenter -t $p -n ip -o addr 2>/dev/null | grep -q "inet $1" && { echo $p; exit 0; } ;;
+            esac
+        done
+        exit 1' -- "$1" 2>/dev/null
+}
+sbx_daemon_ip() { # $1 = sup PID → sandbox-netns veth IP (where the daemon listens)
+    local sup=$1
+    kubectl exec -n default kape-smoke-killer -- sh -c '
+        sup=$1
+        desc() { cat /proc/$1/task/*/children 2>/dev/null; }
+        # walk the supervisor tree for the kape-daemon process
+        stack=$(desc $sup); dpid=""
+        for gen in 1 2 3 4 5; do
+            nxt=""
+            for p in $stack; do
+                case $(tr "\0" " " </proc/$p/cmdline 2>/dev/null) in *kape-daemon*) dpid=$p; break 2;; esac
+                nxt="$nxt $(desc $p)"
+            done
+            stack=$nxt
+        done
+        [ -n "$dpid" ] || exit 1
+        nsenter -t $dpid -n ip -o addr 2>/dev/null | awk "/inet 10\\.200/ {print \$4}" | cut -d/ -f1 | head -1
+        exit 0' -- "$sup" 2>/dev/null
+}
+open_daemon_ingress() { # $1 = podIP → 0 when the DNAT rule is in place
+    local sup dip
+    sup=$(sbx_sup_pid "$1") || return 1
+    dip=$(sbx_daemon_ip "$sup") || return 1
+    [ -n "$dip" ] || return 1
+    kubectl exec -n default kape-smoke-killer -- nsenter -t "$sup" -n sh -c "
+        sysctl -q -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+        iptables -t nat -C PREROUTING -p tcp --dport $DAEMON_PORT -j DNAT --to-destination $dip:$DAEMON_PORT 2>/dev/null \
+            || iptables -t nat -A PREROUTING -p tcp --dport $DAEMON_PORT -j DNAT --to-destination $dip:$DAEMON_PORT
+        iptables -C FORWARD -p tcp -d $dip --dport $DAEMON_PORT -j ACCEPT 2>/dev/null \
+            || iptables -A FORWARD -p tcp -d $dip --dport $DAEMON_PORT -j ACCEPT
+    " >/dev/null 2>&1
 }
 
 # NetworkPolicy: deny ALL ingress to the sandbox pod (controller→daemon
@@ -202,6 +254,7 @@ kubectl wait --for=condition=ready pod/kape-smoke-killer -n default --timeout=12
 # the killer pod sees the node's root fs under /host (hostPath /); the
 # controller runs as nonroot, so the store dir must be world-writable on the node
 kubectl exec -n default kape-smoke-killer -- sh -c "rm -rf '/host$HOST_STORE' && mkdir -p '/host$HOST_STORE' && chmod 777 '/host$HOST_STORE'" >/dev/null 2>&1
+apk_killer   # iptables for the daemon-ingress DNAT shim
 pass "preflight: cluster reachable, zero Sandbox CRs, node store clean"
 
 # --- deploy the smoke controller in-cluster ----------------------------------
@@ -304,7 +357,7 @@ sleep 1   # let fake pi emit some records onto the spool (mid-turn kill)
 # SIGKILL the daemon (PID 1 of the sandbox container) from the hostPID debug
 # pod — the only path into a distroless container. Container restarts
 # (restartPolicy Always): same pod, same spool file, NEW boot_id.
-kubectl exec -n default kape-smoke-killer -- sh -c "pkill -9 -x daemon" >/dev/null 2>&1
+kubectl exec -n default kape-smoke-killer -- sh -c "pkill -9 -x kape-daemon" >/dev/null 2>&1
 sleep 2
 kubectl get pod -n "$NS" "$POD2" >/dev/null 2>&1 && pass "pod survived daemon kill (container restarted)" \
     || fail "pod gone after daemon kill (that is leg 4, not leg 2)"
@@ -389,6 +442,7 @@ IP1=$(wait_podip "$SBX4" 180)
 if [ -n "$IP1" ]; then
     assert "sandbox pod recreated (CR address now $IP1)" "[ -n '$IP1' ]"
     if [ "$IP0" != "$IP1" ]; then pass "podIP churned ($IP0 → $IP1)"; else echo "note: podIP unchanged (same address re-leased)"; fi
+    open_daemon_ingress "$IP1" && pass "daemon ingress shim re-applied for new pod" || echo "note: ingress shim re-apply failed"
     wait_view "$ID4" vstatus failed 240 && pass "reconnect detected daemon death on churn (failed)" \
         || { echo "FAIL: status=$(vstatus "$ID4")"; }
     assert "session FSM still running (D6 pod-churn semantics)" "[ '$(vsession "$ID4")' = 'running' ]"
