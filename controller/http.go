@@ -23,6 +23,7 @@ import (
 //	GET    /agents/{id}            -> agent detail incl. status (live or CR-derived)
 //	POST   /agents/{id}/prompt     {"message": ...} -> 202 (409 if turn in flight)
 //	POST   /agents/{id}/abort      -> stop the in-flight turn
+//	POST   /agents/{id}/steer      {"message": ...} -> mid-turn steer (409 if idle)
 //	GET    /agents/{id}/events     -> SSE: buffered replay then live
 //	DELETE /agents/{id}            -> abort exec + delete sandbox
 func NewRouter(mgr *AgentManager) http.Handler {
@@ -99,6 +100,26 @@ func NewRouter(mgr *AgentManager) http.Handler {
 			return
 		}
 		log.Printf("[http] abort accepted for agent %s", id)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /agents/{id}/steer", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if mgr.Get(id) == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(id))
+			return
+		}
+		var body struct {
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Message == "" {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("body must be {\"message\": string}"))
+			return
+		}
+		if err := mgr.Steer(id, body.Message); err != nil {
+			httpError(w, statusForErr(err), err)
+			return
+		}
+		log.Printf("[http] steer accepted for agent %s", id)
 		w.WriteHeader(http.StatusAccepted)
 	})
 	mux.HandleFunc("GET /agents/{id}/events", func(w http.ResponseWriter, r *http.Request) {

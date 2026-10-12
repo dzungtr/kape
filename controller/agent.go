@@ -409,6 +409,68 @@ func (a *Agent) sendPrompt(message string) error {
 	}
 }
 
+// Steer injects a mid-turn steering message into the in-flight turn
+// (issue #215, ADR-0083 D4, pi's steer semantics). Steering is only
+// meaningful while a turn is in flight: an idle agent is rejected with the
+// 409-equivalent (ErrNotReady) before any POST.
+func (m *AgentManager) Steer(id, message string) error {
+	agent := m.Get(id)
+	if agent == nil {
+		return errUnknownAgent(id)
+	}
+	return agent.sendSteer(message)
+}
+
+// sendSteer enforces the mid-turn policy: only a running session with a
+// working agent accepts a steer. Unlike prompt, steer never changes the FSM
+// state — the turn already runs; settle flows via the records stream.
+//
+// Pull transport (issue #215): the steer rides POST /commands as
+// {command_id, type: "steer", payload: {"message"}} — 202 on acceptance.
+// The idle rejection is controller-side, before the POST (D4). Exec
+// break-glass path: the pi RPC steer command ({"id","type":"steer",
+// "message"} — same shape as prompt) is written to the exec stdin.
+func (a *Agent) sendSteer(message string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.daemon != nil {
+		// Pull transport: the daemon is the command path; there is no stdin.
+		if a.fsm.State() != SessionRunning || a.status != StatusWorking {
+			return errNotReady(a.ID, a.status) // idle: nothing to steer (409-equivalent)
+		}
+		a.cmdSeq++
+		payload, _ := json.Marshal(map[string]string{"message": message})
+		cmd := DaemonCommand{ID: randID("cmd"), Type: "steer", Payload: payload}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := a.daemon.Command(ctx, cmd); err != nil {
+			return fmt.Errorf("daemon rejected steer: %w", err)
+		}
+		log.Printf("[agent %s] steer accepted via daemon: %q", a.ID, message)
+		return nil
+	}
+	if a.stdin == nil {
+		return errNotReady(a.ID, a.status) // fast path (also replayed-only)
+	}
+	if a.fsm.State() != SessionRunning || a.status != StatusWorking {
+		return errNotReady(a.ID, a.status)
+	}
+	a.piSeq++
+	cmd := map[string]interface{}{
+		"id":      fmt.Sprintf("s%d", a.piSeq),
+		"type":    "steer",
+		"message": message,
+	}
+	raw, _ := json.Marshal(cmd)
+	select {
+	case a.stdin <- append(raw, '\n'):
+		log.Printf("[agent %s] steer accepted: %q", a.ID, message)
+		return nil
+	default:
+		return fmt.Errorf("stdin queue full")
+	}
+}
+
 // Abort stops the in-flight turn. Pull transport (issue #212, ADR-0083 D4):
 // POST {command_id, type: "abort"} to the daemon — 202 on acceptance. Exec
 // break-glass path: the pi RPC abort command ({"type":"abort"}) is written
@@ -470,7 +532,8 @@ var (
 	// ErrTurnInFlight: a turn is already in flight; the prompt policy rejected it.
 	ErrTurnInFlight = errors.New("has a turn in flight; abort or wait for settle")
 	// ErrNotReady: the agent's FSM status does not permit the operation
-	// (prompt on a non-ready agent, abort without a turn in flight).
+	// (prompt on a non-ready agent, abort or steer without a turn in
+	// flight).
 	ErrNotReady = errors.New("agent not in a state permitting the operation")
 )
 

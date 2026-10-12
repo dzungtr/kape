@@ -81,6 +81,7 @@ var toolContract = map[string]any{
 	"create_agent":  CreateProfile{},
 	"get_agent":     agentIDInput{},
 	"prompt_agent":  promptInput{},
+	"steer_agent":   steerInput{},
 	"abort":         agentIDInput{},
 	"stream_events": streamEventsInput{},
 	"read_events":   readEventsInput{},
@@ -320,6 +321,54 @@ func TestMCPStreamEventsToolReturnsReplay(t *testing.T) {
 	}
 	if _, _, err := callToolErr(t, cs, "stream_events", streamEventsInput{AgentID: "agent-nope"}); err == nil {
 		t.Fatal("stream_events unknown agent should error")
+	}
+}
+
+// TestMCPSteerAgentTool covers the #215 ninth tool: mid-turn steer accepted,
+// idle steer rejected with the 409-equivalent, unknown agent errors.
+func TestMCPSteerAgentTool(t *testing.T) {
+	cs, mgr, _, _ := newMCPClientSession(t)
+	agent := mustCreateAgent(t, mgr)
+
+	// Steer with no turn in flight is the idle rejection (409-equivalent).
+	if _, _, err := callToolErr(t, cs, "steer_agent", steerInput{AgentID: agent.ID, Message: "focus"}); err == nil {
+		t.Fatal("steer on idle agent should error (409-equivalent)")
+	}
+
+	out := callTool[promptInput, map[string]string](t, cs, "prompt_agent", promptInput{AgentID: agent.ID, Message: "turn one"})
+	if out["status"] != "accepted" {
+		t.Fatalf("prompt_agent = %v, want accepted", out)
+	}
+	st := callTool[steerInput, map[string]string](t, cs, "steer_agent", steerInput{AgentID: agent.ID, Message: "use the test file"})
+	if st["status"] != "accepted" {
+		t.Fatalf("steer_agent = %v, want accepted", st)
+	}
+	if agent.Status() != StatusWorking {
+		t.Fatalf("status after steer = %q, want working (steer does not change the turn)", agent.Status())
+	}
+
+	if _, _, err := callToolErr(t, cs, "steer_agent", steerInput{AgentID: "agent-nope", Message: "x"}); err == nil {
+		t.Fatal("steer unknown agent should error")
+	}
+}
+
+// TestMCPSteerAgentEmptyMessageRejected pins the message validation for the
+// steer tool (mirrors prompt_agent).
+func TestMCPSteerAgentEmptyMessageRejected(t *testing.T) {
+	cs, mgr, _, _ := newMCPClientSession(t)
+	agent := mustCreateAgent(t, mgr)
+	if _, _, err := callToolErr(t, cs, "steer_agent", steerInput{AgentID: agent.ID}); err == nil {
+		t.Fatal("steer with empty message should error")
+	}
+}
+
+// TestMCPToolListExcludesClearQueue pins the D4 boundary: clear_queue is
+// daemon-leg vocabulary only — never an MCP tool at the front door.
+func TestMCPToolListExcludesClearQueue(t *testing.T) {
+	for _, verb := range RestVerbs() {
+		if verb == "clear_queue" {
+			t.Fatal("clear_queue must not appear in the front-door verb list")
+		}
 	}
 }
 
