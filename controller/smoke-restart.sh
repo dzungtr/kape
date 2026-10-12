@@ -66,7 +66,9 @@ cleanup() {
 trap cleanup EXIT
 
 start_controller() { # $1 = note suffix; sets CTRL_PID
-    KAPE_CREDS_DIR="${KAPE_CREDS_DIR:-$HOME/.config/openshell/gateways/k8s/mtls}" "$BIN" -listen "$LISTEN" -gateway "$GATEWAY" -event-store "$STORE" >"$NOTE/ctl-$1.log" 2>&1 &
+    # Break-glass exec transport: this smoke drives the gateway exec stream
+    # directly (the daemon pull transport owns the data plane; issue #212).
+    KAPE_CREDS_DIR="${KAPE_CREDS_DIR:-$HOME/.config/openshell/gateways/k8s/mtls}" "$BIN" -listen "$LISTEN" -gateway "$GATEWAY" -event-store "$STORE" -transport exec >"$NOTE/ctl-$1.log" 2>&1 &
     CTRL_PID=$!
     local i
     for i in $(seq 1 20); do

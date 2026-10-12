@@ -61,8 +61,8 @@ var sessionTransitions = map[SessionState]map[SessionState]bool{
 	// paused/reviving rows are reserved for Epic 3 (#192): the table below
 	// already defines the resume edges, but no edge reaches paused in this
 	// epic, so the states are unreachable (issue #196).
-	SessionPaused:    {SessionReviving: true, SessionTerminated: true},
-	SessionReviving:  {SessionReady: true, SessionTerminated: true},
+	SessionPaused:     {SessionReviving: true, SessionTerminated: true},
+	SessionReviving:   {SessionReady: true, SessionTerminated: true},
 	SessionTerminated: {},
 }
 

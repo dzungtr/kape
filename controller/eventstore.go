@@ -29,6 +29,15 @@ type EventStore interface {
 	// already assigned ev.Seq from NextSeq; Append rejects a seq that does
 	// not advance the log so a miscounting writer can never create a gap.
 	Append(agentID string, ev Event) error
+	// AppendWithOrigin is Append plus the origin watermark sidecar (issue
+	// #212): the event and the source daemon spool_id commit in one
+	// transaction, so a controller crash can never leave an event appended
+	// without its watermark (or vice versa) — the restart re-pull starts
+	// from the watermark and cannot duplicate or skip a record.
+	AppendWithOrigin(agentID string, ev Event, originSpoolID uint64) error
+	// OriginWatermark returns the agent's highest appended origin spool_id
+	// (0 if none) — the ack cursor the puller resumes from after restart.
+	OriginWatermark(agentID string) (uint64, error)
 	// Replay returns all events with seq > after, ascending.
 	Replay(agentID string, after uint64) ([]Event, error)
 	// Agents lists the agent ids that have a log (the replay enumeration
@@ -49,6 +58,11 @@ type BoltEventStore struct {
 }
 
 var agentBucketSeqWidth = 8
+
+// originBucket stores the per-agent origin watermark sidecar (issue #212):
+// key agentID, value 8-byte big-endian spool_id of the highest durably
+// appended pulled record.
+var originBucket = []byte("origin-wm")
 
 func seqKey(seq uint64) []byte {
 	return binary.BigEndian.AppendUint64(nil, seq)
@@ -92,24 +106,64 @@ func (s *BoltEventStore) NextSeq(agentID string) (uint64, error) {
 // append. Transactional: seq ordering and durability commit together.
 func (s *BoltEventStore) Append(agentID string, ev Event) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(agentID))
-		if err != nil {
-			return err
-		}
-		c := b.Cursor()
-		var last uint64
-		if k, _ := c.Last(); k != nil {
-			last = binary.BigEndian.Uint64(k)
-		}
-		if ev.Seq != last+1 {
-			return fmt.Errorf("agent %s: append seq %d does not advance log (last %d)", agentID, ev.Seq, last)
-		}
-		v, err := json.Marshal(ev)
-		if err != nil {
-			return err
-		}
-		return b.Put(seqKey(ev.Seq), v)
+		return appendInTx(tx, agentID, ev)
 	})
+}
+
+// AppendWithOrigin appends the event and advances the origin watermark in
+// the same Update transaction (issue #212) — atomic with the append.
+func (s *BoltEventStore) AppendWithOrigin(agentID string, ev Event, originSpoolID uint64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := appendInTx(tx, agentID, ev); err != nil {
+			return err
+		}
+		wm, err := tx.CreateBucketIfNotExists(originBucket)
+		if err != nil {
+			return err
+		}
+		// Watermarks are monotonic per agent; never let a stale pull lower it.
+		if cur := wm.Get([]byte(agentID)); len(cur) == 8 && binary.BigEndian.Uint64(cur) > originSpoolID {
+			return nil
+		}
+		return wm.Put([]byte(agentID), seqKey(originSpoolID))
+	})
+}
+
+// OriginWatermark reads the agent's highest appended origin spool_id.
+func (s *BoltEventStore) OriginWatermark(agentID string) (uint64, error) {
+	var out uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		wm := tx.Bucket(originBucket)
+		if wm == nil {
+			return nil
+		}
+		if v := wm.Get([]byte(agentID)); len(v) == 8 {
+			out = binary.BigEndian.Uint64(v)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// appendInTx is the shared seq-advance-guarded put. Caller holds an Update tx.
+func appendInTx(tx *bolt.Tx, agentID string, ev Event) error {
+	b, err := tx.CreateBucketIfNotExists([]byte(agentID))
+	if err != nil {
+		return err
+	}
+	c := b.Cursor()
+	var last uint64
+	if k, _ := c.Last(); k != nil {
+		last = binary.BigEndian.Uint64(k)
+	}
+	if ev.Seq != last+1 {
+		return fmt.Errorf("agent %s: append seq %d does not advance log (last %d)", agentID, ev.Seq, last)
+	}
+	v, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	return b.Put(seqKey(ev.Seq), v)
 }
 
 // Replay returns every stored event with seq > after, ascending by key.
@@ -145,6 +199,9 @@ func (s *BoltEventStore) Agents() ([]string, error) {
 	var out []string
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+			if string(name) == string(originBucket) {
+				return nil // the watermark sidecar, not an agent log (issue #212)
+			}
 			out = append(out, string(name))
 			return nil
 		})

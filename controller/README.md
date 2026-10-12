@@ -8,6 +8,14 @@ sandbox pod running the pi coding agent in RPC mode, and drives it
 end-to-end. Domain language is **agent** (sandbox agent), never session;
 REST routes at `/agents...`.
 
+Data plane (issue #212, ADR-0083): the controller **pulls** pi records from
+the in-sandbox daemon (`GET /records?after=<ack cursor>&wait=25s`) and is the
+seq authority — the daemon spool never assigns client-facing seqs. The ack
+cursor is a store-side origin watermark (the highest durably appended
+`spool_id`), so controller restarts re-pull with no gaps and no duplicates.
+Commands ride `POST /commands` (202 on acceptance). The gateway exec-stream
+pump is demoted to break-glass ops (`-transport exec`).
+
 Parent spec: dzungtr/kape#172 (Controller v1).
 
 ## Tool contract

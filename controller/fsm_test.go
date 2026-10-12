@@ -84,6 +84,12 @@ func (appendFailingStore) Agents() ([]string, error) { return nil, nil }
 
 func (appendFailingStore) NextSeq(string) (uint64, error) { return 1, nil }
 func (appendFailingStore) Append(string, Event) error     { return errors.New("append failed") }
+
+func (appendFailingStore) AppendWithOrigin(string, Event, uint64) error {
+	return errors.New("append failed")
+}
+
+func (appendFailingStore) OriginWatermark(string) (uint64, error) { return 0, nil }
 func (appendFailingStore) Replay(string, uint64) ([]Event, error) {
 	return nil, nil
 }

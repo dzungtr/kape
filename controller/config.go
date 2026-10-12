@@ -163,6 +163,16 @@ func (c *Config) ResolveProfile(p *CreateProfile) (ResolvedProfile, error) {
 	return r, nil
 }
 
+// Data-plane transports (issue #212, ADR-0083 D1/D2). TransportPull is the
+// data plane: a per-agent puller long-polls the in-sandbox daemon.
+// TransportExec is the demoted exec-stream pump — break-glass ops only
+// (issue #153), kept for the live-cluster smoke path until the daemon ships
+// in real sandbox images.
+const (
+	TransportPull = "pull"
+	TransportExec = "exec"
+)
+
 // Config is the controller runtime configuration. Defaults are compiled in,
 // overridden by KAPE_* environment variables (in-cluster), then by flags
 // (local dev) — flag > env > compiled default.
@@ -175,6 +185,9 @@ type Config struct {
 	DefaultResources Resources // cpu/memory defaults
 	ModelGatewayURL  string    // base URL patched into pi models.json
 	EventStorePath   string    // durable event log file (controller-local volume)
+	Transport        string    // data plane: pull (default) or exec (break-glass)
+	DaemonAddr       string    // daemon base URL (STATIC CONFIG in this slice; Sandbox CR resolution is #214)
+	DaemonToken      string    // static bearer token placeholder (ADR-0083 D5)
 }
 
 // DefaultConfig is the compiled-in baseline (matches the spike's flags).
@@ -188,6 +201,7 @@ func DefaultConfig() Config {
 		DefaultResources: Resources{CPU: "1", Memory: "2Gi"},
 		ModelGatewayURL:  "http://model-gateway-http.aperture.svc.cluster.local/v1",
 		EventStorePath:   "controller-events.db",
+		Transport:        TransportPull,
 	}
 }
 
@@ -221,6 +235,15 @@ func envConfig(def Config) Config {
 	if v := os.Getenv("KAPE_EVENT_STORE"); v != "" {
 		def.EventStorePath = v
 	}
+	if v := os.Getenv("KAPE_TRANSPORT"); v != "" {
+		def.Transport = v
+	}
+	if v := os.Getenv("KAPE_DAEMON_ADDR"); v != "" {
+		def.DaemonAddr = v
+	}
+	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
+		def.DaemonToken = v
+	}
 	return def
 }
 
@@ -236,6 +259,9 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DefaultImage, "image", c.DefaultImage, "default sandbox OCI image (env KAPE_DEFAULT_IMAGE)")
 	fs.StringVar(&c.ModelGatewayURL, "model-gateway-url", c.ModelGatewayURL, "model-gateway base URL patched into pi models.json (env KAPE_MODEL_GATEWAY_URL)")
 	fs.StringVar(&c.EventStorePath, "event-store", c.EventStorePath, "durable event log file (env KAPE_EVENT_STORE)")
+	fs.StringVar(&c.Transport, "transport", c.Transport, "data plane: pull (default) or exec break-glass (env KAPE_TRANSPORT)")
+	fs.StringVar(&c.DaemonAddr, "daemon-addr", c.DaemonAddr, "daemon base URL, static in this slice (env KAPE_DAEMON_ADDR)")
+	fs.StringVar(&c.DaemonToken, "daemon-token", c.DaemonToken, "daemon bearer token placeholder (env KAPE_DAEMON_TOKEN)")
 	fs.Func("resources", "default resources JSON {\"cpu\":...,\"memory\":...} (env KAPE_DEFAULT_RESOURCES)", func(v string) error {
 		var r Resources
 		if err := json.Unmarshal([]byte(v), &r); err != nil {
@@ -261,6 +287,19 @@ func (c *Config) Validate() error {
 	}
 	if c.EventStorePath == "" {
 		return fieldErr("event-store", "durable event log path is required")
+	}
+	switch c.Transport {
+	case TransportPull:
+		if c.DaemonAddr == "" {
+			return fieldErr("daemon-addr", "required when transport is pull (static config in this slice)")
+		}
+		if !strings.HasPrefix(c.DaemonAddr, "http") {
+			return fieldErr("daemon-addr", "must be an http(s) base URL")
+		}
+	case TransportExec:
+		// break-glass exec path: no daemon config required.
+	default:
+		return fieldErr("transport", fmt.Sprintf("must be %q or %q", TransportPull, TransportExec))
 	}
 	return nil
 }

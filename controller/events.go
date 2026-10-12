@@ -29,6 +29,7 @@ type EventHub struct {
 	store       EventStore
 	agentID     string
 	nextSeq     uint64 // recovered from the store at construction; single writer per agent
+	origin      uint64 // store-side origin watermark: highest appended daemon spool_id (issue #212)
 	subscribers map[int]chan *Event
 	nextSub     int
 	closed      bool
@@ -42,12 +43,52 @@ func NewEventHub(store EventStore, agentID string) (*EventHub, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EventHub{store: store, agentID: agentID, nextSeq: next, subscribers: map[int]chan *Event{}}, nil
+	origin, err := store.OriginWatermark(agentID)
+	if err != nil {
+		return nil, err
+	}
+	return &EventHub{store: store, agentID: agentID, nextSeq: next, origin: origin, subscribers: map[int]chan *Event{}}, nil
 }
 
-// Publish appends a verbatim record (pi RPC record, stderr/exec_exit notice)
-// to the durable log, assigns the next seq, and fans out. Returns the
-// assigned seq. A failed store append is logged, fanned out to nobody, and
+// PublishPulled appends a record pulled from the daemon spool (issue #212):
+// the verbatim record enters the log under its own client-facing seq, and
+// the origin spool_id commits as a store-side watermark sidecar in the same
+// transaction. A spool_id at or below the watermark is a re-pull of an
+// already-appended record — a deduped no-op (no seq consumed, no fan-out).
+// A failed append returns an error, consumes no seq, and leaves the
+// watermark (and therefore the pull cursor) unmoved.
+func (h *EventHub) PublishPulled(raw json.RawMessage, spoolID uint64) (uint64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return 0, nil
+	}
+	if spoolID <= h.origin {
+		return 0, nil // duplicate: already durably appended
+	}
+	ev := Event{Seq: h.nextSeq + 1, Type: eventTypeOf(raw), Data: append(json.RawMessage(nil), raw...)}
+	if err := h.store.AppendWithOrigin(h.agentID, ev, spoolID); err != nil {
+		log.Printf("[events] append agent %s seq %d failed: %v", h.agentID, ev.Seq, err)
+		return 0, err
+	}
+	h.nextSeq++
+	h.origin = spoolID
+	h.fanout(&ev)
+	return ev.Seq, nil
+}
+
+// Origin returns the hub's origin watermark — the ack cursor the puller
+// passes as `after` on the next GET /records (issue #212).
+func (h *EventHub) Origin() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.origin
+}
+
+// Publish appends a verbatim record (pi RPC record, stderr/exec_exit notice —
+// the exec break-glass path) to the durable log, assigns the next seq, and
+// fans out. Returns the assigned seq. Pulled records go through PublishPulled
+// instead, so the origin watermark tracks them (issue #212). A failed store append is logged, fanned out to nobody, and
 // consumes no seq — durability wins over availability.
 func (h *EventHub) Publish(raw json.RawMessage) uint64 {
 	h.mu.Lock()
