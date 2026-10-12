@@ -72,6 +72,23 @@ _Avoid_: Handler runtime (old-platform term).
 The authoritative record of session events. The single execution truth from which session state derives; everything else mirrors it.
 _Avoid_: task-service event log, broker (old-platform mechanisms).
 
+**Daemon**:
+The agent-transport relay inside a sandbox: owns the pi subprocess, spools its records on the sandbox volume, serves them over passive HTTP. Never dials the controller.
+_Avoid_: sidecar, kapeproxy (old-platform concepts; the daemon is the data plane, not an MCP federation proxy).
+
+**Spool**:
+The daemon's unacked-record buffer on the sandbox volume: verbatim pi records plus daemon notices, monotonic spool ids durable across daemon restarts. The backing store of the pull ack cursor.
+
+**Puller**:
+The controller-side per-agent loop that long-polls the daemon's spool and appends into the event log. The controller stays seq authority — the daemon never assigns client-facing seqs.
+
+**boot_id**:
+A fresh random id per daemon start, reported on `/status`. The partition-vs-death distinguisher: same boot_id after a pull outage means partition; a new one means the daemon (and pi with it) died.
+
+**Subagent (sandbox sense)**:
+A child sandbox agent created through the front door with parent linkage; capped (`SPAWN_MAX_DEPTH`, `SPAWN_MAX_CHILDREN`) and cascade-terminated with its parent. In-sandbox parallelism is the agent's own business, not this.
+_Avoid_: pi conversation fork (in-sandbox parallelism — not a platform concept).
+
 ## Relationships
 
 - A **KapeHandler** references zero or more **KapeTool** and **KapeSkill** resources; the **Operator** unions their tool refs into one **KapeProxy** config.
