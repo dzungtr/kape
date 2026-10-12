@@ -95,13 +95,13 @@ func TestResolveProfileOverridesWin(t *testing.T) {
 	r, err := cfg.ResolveProfile(&CreateProfile{
 		Image:     "other-image:v2",
 		Resources: &Resources{CPU: "4", Memory: "8Gi"},
-		Provider:  "other-provider",
 		Model:     "z-ai/glm-5.2",
 	})
 	if err != nil {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
-	if r.Image != "other-image:v2" || r.Provider != "other-provider" || r.Model != "z-ai/glm-5.2" {
+	// Provider is deployment-fixed: overrides cannot change it (issue #220).
+	if r.Image != "other-image:v2" || r.Provider != "openrouter-spike" || r.Model != "z-ai/glm-5.2" {
 		t.Fatalf("overrides not applied: %+v", r)
 	}
 	if r.Resources != (Resources{CPU: "4", Memory: "8Gi"}) {
@@ -119,7 +119,6 @@ func TestResolveProfileFieldNamedErrors(t *testing.T) {
 		{"bad image", CreateProfile{Image: "not an image"}, "image"},
 		{"bad cpu", CreateProfile{Resources: &Resources{CPU: "lots", Memory: "2Gi"}}, "resources"},
 		{"bad memory", CreateProfile{Resources: &Resources{CPU: "1", Memory: "twoGi"}}, "resources"},
-		{"bad provider", CreateProfile{Provider: "has space"}, "provider"},
 		{"bad model", CreateProfile{Model: "model with space"}, "model"},
 	}
 	cfg := testConfig()

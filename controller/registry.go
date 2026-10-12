@@ -200,6 +200,21 @@ func (m *AgentManager) List(ctx context.Context) ([]AgentView, error) {
 	return views, nil
 }
 
+// ListProviders implements list_providers / GET /providers (issue #220,
+// option B): proxies the gateway's provider list so callers discover valid
+// provider names instead of guessing. The deployment's provider for new
+// sandboxes is fixed by config — CreateProfile carries no provider field.
+func (m *AgentManager) ListProviders(ctx context.Context) ([]string, error) {
+	names, err := m.gw.ListProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if names == nil {
+		names = []string{}
+	}
+	return names, nil
+}
+
 // GetView implements get_agent: the live in-memory view when the agent is in
 // memory; otherwise (post-controller-restart) a CR-derived view from gateway
 // sandbox state, or ErrUnknownAgent if no owned sandbox carries the agent-id.

@@ -50,6 +50,11 @@ type GatewayClient interface {
 	// ApplyControllerEgressDeny merges the structural sandbox→controller
 	// egress deny rule for the sandbox (issue #214, ADR-0083 D2/D7).
 	ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error
+	// ListProviders returns the provider names configured on the gateway
+	// (credential-storage profiles). Powers list_providers (issue #220):
+	// callers discover valid providers instead of guessing, and the
+	// deployment's fixed provider comes from config, not the wire.
+	ListProviders(ctx context.Context) ([]string, error)
 }
 
 // SandboxInfo is the registry's view of one gateway sandbox: the fields
@@ -96,6 +101,18 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 		return "", "", fmt.Errorf("CreateSandbox: %w", err)
 	}
 	return resp.Sandbox.Metadata.Name, resp.Sandbox.Metadata.Id, nil
+}
+
+func (g *Gateway) ListProviders(ctx context.Context) ([]string, error) {
+	resp, err := g.client.ListProviders(ctx, &v1.ListProvidersRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("ListProviders: %w", err)
+	}
+	names := make([]string, 0, len(resp.Providers))
+	for _, p := range resp.Providers {
+		names = append(names, p.Metadata.Name)
+	}
+	return names, nil
 }
 
 // GetSandboxPhase polls the sandbox phase.

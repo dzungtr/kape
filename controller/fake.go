@@ -236,6 +236,18 @@ func (f *FakeGateway) ControllerDenies() []ControllerDeny {
 	return append([]ControllerDeny(nil), f.controllerDenies...)
 }
 
+// fakeProviders is returned by ListProviders; tests can override it.
+var fakeProviders = []string{"openrouter-spike"}
+
+func (f *FakeGateway) ListProviders(ctx context.Context) ([]string, error) {
+	return append([]string(nil), fakeProviders...), nil
+}
+
+// SetProviders overrides the provider list the fake returns.
+func (f *FakeGateway) SetProviders(names []string) {
+	fakeProviders = append([]string(nil), names...)
+}
+
 // DeletedSandboxes returns sandbox names passed to DeleteSandbox.
 func (f *FakeGateway) DeletedSandboxes() []string {
 	f.mu.Lock()
