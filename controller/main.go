@@ -48,6 +48,16 @@ func main() {
 	defer store.Close()
 
 	mgr := NewAgentManager(gw, cfg, store)
+	if cfg.Transport == TransportPull {
+		// Daemon addressing comes from the Sandbox CR (issue #214, D7): the
+		// controller's first k8s API client (in-cluster SA, get/watch
+		// sandboxes only — controller/deploy/rbac.yaml).
+		res, err := NewCRDaemonAddressResolver(cfg.SandboxNamespace, cfg.DaemonPort)
+		if err != nil {
+			log.Fatalf("build sandbox CR address resolver: %v", err)
+		}
+		mgr = mgr.WithResolver(res)
+	}
 	if err := mgr.RebuildFromLog(context.Background()); err != nil {
 		// Degrade, don't die: CR-derived views keep list/get working while
 		// the log is unreadable (issue #197 semantics).

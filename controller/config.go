@@ -194,26 +194,36 @@ type Config struct {
 	ModelGatewayURL  string    // base URL patched into pi models.json
 	EventStorePath   string    // durable event log file (controller-local volume)
 	Transport        string    // data plane: pull (default) or exec (break-glass)
-	DaemonAddr       string    // daemon base URL (STATIC CONFIG in this slice; Sandbox CR resolution is #214)
 	DaemonToken      string    // static bearer token placeholder (ADR-0083 D5)
-	SpawnMaxDepth    int       // max spawning depth: root=0, subagent=1, sub-subagent=2 (issue #216)
-	SpawnMaxChildren int       // max children per parent agent (issue #216)
+	DaemonPort       string    // fixed in-sandbox daemon port (D7; default 9090)
+	SandboxNamespace string    // namespace the Sandbox CRs live in (D7 resolution)
+
+	// Spawning (issue #216).
+	SpawnMaxDepth    int // max spawning depth: root=0, subagent=1, sub-subagent=2
+	SpawnMaxChildren int // max children per parent agent
+
+	ControllerServiceHost string // controller in-cluster service FQDN (D2/D7 deny rule)
+	ControllerServicePort int    // controller in-cluster service port (D2/D7 deny rule)
 }
 
 // DefaultConfig is the compiled-in baseline (matches the spike's flags).
 func DefaultConfig() Config {
 	return Config{
-		GatewayAddr:      "127.0.0.1:32353",
-		CredsDir:         os.Getenv("HOME") + "/.config/openshell/gateways/k8s/mtls",
-		ListenAddr:       ":8081",
-		DefaultProvider:  "openrouter-spike",
-		DefaultImage:     "ghcr.io/dzungtr/pi-openshell:openrouter",
-		DefaultResources: Resources{CPU: "1", Memory: "2Gi"},
-		ModelGatewayURL:  "http://model-gateway-http.aperture.svc.cluster.local/v1",
-		EventStorePath:   "controller-events.db",
-		Transport:        TransportPull,
-		SpawnMaxDepth:    2, // D8: root → subagent → sub-subagent
-		SpawnMaxChildren: 8,
+		GatewayAddr:           "127.0.0.1:32353",
+		CredsDir:              os.Getenv("HOME") + "/.config/openshell/gateways/k8s/mtls",
+		ListenAddr:            ":8081",
+		DefaultProvider:       "openrouter-spike",
+		DefaultImage:          "ghcr.io/dzungtr/pi-openshell:openrouter",
+		DefaultResources:      Resources{CPU: "1", Memory: "2Gi"},
+		ModelGatewayURL:       "http://model-gateway-http.aperture.svc.cluster.local/v1",
+		EventStorePath:        "controller-events.db",
+		Transport:             TransportPull,
+		DaemonPort:            "9090", // fixed daemon port (D7)
+		SandboxNamespace:      "openshell",
+		ControllerServiceHost: "kape-controller.openshell.svc.cluster.local",
+		ControllerServicePort: 8081,
+		SpawnMaxDepth:         2, // D8: root → subagent → sub-subagent
+		SpawnMaxChildren:      8,
 	}
 }
 
@@ -250,8 +260,20 @@ func envConfig(def Config) Config {
 	if v := os.Getenv("KAPE_TRANSPORT"); v != "" {
 		def.Transport = v
 	}
-	if v := os.Getenv("KAPE_DAEMON_ADDR"); v != "" {
-		def.DaemonAddr = v
+	if v := os.Getenv("KAPE_DAEMON_PORT"); v != "" {
+		def.DaemonPort = v
+	}
+	if v := os.Getenv("KAPE_SANDBOX_NAMESPACE"); v != "" {
+		def.SandboxNamespace = v
+	}
+	if v := os.Getenv("KAPE_CONTROLLER_SERVICE_HOST"); v != "" {
+		def.ControllerServiceHost = v
+	}
+	if v := os.Getenv("KAPE_CONTROLLER_SERVICE_PORT"); v != "" {
+		var p int
+		if _, err := fmt.Sscanf(v, "%d", &p); err == nil {
+			def.ControllerServicePort = p
+		}
 	}
 	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
 		def.DaemonToken = v
@@ -286,7 +308,10 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ModelGatewayURL, "model-gateway-url", c.ModelGatewayURL, "model-gateway base URL patched into pi models.json (env KAPE_MODEL_GATEWAY_URL)")
 	fs.StringVar(&c.EventStorePath, "event-store", c.EventStorePath, "durable event log file (env KAPE_EVENT_STORE)")
 	fs.StringVar(&c.Transport, "transport", c.Transport, "data plane: pull (default) or exec break-glass (env KAPE_TRANSPORT)")
-	fs.StringVar(&c.DaemonAddr, "daemon-addr", c.DaemonAddr, "daemon base URL, static in this slice (env KAPE_DAEMON_ADDR)")
+	fs.StringVar(&c.DaemonPort, "daemon-port", c.DaemonPort, "fixed in-sandbox daemon port (env KAPE_DAEMON_PORT)")
+	fs.StringVar(&c.SandboxNamespace, "sandbox-namespace", c.SandboxNamespace, "namespace holding the Sandbox CRs (env KAPE_SANDBOX_NAMESPACE)")
+	fs.StringVar(&c.ControllerServiceHost, "controller-service-host", c.ControllerServiceHost, "controller in-cluster service FQDN for the egress deny rule (env KAPE_CONTROLLER_SERVICE_HOST)")
+	fs.IntVar(&c.ControllerServicePort, "controller-service-port", c.ControllerServicePort, "controller in-cluster service port for the egress deny rule (env KAPE_CONTROLLER_SERVICE_PORT)")
 	fs.StringVar(&c.DaemonToken, "daemon-token", c.DaemonToken, "daemon bearer token placeholder (env KAPE_DAEMON_TOKEN)")
 	fs.IntVar(&c.SpawnMaxDepth, "spawn-max-depth", c.SpawnMaxDepth, "max spawning depth, root=0 (env KAPE_SPAWN_MAX_DEPTH)")
 	fs.IntVar(&c.SpawnMaxChildren, "spawn-max-children", c.SpawnMaxChildren, "max children per parent agent (env KAPE_SPAWN_MAX_CHILDREN)")
@@ -318,11 +343,18 @@ func (c *Config) Validate() error {
 	}
 	switch c.Transport {
 	case TransportPull:
-		if c.DaemonAddr == "" {
-			return fieldErr("daemon-addr", "required when transport is pull (static config in this slice)")
+		// Daemon addressing comes from the Sandbox CR (D7, no static base URL).
+		if port, err := strconv.Atoi(c.DaemonPort); err != nil || port < 1 || port > 65535 {
+			return fieldErr("daemon-port", fmt.Sprintf("%q must be a TCP port number", c.DaemonPort))
 		}
-		if !strings.HasPrefix(c.DaemonAddr, "http") {
-			return fieldErr("daemon-addr", "must be an http(s) base URL")
+		if c.SandboxNamespace == "" {
+			return fieldErr("sandbox-namespace", "required when transport is pull (Sandbox CR resolution)")
+		}
+		if c.ControllerServiceHost == "" {
+			return fieldErr("controller-service-host", "required when transport is pull (sandbox→controller egress deny rule)")
+		}
+		if c.ControllerServicePort < 1 || c.ControllerServicePort > 65535 {
+			return fieldErr("controller-service-port", fmt.Sprintf("%d must be a TCP port number", c.ControllerServicePort))
 		}
 	case TransportExec:
 		// break-glass exec path: no daemon config required.

@@ -44,3 +44,32 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 	log.Printf("[policy] model-gateway rule submitted for %s", sandboxName)
 	return nil
 }
+
+// ApplyControllerEgressDeny merges an explicit L7 deny for the controller's
+// in-cluster service (issue #214, ADR-0083 D2/D7): the daemon is passive and
+// has no listener path back to the controller, and the sandbox never carries
+// controller credentials — the policy makes that structural. Deny rules are
+// evaluated after allows and take precedence, so the deny survives future
+// broad allow rules; the default-deny OPA posture stays the real boundary.
+func (g *Gateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error {
+	req := &v1.UpdateConfigRequest{
+		Name: sandboxName,
+		MergeOperations: []*v1.PolicyMergeOperation{{
+			Operation: &v1.PolicyMergeOperation_AddDenyRules{
+				AddDenyRules: &v1.AddDenyRules{
+					Host: host,
+					Port: uint32(port),
+					DenyRules: []*v1.L7DenyRule{{
+						Method: "*",
+						Path:   "**",
+					}},
+				},
+			},
+		}},
+	}
+	if _, err := g.client.UpdateConfig(ctx, req); err != nil {
+		return fmt.Errorf("UpdateConfig(deny merge): %w", err)
+	}
+	log.Printf("[policy] controller egress deny (%s:%d) submitted for %s", host, port, sandboxName)
+	return nil
+}

@@ -25,11 +25,12 @@ type FakeGateway struct {
 	ids map[string]string
 	// initialPhase is the phase a newly created sandbox starts in; tests
 	// default it to READY so Create's waitReady loop returns immediately.
-	initialPhase v1.SandboxPhase
-	deleted      []string
-	created      []string
-	requests     []CreateRequest
-	piModels     []string
+	initialPhase     v1.SandboxPhase
+	deleted          []string
+	created          []string
+	requests         []CreateRequest
+	controllerDenies []ControllerDeny
+	piModels         []string
 	// stream, if set, is returned by every StartPi call.
 	stream *FakeStream
 }
@@ -201,6 +202,28 @@ func (f *FakeGateway) PiModels() []string {
 
 func (f *FakeGateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error {
 	return nil
+}
+
+// ApplyControllerEgressDeny records the deny rule request for assertions.
+func (f *FakeGateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.controllerDenies = append(f.controllerDenies, ControllerDeny{Name: sandboxName, Host: host, Port: port})
+	return nil
+}
+
+// ControllerDeny is one recorded ApplyControllerEgressDeny request.
+type ControllerDeny struct {
+	Name string
+	Host string
+	Port int
+}
+
+// ControllerDenies returns the recorded egress-deny requests.
+func (f *FakeGateway) ControllerDenies() []ControllerDeny {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ControllerDeny(nil), f.controllerDenies...)
 }
 
 // DeletedSandboxes returns sandbox names passed to DeleteSandbox.

@@ -47,6 +47,9 @@ type GatewayClient interface {
 	StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error)
 	// ApplyModelGatewayPolicy merges the model-gateway egress rule for the sandbox.
 	ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error
+	// ApplyControllerEgressDeny merges the structural sandbox→controller
+	// egress deny rule for the sandbox (issue #214, ADR-0083 D2/D7).
+	ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error
 }
 
 // SandboxInfo is the registry's view of one gateway sandbox: the fields

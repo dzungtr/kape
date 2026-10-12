@@ -104,11 +104,12 @@ func (d *fakeDaemon) handler() http.Handler {
 	})
 }
 
-// pullTestConfig returns a pull-transport config pointing at srv.
-func pullTestConfig(srv *httptest.Server) Config {
+// pullTestConfig returns a pull-transport config. Daemon addressing is not
+// in config anymore (issue #214): tests inject clients via the manager's
+// test seam (mgr.daemon, or mgr.resolver + mgr.daemonTransport).
+func pullTestConfig(_ *httptest.Server) Config {
 	cfg := testConfig() // exec baseline (image/provider overrides)
 	cfg.Transport = TransportPull
-	cfg.DaemonAddr = srv.URL
 	cfg.DaemonToken = "s3cret"
 	return cfg
 }
@@ -144,9 +145,7 @@ func pullTestAgent(t *testing.T) (*AgentManager, *FakeGateway, *fakeDaemon, *Age
 	cfg.DaemonToken = "s3cret"
 	gw := NewFakeGateway()
 	mgr := NewAgentManager(gw, cfg, testStore(t))
-	mgr.daemonOnce.Do(func() {
-		mgr.daemon = daemonClientFor(d.handler())
-	})
+	mgr.daemon = daemonClientFor(d.handler())
 	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -313,9 +312,7 @@ func TestOriginWatermarkSurvivesRestartNoGapsNoDuplicates(t *testing.T) {
 
 	gw := NewFakeGateway()
 	mgr := NewAgentManager(gw, cfg, store)
-	mgr.daemonOnce.Do(func() {
-		mgr.daemon = daemonClientFor(d.handler())
-	})
+	mgr.daemon = daemonClientFor(d.handler())
 	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -352,9 +349,7 @@ func TestOriginWatermarkSurvivesRestartNoGapsNoDuplicates(t *testing.T) {
 		LabelAgentID:   agent.ID,
 	}, 0)
 	mgr2 := NewAgentManager(gw2, cfg, reopened)
-	mgr2.daemonOnce.Do(func() {
-		mgr2.daemon = daemonClientFor(d.handler())
-	})
+	mgr2.daemon = daemonClientFor(d.handler())
 	if err := mgr2.RebuildFromLog(context.Background()); err != nil {
 		t.Fatalf("RebuildFromLog: %v", err)
 	}
@@ -455,9 +450,7 @@ func TestPullerBacksOffThenRecovers(t *testing.T) {
 	cfg := pullTestConfig(httptest.NewServer(nil))
 	gw := NewFakeGateway()
 	mgr := NewAgentManager(gw, cfg, testStore(t))
-	mgr.daemonOnce.Do(func() {
-		mgr.daemon = daemonClientFor(d.handler())
-	})
+	mgr.daemon = daemonClientFor(d.handler())
 	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -505,39 +498,62 @@ func TestHTTPDaemonClientAuthAndErrors(t *testing.T) {
 	}
 }
 
+// --- AC: pull transport has NO static daemon address — resolution is from
+// the Sandbox CR (issue #214, D7); only resolution inputs are configured ---
+
 func TestPullTransportConfigValidation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Transport = TransportPull
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("pull transport without daemon addr accepted")
-	}
-	var fe *FieldError
-	cfg.DaemonAddr = "127.0.0.1:9090"
-	err := cfg.Validate()
-	if !errors.As(err, &fe) || fe.Field != "daemon-addr" {
-		t.Fatalf("err = %v, want daemon-addr field error (must be http)", err)
-	}
-	cfg.DaemonAddr = "http://127.0.0.1:9090"
+	cfg.DaemonPort = "9090"
+	cfg.SandboxNamespace = "openshell"
+	cfg.ControllerServiceHost = "kape-controller.openshell.svc.cluster.local"
+	cfg.ControllerServicePort = 8081
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid pull config rejected: %v", err)
 	}
+	var fe *FieldError
+	cfg.DaemonPort = "http://x" // not a port
+	err := cfg.Validate()
+	if !errors.As(err, &fe) || fe.Field != "daemon-port" {
+		t.Fatalf("err = %v, want daemon-port field error", err)
+	}
+	cfg.DaemonPort = "0"
+	if err := cfg.Validate(); !errors.As(err, &fe) || fe.Field != "daemon-port" {
+		t.Fatalf("err = %v, want daemon-port field error", err)
+	}
+	cfg.DaemonPort = "9090"
+	cfg.SandboxNamespace = ""
+	if err := cfg.Validate(); !errors.As(err, &fe) || fe.Field != "sandbox-namespace" {
+		t.Fatalf("err = %v, want sandbox-namespace field error", err)
+	}
+	cfg.SandboxNamespace = "openshell"
+	cfg.ControllerServiceHost = ""
+	if err := cfg.Validate(); !errors.As(err, &fe) || fe.Field != "controller-service-host" {
+		t.Fatalf("err = %v, want controller-service-host field error", err)
+	}
+	cfg.ControllerServiceHost = "kape-controller.openshell.svc.cluster.local"
+	cfg.ControllerServicePort = 70000
+	if err := cfg.Validate(); !errors.As(err, &fe) || fe.Field != "controller-service-port" {
+		t.Fatalf("err = %v, want controller-service-port field error", err)
+	}
+	cfg.ControllerServicePort = 8081
 	cfg.Transport = "carrier-pigeon"
 	err = cfg.Validate()
 	if !errors.As(err, &fe) || fe.Field != "transport" {
 		t.Fatalf("err = %v, want transport field error", err)
 	}
 	cfg.Transport = TransportExec
-	cfg.DaemonAddr = ""
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("exec transport without daemon addr rejected: %v", err)
+		t.Fatalf("exec transport without daemon config rejected: %v", err)
 	}
 }
 
 func TestConfigTransportEnvAndFlags(t *testing.T) {
 	t.Setenv("KAPE_TRANSPORT", "exec")
-	t.Setenv("KAPE_DAEMON_ADDR", "http://d:1")
+	t.Setenv("KAPE_DAEMON_PORT", "9100")
+	t.Setenv("KAPE_SANDBOX_NAMESPACE", "sbx-ns")
 	cfg := ConfigFromEnv()
-	if cfg.Transport != TransportExec || cfg.DaemonAddr != "http://d:1" {
-		t.Fatalf("env transport config = %q/%q, want exec/http://d:1", cfg.Transport, cfg.DaemonAddr)
+	if cfg.Transport != TransportExec || cfg.DaemonPort != "9100" || cfg.SandboxNamespace != "sbx-ns" {
+		t.Fatalf("env transport config = %q/%q/%q, want exec/9100/sbx-ns", cfg.Transport, cfg.DaemonPort, cfg.SandboxNamespace)
 	}
 }

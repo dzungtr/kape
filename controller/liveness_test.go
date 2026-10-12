@@ -153,7 +153,7 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 	cfg := pullTestConfig(httptest.NewServer(nil))
 	gw := NewFakeGateway()
 	mgr := NewAgentManager(gw, cfg, store)
-	mgr.daemonOnce.Do(func() { mgr.daemon = daemonClientFor(d.handler()) })
+	mgr.daemon = daemonClientFor(d.handler())
 	agent, err := mgr.Create(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -184,7 +184,7 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 		LabelAgentID:   agent.ID,
 	}, 0)
 	mgr2 := NewAgentManager(gw2, cfg, reopened)
-	mgr2.daemonOnce.Do(func() { mgr2.daemon = daemonClientFor(d.handler()) })
+	mgr2.daemon = daemonClientFor(d.handler())
 	if err := mgr2.RebuildFromLog(context.Background()); err != nil {
 		t.Fatalf("RebuildFromLog: %v", err)
 	}

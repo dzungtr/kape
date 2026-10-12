@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// Puller — the per-agent daemon pull loop (issue #212, ADR-0083 D1/D2/D6):
+// Puller — the per-agent daemon pull loop (issues #212/#214, ADR-0083
+// D1/D2/D6/D7): it consumes a RESOLVED daemon address — resolution is its own
 // long-polls GET /records?after=<ack cursor>&wait=25s and appends verbatim
 // records into the agent's EventHub. The ack cursor is the store-side origin
 // watermark (the highest spool_id durably appended), so a controller restart
@@ -68,12 +69,32 @@ func (m *AgentManager) runPuller(agent *Agent, ctx context.Context) {
 			}
 			continue // drain failed; retry next cycle
 		}
-		after := agent.hub.Origin()
-		recs, err := agent.daemon.Records(ctx, after, daemonPullWait)
+		// The daemon client is resolved from the Sandbox CR on first use and
+		// re-resolved on every reconnect (issue #214, D7): podIPs churn when
+		// the pod restarts, so a pull failure drops the cached client.
+		daemon, err := m.daemonFor(ctx, agent)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			failures++
+			if failures >= degradedFailureThreshold {
+				m.setDegraded(agent, true)
+			}
+			log.Printf("[agent %s] resolve daemon address failed: %v; backoff %s", agent.ID, err, backoff)
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff = min(backoff*2, pullBackoffCap)
+			continue
+		}
+		after := agent.hub.Origin()
+		recs, err := daemon.Records(ctx, after, daemonPullWait)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			m.invalidateDaemon(agent) // re-resolve from the Sandbox CR (D7)
 			failures++
 			if failures >= degradedFailureThreshold {
 				m.setDegraded(agent, true)
@@ -115,10 +136,17 @@ func (m *AgentManager) runPuller(agent *Agent, ctx context.Context) {
 }
 
 // preflight issues GET /status against the daemon with a bounded deadline.
+// It dials the daemonFor-resolved client (issue #214 D7): the address comes
+// from the Sandbox CR, and the resolved client is cached on the agent for
+// the drain that follows a successful preflight.
 func (m *AgentManager) preflight(agent *Agent, ctx context.Context) (DaemonStatus, error) {
+	dc, err := m.daemonFor(ctx, agent)
+	if err != nil {
+		return DaemonStatus{}, err
+	}
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return agent.daemon.Status(pctx)
+	return dc.Status(pctx)
 }
 
 // noteBootID records the daemon's current boot identity if not yet known
@@ -162,8 +190,13 @@ func (m *AgentManager) setDegraded(agent *Agent, v bool) {
 // history. Reports false when the daemon or the store cannot serve the
 // drain — the caller retries instead of marking against a partial drain.
 func (m *AgentManager) drainSpool(agent *Agent, ctx context.Context) bool {
+	dc, err := m.daemonFor(ctx, agent)
+	if err != nil {
+		log.Printf("[agent %s] death drain resolve failed: %v", agent.ID, err)
+		return false
+	}
 	for {
-		recs, err := agent.daemon.Records(ctx, agent.hub.Origin(), 0)
+		recs, err := dc.Records(ctx, agent.hub.Origin(), 0)
 		if err != nil {
 			log.Printf("[agent %s] death drain failed: %v", agent.ID, err)
 			return false

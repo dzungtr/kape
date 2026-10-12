@@ -151,6 +151,29 @@ Resolution: compiled default → `KAPE_*` env → flag (flag wins).
 | default resources | `KAPE_DEFAULT_RESOURCES` (JSON) | `-resources` | `{"cpu":"1","memory":"2Gi"}` |
 | model-gateway URL | `KAPE_MODEL_GATEWAY_URL` | `-model-gateway-url` | `http://model-gateway-http.aperture.svc.cluster.local/v1` |
 | event store file | `KAPE_EVENT_STORE` | `-event-store` | `controller-events.db` |
+| daemon port (fixed) | `KAPE_DAEMON_PORT` | `-daemon-port` | `9090` |
+| sandbox namespace | `KAPE_SANDBOX_NAMESPACE` | `-sandbox-namespace` | `openshell` |
+| controller service host | `KAPE_CONTROLLER_SERVICE_HOST` | `-controller-service-host` | `kape-controller.openshell.svc.cluster.local` |
+| controller service port | `KAPE_CONTROLLER_SERVICE_PORT` | `-controller-service-port` | `8081` |
+
+## Daemon addressing (issue #214, ADR-0083 D7)
+
+Under the pull transport the controller resolves the in-sandbox daemon
+address from the agent-sandbox Sandbox CR on **every reconnect** — there is no
+static daemon address in config (podIPs churn when the pod restarts):
+
+1. `Sandbox.status.podIPs[0]` — primary; the direct pod path bypasses the router.
+2. Headless-Service DNS — fallback when the pod IP is not (yet) reported;
+   `Sandbox.status.serviceFQDN` if set, else `{sandbox}.{ns}.svc.cluster.local`.
+   Requires `spec.service: true` on the reconciled SandboxTemplate.
+3. Fixed port: `KAPE_DAEMON_PORT` (default `9090`).
+
+The k8s client is in-cluster (`rest.InClusterConfig`) and the ServiceAccount
+needs only **get/watch on sandboxes** in the sandbox namespace
+(`deploy/rbac.yaml`). Sandbox→controller egress is denied by an explicit L7
+deny rule (`ApplyControllerEgressDeny`) merged per sandbox — deny rules take
+precedence over allows, so the daemon has no listener path back to the
+controller even under future broad allow rules.
 
 No auth in v1: the tailnet (Tailscale ingress) is the boundary. The container
 image is built from `controller/Dockerfile` in this repo (`make build-images`

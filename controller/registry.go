@@ -376,13 +376,14 @@ func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
 		m.mu.Unlock()
 		log.Printf("[registry] replayed agent %s (session %s, status %s)", id, state, a.status)
 		if m.cfg.Transport == TransportPull {
-			// Pull transport (issue #212): resume the per-agent puller from
-			// the recovered origin watermark — the restart re-pull cannot
-			// duplicate or skip a record. Daemon-death detection (#213) and
-			// per-agent address resolution (#214) are later slices.
+			// Pull transport (issues #212/#214): resume the per-agent puller
+			// from the recovered origin watermark — the restart re-pull cannot
+			// duplicate or skip a record. The daemon address resolves from the
+			// Sandbox CR lazily on first pull (and re-resolves on every
+			// reconnect); daemon-death detection (#213) is a later slice.
 			ctx, cancel := context.WithCancel(context.Background())
 			a.cancel = cancel
-			a.daemon = m.daemonClient()
+			a.pullTransport = true
 			go m.runPuller(a, ctx)
 		}
 	}
