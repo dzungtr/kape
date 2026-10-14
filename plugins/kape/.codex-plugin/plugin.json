@@ -1,0 +1,24 @@
+{
+  "name": "kape",
+  "version": "0.1.0",
+  "description": "kape ships the kape-controller dispatch skill as a self-contained plugin for Claude Code and Codex, living under plugins/kape/ in the kape-io repo.",
+  "author": { "name": "dzungtr", "url": "https://github.com/dzungtr" },
+  "homepage": "https://github.com/dzungtr/kape",
+  "repository": "https://github.com/dzungtr/kape",
+  "keywords": ["kape", "kape-controller", "mcp", "sandbox-agents", "claude-code", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "kape",
+    "shortDescription": "kape-controller sandbox-agent dispatch skill for Claude Code and Codex.",
+    "longDescription": "kape is the kape platform plugin, packaged self-contained under plugins/kape/. The skills/ tree ships to both Claude Code and Codex. The dispatch skill teaches agents to consume the kape-controller MCP interface properly: discover the tool surface from the server itself, run the dispatch lifecycle, classify errors, and consume sandbox-agent output efficiently.",
+    "developerName": "dzungtr",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "Dispatch a task to a kape sandbox agent.",
+      "How do I poll a kape sandbox agent's output?",
+      "A kape-controller tool call failed — what should I check?"
+    ],
+    "websiteURL": "https://github.com/dzungtr/kape"
+  }
+}
