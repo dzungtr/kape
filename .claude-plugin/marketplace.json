@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "dzungtr-kape",
+  "version": "0.1.0",
+  "description": "Marketplace for the kape-io repo. Adds the kape plugin (kape-controller sandbox-agent dispatch skill).",
+  "owner": { "name": "dzungtr", "url": "https://github.com/dzungtr" },
+  "plugins": [
+    {
+      "name": "kape",
+      "description": "kape-controller sandbox-agent dispatch skill: consume the kape-controller MCP interface properly — discover tools from the server, dispatch lifecycle, error classification, output consumption. Self-contained under plugins/kape/.",
+      "version": "0.1.0",
+      "author": { "name": "dzungtr", "url": "https://github.com/dzungtr" },
+      "source": "./plugins/kape/",
+      "category": "productivity",
+      "keywords": ["kape", "kape-controller", "mcp", "sandbox-agents", "dispatch"]
+    }
+  ]
+}
