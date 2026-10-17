@@ -193,6 +193,7 @@ type Config struct {
 	EventStorePath   string    // durable event log file (controller-local volume)
 	Transport        string    // data plane: pull (default) or exec (break-glass)
 	DaemonToken      string    // static bearer token placeholder (ADR-0083 D5)
+	DaemonCommand    string    // space-separated canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); empty disables
 	DaemonPort       string    // fixed in-sandbox daemon port (D7; default 9090)
 	SandboxNamespace string    // namespace the Sandbox CRs live in (D7 resolution)
 
@@ -238,6 +239,7 @@ func DefaultConfig() Config {
 		ModelGatewayURL:       "http://model-gateway-http.aperture.svc.cluster.local/v1",
 		EventStorePath:        "controller-events.db",
 		Transport:             TransportPull,
+		DaemonCommand:         "kape-daemon", // E2 default; empty = profile-hook fallback (#217)
 		DaemonPort:            "9090", // fixed daemon port (D7)
 		SandboxNamespace:      "openshell",
 		ControllerServiceHost: "kape-controller.openshell.svc.cluster.local",
@@ -309,6 +311,9 @@ func envConfig(def Config) (Config, error) {
 	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
 		def.DaemonToken = v
 	}
+	if v := os.Getenv("KAPE_DAEMON_COMMAND"); v != "" {
+		def.DaemonCommand = v
+	}
 	if v := os.Getenv("KAPE_SPAWN_MAX_DEPTH"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
@@ -355,6 +360,17 @@ func envConfig(def Config) (Config, error) {
 // ConfigFromEnv resolves the full config: compiled defaults, then KAPE_* env.
 func ConfigFromEnv() (Config, error) { return envConfig(DefaultConfig()) }
 
+// DaemonCommandArgv splits DaemonCommand into the argv threaded as
+// SandboxSpec.command (issue #247, spec #245 E2). Empty config → nil, which
+// keeps the create request without a command (gateway default main process,
+// the #217 profile-hook fallback posture).
+func (c Config) DaemonCommandArgv() []string {
+	if c.DaemonCommand == "" {
+		return nil
+	}
+	return strings.Fields(c.DaemonCommand)
+}
+
 // RegisterFlags adds flag overrides (local dev) onto fs. Flags win over env.
 func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.GatewayAddr, "gateway", c.GatewayAddr, "OpenShell gateway host:port (env KAPE_GATEWAY_ADDR)")
@@ -370,6 +386,7 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ControllerServiceHost, "controller-service-host", c.ControllerServiceHost, "controller in-cluster service FQDN for the egress deny rule (env KAPE_CONTROLLER_SERVICE_HOST)")
 	fs.IntVar(&c.ControllerServicePort, "controller-service-port", c.ControllerServicePort, "controller in-cluster service port for the egress deny rule (env KAPE_CONTROLLER_SERVICE_PORT)")
 	fs.StringVar(&c.DaemonToken, "daemon-token", c.DaemonToken, "daemon bearer token placeholder (env KAPE_DAEMON_TOKEN)")
+	fs.StringVar(&c.DaemonCommand, "daemon-command", c.DaemonCommand, "space-separated canonical main process argv (env KAPE_DAEMON_COMMAND); empty disables")
 	fs.IntVar(&c.SpawnMaxDepth, "spawn-max-depth", c.SpawnMaxDepth, "max spawning depth, root=0 (env KAPE_SPAWN_MAX_DEPTH)")
 	fs.IntVar(&c.SpawnMaxChildren, "spawn-max-children", c.SpawnMaxChildren, "max children per parent agent (env KAPE_SPAWN_MAX_CHILDREN)")
 	fs.Func("resources", "default resources JSON {\"cpu\":...,\"memory\":...} (env KAPE_DEFAULT_RESOURCES)", func(v string) error {

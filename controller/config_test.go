@@ -39,6 +39,25 @@ func TestConfigFromEnvOverridesDefaults(t *testing.T) {
 	}
 }
 
+// Issue #247 (spec #245 E2): the daemon command config is a space-separated
+// argv; empty disables canonical-main-process threading (profile-hook
+// fallback posture).
+func TestDaemonCommandArgv(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.DaemonCommandArgv(); len(got) != 1 || got[0] != "kape-daemon" {
+		t.Fatalf("default DaemonCommandArgv = %v, want [kape-daemon]", got)
+	}
+	cfg.DaemonCommand = "kape-daemon --spool /s/x.jsonl"
+	got := cfg.DaemonCommandArgv()
+	if len(got) != 3 || got[0] != "kape-daemon" || got[1] != "--spool" || got[2] != "/s/x.jsonl" {
+		t.Fatalf("DaemonCommandArgv = %v", got)
+	}
+	cfg.DaemonCommand = ""
+	if got := cfg.DaemonCommandArgv(); got != nil {
+		t.Fatalf("empty DaemonCommand = %v, want nil (disabled)", got)
+	}
+}
+
 // A malformed KAPE_CONTROLLER_SERVICE_PORT must surface as an error, not be
 // silently swallowed (review round 1, P2).
 func TestConfigFromEnvRejectsGarbageControllerPort(t *testing.T) {
