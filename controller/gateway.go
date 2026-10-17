@@ -30,7 +30,7 @@ type GatewayClient interface {
 	// CreateSandbox creates a sandbox running the given image with the named
 	// provider attached, the given resources, stamped with the given
 	// ownership labels. Returns the canonical name and gateway UUID.
-	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (sandboxName, sandboxID string, err error)
+	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (sandboxName, sandboxID string, err error)
 	// GetSandboxPhase polls the sandbox phase (used to detect READY and ERROR).
 	GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error)
 	// ListSandboxes returns the sandboxes matching the label selector
@@ -89,8 +89,11 @@ func (g *Gateway) WithDaemonToken(token string) *Gateway {
 
 // CreateSandbox creates a sandbox running the pi image with the named
 // provider attached, the requested resources, stamped with the ownership
-// labels (managed-by, agent-id) that back the label registry. Returns name and id.
-func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (string, string, error) {
+// labels (managed-by, agent-id) that back the label registry. piSessionID is
+// the session-pinned pi --session-id (spec #245 E3, issue #249) threaded into
+// the daemon environment so the sandbox's pi resumes the session's tree.
+// Returns name and id.
+func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (string, string, error) {
 	req := &v1.CreateSandboxRequest{
 		Name:   name,
 		Labels: labels,
@@ -108,18 +111,35 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 		},
 	}
 	// Pull transport (ADR-0083 D5/D7): the daemon's placeholder bearer check
-	// needs the token the controller will present on every pull/command.
-	if g.daemonToken != "" {
-		req.Spec.Template.Environment = map[string]string{
-			"KAPE_DAEMON_TOKEN": g.daemonToken,
-			"KAPE_AGENT_ID":     labels[LabelAgentID],
-		}
+	// needs the token the controller will present on every pull/command; the
+	// session-pinned pi id (issue #249) rides the same template environment.
+	if env := sandboxEnv(g.daemonToken, labels[LabelAgentID], piSessionID); len(env) > 0 {
+		req.Spec.Template.Environment = env
 	}
 	resp, err := g.client.CreateSandbox(ctx, req)
 	if err != nil {
 		return "", "", fmt.Errorf("CreateSandbox: %w", err)
 	}
 	return resp.Sandbox.Metadata.Name, resp.Sandbox.Metadata.Id, nil
+}
+
+// sandboxEnv builds the sandbox template environment for a new sandbox: the
+// daemon token + agent id (pull transport credential, ADR-0083 D5/D7) and the
+// session-pinned pi session id (spec #245 E3, issue #249). Empty values stay
+// out of the map; an empty result keeps creation byte-identical.
+func sandboxEnv(token, agentID, piSessionID string) map[string]string {
+	env := map[string]string{}
+	if token != "" {
+		env["KAPE_DAEMON_TOKEN"] = token
+		env["KAPE_AGENT_ID"] = agentID
+	}
+	if piSessionID != "" {
+		env["KAPE_PI_SESSION_ID"] = piSessionID
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func (g *Gateway) ListProviders(ctx context.Context) ([]string, error) {

@@ -30,9 +30,27 @@ type Pi struct {
 }
 
 // NewPi wires the pi subprocess manager; command is the argv to run (nil = the
-// built-in fake pi: this binary invoked with the fakepi subcommand).
-func NewPi(command []string, notices *Spool) *Pi {
-	return &Pi{notices: notices, command: command}
+// built-in fake pi: this binary invoked with the fakepi subcommand). The
+// session-pinned pi session id (spec #245 E3, issue #249) and its PVC
+// session dir ride the controller-threaded environment; an empty session id
+// leaves the argv unchanged (built-in fake pi, local runs).
+func NewPi(command []string, notices *Spool, sessionID, sessionDir string) *Pi {
+	return &Pi{notices: notices, command: piArgv(command, sessionID, sessionDir)}
+}
+
+// piArgv appends the pi resume flags to the command line when a session-pinned
+// session id is configured: --session-dir <dir> --session-id <id>. The dir
+// defaults to the sandbox PVC path when unset alongside a pinned id.
+func piArgv(command []string, sessionID, sessionDir string) []string {
+	if sessionID == "" {
+		return command
+	}
+	if sessionDir == "" {
+		sessionDir = "/sandbox/kape/sessions"
+	}
+	out := make([]string, 0, len(command)+4)
+	out = append(out, command...)
+	return append(out, "--session-dir", sessionDir, "--session-id", sessionID)
 }
 
 // Start launches pi and its stdout/stderr relay pumps. pi_running flips true.
