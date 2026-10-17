@@ -344,23 +344,35 @@ func (m *AgentManager) armPendingRevive(agent *Agent) {
 // closed as an unsettled revive-settle (running → idle) so the session can
 // accept a new prompt — no auto-reinject (spec #245 E7): the host re-sends.
 // The controller-synthesized settle carries revive_settled:true in the log.
+// completeRevive finishes a revive on the first successful pull of the
+// replacement sandbox: paused → running, then the lost in-flight turn is
+// closed as an unsettled revive-settle (running → idle) so the session can
+// accept a new prompt — no auto-reinject (spec #245 E7): the host re-sends.
+// The controller-synthesized settle carries revive_settled:true in the log.
+// The whole flip-check-transition sequence runs under reviveMu so a
+// concurrent Resume cannot slip its paused-state check between the fold read
+// and the ledger-closing agent.revived (the complete-vs-resume pair of the
+// revive lock's contract; no caller of completeRevive holds reviveMu).
 func (m *AgentManager) completeRevive(agent *Agent) {
+	agent.reviveMu.Lock()
 	agent.mu.Lock()
 	pending := agent.pendingRevive
 	agent.pendingRevive = false
 	agent.mu.Unlock()
+	if pending && agent.fsm.State() == SessionPaused {
+		if err := agent.fsm.Transition(SessionRunning, lifecycleRevived, nil); err != nil {
+			log.Printf("[agent %s] record revived failed: %v", agent.ID, err)
+			pending = false
+		} else if err := agent.fsm.Transition(SessionIdle, lifecycleSettled, map[string]interface{}{"revive_settled": true}); err != nil {
+			log.Printf("[agent %s] record revive-settle failed: %v", agent.ID, err)
+		}
+	} else if pending {
+		// revived elsewhere (or re-paused by a fresh death): nothing to complete
+		pending = false
+	}
+	agent.reviveMu.Unlock()
 	if !pending {
 		return
-	}
-	if agent.fsm.State() != SessionPaused {
-		return // revived elsewhere (or re-paused by a fresh death): nothing to complete
-	}
-	if err := agent.fsm.Transition(SessionRunning, lifecycleRevived, nil); err != nil {
-		log.Printf("[agent %s] record revived failed: %v", agent.ID, err)
-		return
-	}
-	if err := agent.fsm.Transition(SessionIdle, lifecycleSettled, map[string]interface{}{"revive_settled": true}); err != nil {
-		log.Printf("[agent %s] record revive-settle failed: %v", agent.ID, err)
 	}
 	agent.mu.Lock()
 	agent.status = StatusReady
@@ -381,6 +393,15 @@ func (m *AgentManager) Resume(ctx context.Context, id string) error {
 		return errNotReady(id, agent.Status())
 	}
 	agent.reviveMu.Lock()
+	// Re-check paused under reviveMu: completeRevive lands agent.revived on
+	// the puller goroutine under the same lock, so a just-revived session
+	// cannot slip a completed attempt between this check and the fold read
+	// below (a second Resume would otherwise reset the budget mid-completion
+	// and double re-arm).
+	if agent.fsm.State() != SessionPaused {
+		agent.reviveMu.Unlock()
+		return errNotReady(id, agent.Status())
+	}
 	led, _ := m.reviveLedgerOf(agent)
 	if led.openAttempt {
 		// A revive attempt is already open (consumed, not yet completed):

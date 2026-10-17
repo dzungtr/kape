@@ -251,6 +251,8 @@ func TestResumeRearmsExhaustedSession(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
+	stopAgentPuller(t, agent) // leaked pullers spin against the daemon seam and flake this test under load
+
 	// First death: the single budgeted revive runs automatically.
 	if err := mgr.Prompt(agent.ID, "turn"); err != nil {
 		t.Fatalf("Prompt: %v", err)
