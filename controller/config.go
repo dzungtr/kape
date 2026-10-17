@@ -201,6 +201,12 @@ type Config struct {
 	SpawnMaxDepth    int // max spawning depth: root=0, subagent=1, sub-subagent=2
 	SpawnMaxChildren int // max children per parent agent
 
+	// Tier-2 revive (issue #251, spec #245 E5): budget per session lifetime
+	// and minimum spacing between revive attempts. Both are controller-env
+	// configurable; the ledger itself is log-derived (revive.go).
+	ReviveMax      int           // max Tier-2 revives per session lifetime (default 3)
+	ReviveCooldown time.Duration // minimum spacing between revive attempts (default 60s)
+
 	ControllerServiceHost string // controller in-cluster service FQDN (D2/D7 deny rule)
 	ControllerServicePort int    // controller in-cluster service port (D2/D7 deny rule)
 
@@ -240,12 +246,14 @@ func DefaultConfig() Config {
 		EventStorePath:        "controller-events.db",
 		Transport:             TransportPull,
 		DaemonCommand:         "kape-daemon", // E2 default; empty = profile-hook fallback (#217)
-		DaemonPort:            "9090", // fixed daemon port (D7)
+		DaemonPort:            "9090",        // fixed daemon port (D7)
 		SandboxNamespace:      "openshell",
 		ControllerServiceHost: "kape-controller.openshell.svc.cluster.local",
 		ControllerServicePort: 8081,
 		SpawnMaxDepth:         2, // D8: root → subagent → sub-subagent
 		SpawnMaxChildren:      8,
+		ReviveMax:             3,                // spec #245 E5: REVIVE_MAX=3 per session lifetime
+		ReviveCooldown:        60 * time.Second, // spec #245 E5: REVIVE_COOLDOWN=60s
 		Monitor: MonitorConfig{
 			Interval:        60 * time.Second, // spec #230 Q2 default
 			SummarizerModel: "~deepseek/deepseek-v4-flash-latest",
@@ -328,6 +336,20 @@ func envConfig(def Config) (Config, error) {
 		}
 		def.SpawnMaxChildren = n
 	}
+	if v := os.Getenv("KAPE_REVIVE_MAX"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return def, fmt.Errorf("KAPE_REVIVE_MAX %q must be a non-negative integer", v)
+		}
+		def.ReviveMax = n
+	}
+	if v := os.Getenv("KAPE_REVIVE_COOLDOWN"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return def, fmt.Errorf("KAPE_REVIVE_COOLDOWN %q must be a non-negative integer number of seconds", v)
+		}
+		def.ReviveCooldown = time.Duration(n) * time.Second
+	}
 	if v := os.Getenv("KAPE_MONITOR_INTERVAL_SECONDS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -389,6 +411,15 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DaemonCommand, "daemon-command", c.DaemonCommand, "space-separated canonical main process argv (env KAPE_DAEMON_COMMAND); empty disables")
 	fs.IntVar(&c.SpawnMaxDepth, "spawn-max-depth", c.SpawnMaxDepth, "max spawning depth, root=0 (env KAPE_SPAWN_MAX_DEPTH)")
 	fs.IntVar(&c.SpawnMaxChildren, "spawn-max-children", c.SpawnMaxChildren, "max children per parent agent (env KAPE_SPAWN_MAX_CHILDREN)")
+	fs.IntVar(&c.ReviveMax, "revive-max", c.ReviveMax, "max Tier-2 revives per session lifetime (env KAPE_REVIVE_MAX)")
+	fs.Func("revive-cooldown-seconds", "minimum spacing between Tier-2 revive attempts (env KAPE_REVIVE_COOLDOWN)", func(v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("revive-cooldown-seconds %q must be a non-negative integer", v)
+		}
+		c.ReviveCooldown = time.Duration(n) * time.Second
+		return nil
+	})
 	fs.Func("resources", "default resources JSON {\"cpu\":...,\"memory\":...} (env KAPE_DEFAULT_RESOURCES)", func(v string) error {
 		var r Resources
 		if err := json.Unmarshal([]byte(v), &r); err != nil {

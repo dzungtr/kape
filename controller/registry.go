@@ -305,8 +305,13 @@ func ReplayAgentStatus(evs []Event) AgentStatus {
 			status = StatusReady
 		case lifecycleTurnStarted:
 			status = StatusWorking
-		case lifecycleFailed:
+		case lifecycleFailed, lifecyclePaused:
+			// paused (issue #251) implies liveness failure: the sandbox instance
+			// that died is gone; the replacement is a new one.
 			status = StatusFailed
+		case lifecycleRevived:
+			// The replacement sandbox is serving (daemon.boot + first pull).
+			status = StatusReady
 		case lifecycleTerminated:
 			status = StatusTerminated
 		}
@@ -424,7 +429,16 @@ func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
 			a.cancel = cancel
 			a.pullTransport = true
-			go m.runPuller(a, ctx)
+			if state == SessionPaused {
+				// Tier-2 revive (issue #251): a paused session's revive is
+				// re-driven from the replayed state. An open attempt (a
+				// revive_consumed with no agent.revived after it) resumes the
+				// hold without spending budget again; otherwise a fresh attempt
+				// is spent against the replayed ledger.
+				go m.reviveFromPaused(a, ctx)
+			} else {
+				go m.runPuller(a, ctx)
+			}
 		}
 		// Restart re-arm (issue #232): a replayed agent whose projected state
 		// is running gets its monitor timer re-armed from the replayed state —

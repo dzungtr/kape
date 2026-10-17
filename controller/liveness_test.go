@@ -77,10 +77,14 @@ func TestPartitionSameBootIDResumesNoDurableEvents(t *testing.T) {
 	_ = mgr
 }
 
-// --- AC: daemon restart mid-turn (new boot_id, pi_running:false) → spool
-// drained → daemon.boot appended → liveness failed, session FSM stays running ---
+// --- AC (issue #251): daemon restart mid-turn (new boot_id, pi_running:false)
+// → spool drained → session paused (budget spent) → replacement daemon up
+// → daemon.boot + first successful pull → paused → running; the lost turn is
+// closed unsettled (no auto-reinject, E7). The pause window is transient
+// against an always-reachable fake daemon, so the flow is observed through
+// the durable event sequence. ---
 
-func TestDaemonDeathDrainThenBootEventThenFailed(t *testing.T) {
+func TestDaemonDeathWhileRunningPausesThenRevives(t *testing.T) {
 	mgr, _, d, agent := pullTestAgent(t)
 
 	if err := mgr.Prompt(agent.ID, "lost turn"); err != nil {
@@ -95,18 +99,36 @@ func TestDaemonDeathDrainThenBootEventThenFailed(t *testing.T) {
 	d.SetPiRunning(false)
 	d.FailNext(2) // failure streak triggers the reconnect preflight
 
-	// Drain-then-mark: the spool's remaining records (none beyond the
-	// partial history above — append one more to prove the drain) then
-	// daemon.boot, then failed.
+	// Drain-then-pause-then-revive: the spool's remaining records (append
+	// one more to prove the drain) then the revive sequence.
 	d.Append(`{"type":"text_delta","turn_id":"t-1","text":"partial"}`)
-	waitFor(t, func() bool { return agent.Status() == StatusFailed }, "failed after daemon death")
+	waitFor(t, func() bool { return agent.Status() == StatusReady && agent.fsm.State() == SessionIdle }, "revived to idle")
 
 	// Partial lost-turn record = honest history: drained into the log.
 	evs := agent.hub.Events()
 	if got := eventsOfType(evs, "text_delta"); len(got) != 1 {
 		t.Fatalf("drained text_delta records = %d, want 1", len(got))
 	}
-	// The durable daemon.boot event carries the new boot identity.
+	pauses := eventsOfType(evs, lifecyclePaused)
+	if len(pauses) != 1 {
+		t.Fatalf("agent.paused events = %d, want 1", len(pauses))
+	}
+	var pfields struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(pauses[0].Data, &pfields); err != nil || pfields.Reason == "" {
+		t.Fatalf("agent.paused payload = %s (%v), want a reason", pauses[0].Data, err)
+	}
+	consumed := eventsOfType(evs, reviveConsumedEventType)
+	if len(consumed) != 1 {
+		t.Fatalf("revive_consumed events = %d, want 1", len(consumed))
+	}
+	var cfields struct {
+		Attempt int `json:"attempt"`
+	}
+	if err := json.Unmarshal(consumed[0].Data, &cfields); err != nil || cfields.Attempt != 1 {
+		t.Fatalf("revive_consumed payload = %s (%v), want attempt 1", consumed[0].Data, err)
+	}
 	boots := eventsOfType(evs, daemonBootEventType)
 	if len(boots) != 1 {
 		t.Fatalf("daemon.boot events = %d, want 1", len(boots))
@@ -119,21 +141,30 @@ func TestDaemonDeathDrainThenBootEventThenFailed(t *testing.T) {
 		t.Fatalf("daemon.boot data: %v", err)
 	}
 	if fields.BootID != "boot-next" || fields.PiRunning {
-		t.Fatalf("daemon.boot payload = %s, want boot_id boot-next, pi_running false", boots[0].Data)
+		t.Fatalf("daemon.boot payload = %s, want boot_id boot-next", boots[0].Data)
 	}
-	// Liveness failed; the session FSM stays running (no failed state; the
-	// turn never settled).
-	if agent.fsm.State() != SessionRunning {
-		t.Fatalf("session state after daemon death = %s, want running", agent.fsm.State())
+	if got := eventsOfType(evs, lifecycleRevived); len(got) != 1 {
+		t.Fatalf("agent.revived events = %d, want 1", len(got))
 	}
-	// Recovery is Delete → terminated only: no new puller work after death.
-	d.Append(`{"type":"agent_settled","turn_id":"t-1"}`)
-	if err := mgr.Delete(context.Background(), agent.ID); err != nil {
-		t.Fatalf("Delete on failed agent: %v", err)
+	settles := eventsOfType(evs, lifecycleSettled)
+	if len(settles) != 1 {
+		t.Fatalf("agent.settled events = %d, want 1 (revive-settle)", len(settles))
 	}
-	if agent.Status() != StatusTerminated || agent.fsm.State() != SessionTerminated {
-		t.Fatalf("after Delete: status %s session %s, want terminated/terminated", agent.Status(), agent.fsm.State())
+	var sfields struct {
+		ReviveSettled bool `json:"revive_settled"`
 	}
+	if err := json.Unmarshal(settles[0].Data, &sfields); err != nil || !sfields.ReviveSettled {
+		t.Fatalf("revive-settle payload = %s (%v), want revive_settled true", settles[0].Data, err)
+	}
+	// The session accepts a new prompt after the revive (the lost turn was
+	// closed; the host re-sends per E7).
+	if err := mgr.Prompt(agent.ID, "after revive"); err != nil {
+		t.Fatalf("Prompt after revive: %v", err)
+	}
+	if agent.Status() != StatusWorking {
+		t.Fatalf("status after post-revive prompt = %s, want working", agent.Status())
+	}
+	_ = mgr
 }
 
 // --- AC: daemon.boot ignored by session replay; liveness failed rebuilds
@@ -151,6 +182,7 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 
 	d := newFakeDaemon()
 	cfg := pullTestConfig(httptest.NewServer(nil))
+	cfg.ReviveMax = 0 // exhausted at birth: death → paused, no revive hold
 	gw := NewFakeGateway()
 	mgr := NewAgentManager(gw, cfg, store)
 	mgr.daemon = daemonClientFor(d.handler())
@@ -166,9 +198,7 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 	d.SetBootID("boot-next")
 	d.SetPiRunning(false)
 	d.FailNext(2)
-	waitFor(t, func() bool { return agent.Status() == StatusFailed }, "failed after daemon death")
-	beforeSession := agent.fsm.State()
-	beforeStatus := agent.Status()
+	waitFor(t, func() bool { return agent.Status() == StatusFailed && agent.fsm.State() == SessionPaused }, "paused + failed after daemon death (budget exhausted)")
 	if err := store.Close(); err != nil {
 		t.Fatalf("close store (SIGKILL): %v", err)
 	}
@@ -183,7 +213,9 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 		LabelManagedBy: ManagedByValue,
 		LabelAgentID:   agent.ID,
 	}, 0)
-	mgr2 := NewAgentManager(gw2, cfg, reopened)
+	cfg2 := cfg
+	cfg2.ReviveMax = 3 // the operator raised the cap across the restart
+	mgr2 := NewAgentManager(gw2, cfg2, reopened)
 	mgr2.daemon = daemonClientFor(d.handler())
 	if err := mgr2.RebuildFromLog(context.Background()); err != nil {
 		t.Fatalf("RebuildFromLog: %v", err)
@@ -192,22 +224,24 @@ func TestDaemonDeathReplayLandsOnIdenticalState(t *testing.T) {
 	if reborn == nil {
 		t.Fatal("replayed agent not registered")
 	}
-	// Liveness failed rebuilds from the log alone (agent.failed).
-	if reborn.Status() != beforeStatus || beforeStatus != StatusFailed {
-		t.Fatalf("replayed status = %s, want failed", reborn.Status())
+	// The replayed paused session auto-revives while budget remains (the
+	// revive automation is log-driven, so a restart re-drives it): the
+	// replacement daemon is reachable → paused → running → revive-settle.
+	d.SetPiRunning(true)
+	waitFor(t, func() bool { return reborn.Status() == StatusReady && reborn.fsm.State() == SessionIdle }, "replayed revive completes")
+	evs := reborn.hub.Events()
+	if got := eventsOfType(evs, reviveConsumedEventType); len(got) != 1 {
+		t.Fatalf("revive_consumed events = %d, want 1 (fresh attempt against the replayed ledger)", len(got))
 	}
-	// Session replay ignores daemon.boot: state is identical post-restart.
-	if reborn.fsm.State() != beforeSession || beforeSession != SessionRunning {
-		t.Fatalf("replayed session = %s, want running (daemon.boot ignored)", reborn.fsm.State())
+	if got := eventsOfType(evs, lifecycleRevived); len(got) != 1 {
+		t.Fatalf("agent.revived events = %d, want 1", len(got))
+	}
+	if got := eventsOfType(evs, daemonBootEventType); len(got) != 1 {
+		t.Fatalf("daemon.boot events = %d, want 1", len(got))
 	}
 	// Replayed views are never degraded (transient flag is not durable).
 	if degradedView(reborn).Degraded {
 		t.Fatal("replayed agent reported degraded; the flag must be transient")
-	}
-	// The rebuilt view still carries the failed liveness and the recorded
-	// daemon.boot stays in the log.
-	if got := eventsOfType(reborn.hub.Events(), daemonBootEventType); len(got) != 1 {
-		t.Fatalf("replayed daemon.boot events = %d, want 1", len(got))
 	}
 }
 

@@ -56,6 +56,12 @@ controller:
     openrouterApiKey:
       secretRef: ""
       key: OPENROUTER_API_KEY
+  # Tier-2 revive (issue #251, spec #245 E5). Env names map 1:1 to
+  # controller/config.go envConfig (KAPE_REVIVE_*). max = revives per
+  # session lifetime; cooldownSeconds = minimum spacing between attempts.
+  revive:
+    max: 3
+    cooldownSeconds: 60
 
 operator:
   image:
