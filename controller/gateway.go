@@ -70,7 +70,8 @@ type SandboxInfo struct {
 type Gateway struct {
 	client          v1.OpenShellClient
 	modelGatewayURL string // base URL patched into the pi wrapper's models.json
-	daemonToken     string // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
+	daemonToken     string   // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
+	daemonCommand   []string // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
 }
 
 func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
@@ -87,6 +88,17 @@ func (g *Gateway) WithDaemonToken(token string) *Gateway {
 	return g
 }
 
+// WithDaemonCommand sets the canonical main process argv passed as
+// SandboxSpec.command on every created sandbox (issue #247, spec #245 E2):
+// the OpenShell supervisor launches it directly, no shell parsing, so daemon
+// lifetime == sandbox lifetime. Nil/empty keeps the request without a
+// command (gateway default main process — the #217 profile-hook fallback
+// posture).
+func (g *Gateway) WithDaemonCommand(argv []string) *Gateway {
+	g.daemonCommand = argv
+	return g
+}
+
 // CreateSandbox creates a sandbox running the pi image with the named
 // provider attached, the requested resources, stamped with the ownership
 // labels (managed-by, agent-id) that back the label registry. piSessionID is
@@ -94,6 +106,38 @@ func (g *Gateway) WithDaemonToken(token string) *Gateway {
 // the daemon environment so the sandbox's pi resumes the session's tree.
 // Returns name and id.
 func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (string, string, error) {
+	req := createSandboxRequest(name, image, provider, resources, labels, g.daemonEnv(labels, piSessionID), g.daemonCommand)
+	resp, err := g.client.CreateSandbox(ctx, req)
+	if err != nil {
+		return "", "", fmt.Errorf("CreateSandbox: %w", err)
+	}
+	return resp.Sandbox.Metadata.Name, resp.Sandbox.Metadata.Id, nil
+}
+
+// daemonEnv is the pull-transport environment (ADR-0083 D5/D7): the daemon's
+// placeholder bearer check needs the token the controller will present on
+// every pull/command; the session-pinned pi session id (spec #245 E3, #249)
+// rides the same template environment. No command, no token, and no pinned id
+// (exec break-glass) leaves sandbox creation byte-identical.
+func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[string]string {
+	env := sandboxEnv(g.daemonToken, labels[LabelAgentID], piSessionID)
+	if g.daemonCommand != nil {
+		// Main-process daemon (issue #247): no profile hook runs, so the PVC
+		// spool path (#217 finding: spool lives under /sandbox) must be
+		// injected here — the daemon's compiled default (/var/lib/kape-daemon)
+		// is not writable by the sandbox uid (verified live on microk8s).
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["KAPE_SPOOL_PATH"] = "/sandbox/kape-daemon-spool.jsonl"
+	}
+	return env
+}
+
+// createSandboxRequest builds the CreateSandboxRequest payload; split out of
+// CreateSandbox so the E2 wire contract (command threading, field 12) is
+// unit-testable without a gRPC server.
+func createSandboxRequest(name, image, provider string, resources Resources, labels map[string]string, env map[string]string, command []string) *v1.CreateSandboxRequest {
 	req := &v1.CreateSandboxRequest{
 		Name:   name,
 		Labels: labels,
@@ -110,17 +154,16 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 			},
 		},
 	}
-	// Pull transport (ADR-0083 D5/D7): the daemon's placeholder bearer check
-	// needs the token the controller will present on every pull/command; the
-	// session-pinned pi id (issue #249) rides the same template environment.
-	if env := sandboxEnv(g.daemonToken, labels[LabelAgentID], piSessionID); len(env) > 0 {
+	// Spec #245 E2: canonical main process — the sandbox supervisor launches
+	// this argv directly (no shell parsing), making daemon lifetime equal the
+	// sandbox lifetime.
+	if len(command) > 0 {
+		req.Spec.Command = command
+	}
+	if env != nil {
 		req.Spec.Template.Environment = env
 	}
-	resp, err := g.client.CreateSandbox(ctx, req)
-	if err != nil {
-		return "", "", fmt.Errorf("CreateSandbox: %w", err)
-	}
-	return resp.Sandbox.Metadata.Name, resp.Sandbox.Metadata.Id, nil
+	return req
 }
 
 // sandboxEnv builds the sandbox template environment for a new sandbox: the
