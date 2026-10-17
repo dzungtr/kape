@@ -55,7 +55,7 @@ func TestPiAbortEmptyQueueCommandPair(t *testing.T) {
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", "while read line; do echo \"$line\"; done"}, spool)
+	pi := NewPi([]string{"sh", "-c", "while read line; do echo \"$line\"; done"}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -106,7 +106,7 @@ done`
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -184,7 +184,7 @@ done`
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestPiStandaloneClearQueueForwardedUnpaired(t *testing.T) {
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", "while read line; do echo \"$line\"; done"}, spool)
+	pi := NewPi([]string{"sh", "-c", "while read line; do echo \"$line\"; done"}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -260,7 +260,7 @@ done`
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
