@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,42 @@ func TestPiArgvSessionPinning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The controller always threads a pinned id, so a daemon without
+// KAPE_PI_COMMAND (built-in fake pi) would otherwise exec a flags-only argv
+// ("--session-dir ...") and die at boot — found in the live smoke #249.
+// Built-in fake pi must stay argv-compatible with the session flags.
+func TestFakePiSessionFlagsStartsSelf(t *testing.T) {
+	spool, err := NewSpool(filepath.Join(t.TempDir(), "spool.jsonl"), 100)
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	defer spool.Close() //nolint:errcheck
+	pi := NewPi(nil, spool, "kape-cafe", "")
+	if err := pi.Start(); err != nil {
+		t.Fatalf("start pi (no command, pinned id): %v", err)
+	}
+	if !pi.Running() {
+		t.Fatal("pi not running after start")
+	}
+	// fakepi emits the deterministic turn on a prompt; a flags-only argv
+	// would have exited immediately with a pi_exit failure.
+	ctx := context.Background()
+	if err := pi.SendCommand(ctx, Command{Type: CommandPrompt, ID: "p1", Payload: json.RawMessage(`{"message":"hi"}`)}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		recs := spool.Read(0, 0)
+		for _, rec := range recs {
+			if strings.Contains(string(rec.Data), "turn_started") {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("fakepi never emitted turn_started; session flags broke the built-in fake pi argv")
 }
 
 // External behavior: pi receives the session-pinning flags on its command
