@@ -1,0 +1,32 @@
+# daemon smoke image for the session-pinned resume live smoke (issue #249):
+# same layered build as Dockerfile.smoke (#217) — daemon started from the
+# login-shell profile hook (Epic 2 posture; canonical main-process startup is
+# #257's seam and is NOT threaded on this branch) — with real pi (spike #246
+# posture): KAPE_PI_COMMAND points at the image's pi CLI, so the daemon
+# threads the session-pinned --session-dir/--session-id flags (E3) onto a
+# real pi that writes its session tree under /sandbox/kape/sessions (the
+# openshell workspace PVC, mounted at /sandbox — verified live, #249).
+FROM golang:1.25.10-alpine AS builder
+WORKDIR /src
+COPY daemon/go.mod ./
+RUN true
+COPY daemon/ .
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/daemon .
+
+FROM ghcr.io/dzungtr/pi-openshell:openrouter
+COPY --from=builder /out/daemon /daemon
+# The openshell k8s compute driver overrides the workload container command
+# with the sandbox supervisor (main process: bash -l), so the daemon is
+# started from a login-shell profile (#217). It must bind 0.0.0.0: the
+# controller reaches it on the pod IP (status.podIPs, #214).
+# no chmod: rootless buildah cannot set mode bits; /etc/profile sources
+# profile.d files, executability is not required.
+COPY daemon/kape-daemon-profile.sh /etc/profile.d/kape-daemon.sh
+COPY --from=builder /out/daemon /usr/local/bin/kape-daemon
+COPY --from=builder /out/daemon /opt/openshell/bin/kape-daemon
+ENV KAPE_DAEMON_ADDR=0.0.0.0:9090
+# Real pi in RPC mode: the daemon appends --session-dir /sandbox/kape/sessions
+# --session-id <pinned> to this argv (KAPE_PI_SESSION_ID is threaded by the
+# controller at create). Autostart so pi writes the session tree at boot.
+ENV KAPE_PI_COMMAND=/usr/bin/pi,--mode,rpc
+ENV KAPE_PI_AUTOSTART=1

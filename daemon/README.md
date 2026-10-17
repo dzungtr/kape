@@ -25,6 +25,8 @@ heartbeat.
 | `KAPE_SPOOL_PATH` | `/var/lib/kape-daemon/spool.jsonl` | PVC spool file |
 | `KAPE_SPOOL_MAX_RECORDS` | `10000` | cap; oldest dropped with a `spool_truncated` notice |
 | `KAPE_PI_COMMAND` | — | pi argv (comma-separated); empty ⇒ built-in fake pi |
+| `KAPE_PI_SESSION_ID` | — | session-pinned pi `--session-id` (spec #245 E3, issue #249); threaded by the controller at create; empty ⇒ no session flags (built-in fake pi) |
+| `KAPE_PI_SESSION_DIR` | `/sandbox/kape/sessions` | pi `--session-dir` (PVC session tree; used only with a pinned session id) |
 
 ## Records and notices
 

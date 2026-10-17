@@ -31,8 +31,8 @@ type FakeGateway struct {
 	requests         []CreateRequest
 	controllerDenies []ControllerDeny
 	// denyErr, when set, is returned by ApplyControllerEgressDeny.
-	denyErr error
-	piModels         []string
+	denyErr  error
+	piModels []string
 	// stream, if set, is returned by every StartPi call.
 	stream *FakeStream
 }
@@ -46,11 +46,11 @@ func NewFakeGateway() *FakeGateway {
 	}
 }
 
-func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (string, string, error) {
+func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, name)
-	f.requests = append(f.requests, CreateRequest{Name: name, Image: image, Provider: provider, Resources: resources})
+	f.requests = append(f.requests, CreateRequest{Name: name, Image: image, Provider: provider, Resources: resources, PiSessionID: piSessionID})
 	f.phase[name] = f.initialPhase
 	if labels == nil {
 		labels = map[string]string{}
@@ -61,10 +61,11 @@ func (f *FakeGateway) CreateSandbox(ctx context.Context, name, image, provider s
 
 // CreateRequest records one CreateSandbox call for assertions on overrides.
 type CreateRequest struct {
-	Name      string
-	Image     string
-	Provider  string
-	Resources Resources
+	Name        string
+	Image       string
+	Provider    string
+	Resources   Resources
+	PiSessionID string
 }
 
 // CreatedRequests returns the recorded CreateSandbox requests.

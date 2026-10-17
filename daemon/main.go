@@ -26,6 +26,8 @@ type Config struct {
 	SpoolPath    string
 	SpoolMaxRecs int
 	PiCommand    []string
+	PiSessionID  string
+	PiSessionDir string
 }
 
 // bootID is a fresh random id per daemon start (ADR-0083 D6): partitions keep
@@ -53,6 +55,7 @@ func parseConfig(args []string) Config {
 		Token:        env("KAPE_DAEMON_TOKEN", ""),
 		SpoolPath:    env("KAPE_SPOOL_PATH", "/var/lib/kape-daemon/spool.jsonl"),
 		SpoolMaxRecs: 10000,
+		PiSessionDir: env("KAPE_PI_SESSION_DIR", "/sandbox/kape/sessions"),
 	}
 	piCmd := env("KAPE_PI_COMMAND", "")
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
@@ -61,6 +64,8 @@ func parseConfig(args []string) Config {
 	fs.StringVar(&cfg.Token, "token", cfg.Token, "static bearer token placeholder (empty: all requests 401)")
 	fs.StringVar(&cfg.SpoolPath, "spool-path", cfg.SpoolPath, "PVC spool file")
 	fs.IntVar(&cfg.SpoolMaxRecs, "spool-max-records", cfg.SpoolMaxRecs, "spool cap before truncation")
+	fs.StringVar(&cfg.PiSessionID, "pi-session-id", env("KAPE_PI_SESSION_ID", ""), "session-pinned pi --session-id (spec #245 E3); empty = no session flags")
+	fs.StringVar(&cfg.PiSessionDir, "pi-session-dir", cfg.PiSessionDir, "pi --session-dir (PVC session tree)")
 	fs.StringVar(&piCmd, "pi-command", piCmd, "pi subprocess argv (comma-separated); empty = built-in fake pi")
 	_ = fs.Parse(args)
 	if piCmd != "" {
@@ -93,7 +98,7 @@ func run(cfg Config) error {
 		return err
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi(cfg.PiCommand, spool)
+	pi := NewPi(cfg.PiCommand, spool, cfg.PiSessionID, cfg.PiSessionDir)
 	if piAutostart() {
 		if err := pi.Start(); err != nil {
 			return fmt.Errorf("start pi: %w", err)

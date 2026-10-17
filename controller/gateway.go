@@ -30,7 +30,7 @@ type GatewayClient interface {
 	// CreateSandbox creates a sandbox running the given image with the named
 	// provider attached, the given resources, stamped with the given
 	// ownership labels. Returns the canonical name and gateway UUID.
-	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (sandboxName, sandboxID string, err error)
+	CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (sandboxName, sandboxID string, err error)
 	// GetSandboxPhase polls the sandbox phase (used to detect READY and ERROR).
 	GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error)
 	// ListSandboxes returns the sandboxes matching the label selector
@@ -101,9 +101,12 @@ func (g *Gateway) WithDaemonCommand(argv []string) *Gateway {
 
 // CreateSandbox creates a sandbox running the pi image with the named
 // provider attached, the requested resources, stamped with the ownership
-// labels (managed-by, agent-id) that back the label registry. Returns name and id.
-func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string) (string, string, error) {
-	req := createSandboxRequest(name, image, provider, resources, labels, g.daemonEnv(labels), g.daemonCommand)
+// labels (managed-by, agent-id) that back the label registry. piSessionID is
+// the session-pinned pi --session-id (spec #245 E3, issue #249) threaded into
+// the daemon environment so the sandbox's pi resumes the session's tree.
+// Returns name and id.
+func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (string, string, error) {
+	req := createSandboxRequest(name, image, provider, resources, labels, g.daemonEnv(labels, piSessionID), g.daemonCommand)
 	resp, err := g.client.CreateSandbox(ctx, req)
 	if err != nil {
 		return "", "", fmt.Errorf("CreateSandbox: %w", err)
@@ -113,22 +116,19 @@ func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider strin
 
 // daemonEnv is the pull-transport environment (ADR-0083 D5/D7): the daemon's
 // placeholder bearer check needs the token the controller will present on
-// every pull/command. Empty token (exec break-glass) leaves sandbox creation
-// byte-identical.
-func (g *Gateway) daemonEnv(labels map[string]string) map[string]string {
-	if g.daemonCommand == nil && g.daemonToken == "" {
-		return nil
-	}
-	env := map[string]string{}
-	if g.daemonToken != "" {
-		env["KAPE_DAEMON_TOKEN"] = g.daemonToken
-		env["KAPE_AGENT_ID"] = labels[LabelAgentID]
-	}
+// every pull/command; the session-pinned pi session id (spec #245 E3, #249)
+// rides the same template environment. No command, no token, and no pinned id
+// (exec break-glass) leaves sandbox creation byte-identical.
+func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[string]string {
+	env := sandboxEnv(g.daemonToken, labels[LabelAgentID], piSessionID)
 	if g.daemonCommand != nil {
 		// Main-process daemon (issue #247): no profile hook runs, so the PVC
 		// spool path (#217 finding: spool lives under /sandbox) must be
 		// injected here — the daemon's compiled default (/var/lib/kape-daemon)
 		// is not writable by the sandbox uid (verified live on microk8s).
+		if env == nil {
+			env = map[string]string{}
+		}
 		env["KAPE_SPOOL_PATH"] = "/sandbox/kape-daemon-spool.jsonl"
 	}
 	return env
@@ -164,6 +164,25 @@ func createSandboxRequest(name, image, provider string, resources Resources, lab
 		req.Spec.Template.Environment = env
 	}
 	return req
+}
+
+// sandboxEnv builds the sandbox template environment for a new sandbox: the
+// daemon token + agent id (pull transport credential, ADR-0083 D5/D7) and the
+// session-pinned pi session id (spec #245 E3, issue #249). Empty values stay
+// out of the map; an empty result keeps creation byte-identical.
+func sandboxEnv(token, agentID, piSessionID string) map[string]string {
+	env := map[string]string{}
+	if token != "" {
+		env["KAPE_DAEMON_TOKEN"] = token
+		env["KAPE_AGENT_ID"] = agentID
+	}
+	if piSessionID != "" {
+		env["KAPE_PI_SESSION_ID"] = piSessionID
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func (g *Gateway) ListProviders(ctx context.Context) ([]string, error) {

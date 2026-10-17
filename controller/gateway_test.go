@@ -27,7 +27,7 @@ func TestCreateSandboxRequest_ThreadsDaemonCommand(t *testing.T) {
 
 func TestDaemonEnv_MainProcessInjection(t *testing.T) {
 	gw := (&Gateway{}).WithDaemonCommand([]string{"kape-daemon"}).WithDaemonToken("t")
-	env := gw.daemonEnv(map[string]string{LabelAgentID: "agent-1"})
+	env := gw.daemonEnv(map[string]string{LabelAgentID: "agent-1"}, "")
 	if env["KAPE_DAEMON_TOKEN"] != "t" || env["KAPE_AGENT_ID"] != "agent-1" {
 		t.Fatalf("token/agent env missing: %v", env)
 	}
@@ -40,7 +40,7 @@ func TestDaemonEnv_SpoolPathOnlyWhenCommandThreaded(t *testing.T) {
 	// Fallback posture: no command → no main-process env injection beyond
 	// the D5 token channel (unchanged behavior).
 	gw := (&Gateway{}).WithDaemonToken("t")
-	env := gw.daemonEnv(map[string]string{})
+	env := gw.daemonEnv(map[string]string{}, "")
 	if _, ok := env["KAPE_SPOOL_PATH"]; ok {
 		t.Fatalf("KAPE_SPOOL_PATH injected without canonical command: %v", env)
 	}
@@ -48,7 +48,7 @@ func TestDaemonEnv_SpoolPathOnlyWhenCommandThreaded(t *testing.T) {
 		t.Fatalf("token channel lost in fallback posture: %v", env)
 	}
 	// No token and no command → nil env, sandbox creation byte-identical.
-	if env := (&Gateway{}).daemonEnv(map[string]string{}); env != nil {
+	if env := (&Gateway{}).daemonEnv(map[string]string{}, ""); env != nil {
 		t.Fatalf("bare gateway env = %v, want nil", env)
 	}
 }
@@ -72,5 +72,22 @@ func TestCreateSandboxRequest_ProtoFieldNumber(t *testing.T) {
 	}
 	if got := md.Number(); got != 12 {
 		t.Fatalf("command field number = %d, want 12", got)
+	}
+}
+
+func TestDaemonEnv_MergedSessionIDAndSpoolPath(t *testing.T) {
+	// Merge of #255 (E3, issue #249) with #257 (E2, issue #247): the pinned
+	// pi session id rides the D5 token channel (sandboxEnv), and the PVC
+	// spool path is injected only in the canonical main-process posture.
+	gw := (&Gateway{}).WithDaemonCommand([]string{"kape-daemon"}).WithDaemonToken("t")
+	env := gw.daemonEnv(map[string]string{LabelAgentID: "agent-1"}, "kape-1")
+	if env["KAPE_PI_SESSION_ID"] != "kape-1" {
+		t.Fatalf("pinned id channel lost in main-process posture: %v", env)
+	}
+	if env["KAPE_SPOOL_PATH"] != "/sandbox/kape-daemon-spool.jsonl" {
+		t.Fatalf("PVC spool path env missing alongside the pinned id: %v", env)
+	}
+	if env["KAPE_DAEMON_TOKEN"] != "t" || env["KAPE_AGENT_ID"] != "agent-1" {
+		t.Fatalf("token/agent env missing: %v", env)
 	}
 }
