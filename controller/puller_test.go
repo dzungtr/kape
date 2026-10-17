@@ -28,6 +28,8 @@ type fakeDaemon struct {
 	commands []DaemonCommand
 	// failNext makes the next N /records calls fail with 500 (backoff tests).
 	failNext int
+	// statusCalls counts /status requests (revive preflight observability).
+	statusCalls int
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -46,6 +48,9 @@ func (d *fakeDaemon) Append(raw string) DaemonRecord {
 }
 
 func (d *fakeDaemon) FailNext(n int) { d.mu.Lock(); d.failNext = n; d.mu.Unlock() }
+
+// StatusCalls reports how many /status preflight requests reached the daemon.
+func (d *fakeDaemon) StatusCalls() int { d.mu.Lock(); defer d.mu.Unlock(); return d.statusCalls }
 
 func (d *fakeDaemon) Commands() []DaemonCommand {
 	d.mu.Lock()
@@ -111,6 +116,10 @@ func pullTestConfig(_ *httptest.Server) Config {
 	cfg := testConfig() // exec baseline (image/provider overrides)
 	cfg.Transport = TransportPull
 	cfg.DaemonToken = "s3cret"
+	// Tier-2 revive defaults are slow test knobs (60s cooldown); tests that
+	// exercise the cooldown build their own config and inject a fake clock
+	// (revive_test.go).
+	cfg.ReviveCooldown = 0
 	return cfg
 }
 

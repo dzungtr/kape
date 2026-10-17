@@ -83,6 +83,7 @@ var toolContract = map[string]any{
 	"prompt_agent":   promptInput{},
 	"steer_agent":    steerInput{},
 	"abort":          agentIDInput{},
+	"resume_session": agentIDInput{},
 	"stream_events":  streamEventsInput{},
 	"wait_agent":     waitInput{},
 	"read_events":    readEventsInput{},

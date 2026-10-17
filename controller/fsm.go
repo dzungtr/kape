@@ -7,11 +7,10 @@ import (
 )
 
 // SessionState is the session lifecycle FSM state (issue #196): the durable
-// session unit's position in provision → ready ⇄ running ⇄ idle → paused →
-// reviving → ready → terminated. State is never stored as separate truth —
-// it is a projection over the durable event log (EventStore, #195), derived
-// by replaying lifecycle events. paused and reviving are reserved in the
-// vocabulary and unreachable until Epic 3 (#192) wires them.
+// session unit's position in provision → ready ⇄ running ⇄ idle →
+// paused → running (Tier-2 revive, #251) → … → terminated. State is never
+// stored as separate truth — it is a projection over the durable event log
+// (EventStore, #195), derived by replaying lifecycle events.
 type SessionState string
 
 const (
@@ -43,25 +42,40 @@ var sessionEventType = map[string]SessionState{
 	"agent.started":      SessionReady,
 	"agent.turn_started": SessionRunning,
 	"agent.settled":      SessionIdle,
-	"agent.paused":       SessionPaused,   // reserved: emitted only by Epic 3 (#192)
-	"agent.reviving":     SessionReviving, // reserved: emitted only by Epic 3 (#192)
+	lifecyclePaused:      SessionPaused,   // Tier-2 revive death detection (#251, spec #245 E5)
+	lifecycleRevived:     SessionRunning,  // replacement sandbox daemon.boot + first pull (#251)
+	"agent.reviving":     SessionReviving, // reserved: never emitted in M2
 	"agent.terminated":   SessionTerminated,
 }
 
 // sessionTransitions is the FSM transition table: sessionTransitions[from][to]
-// is true when the edge from → to is legal. paused and reviving have rows in
-// the table (paused → reviving, reviving → ready) but no edge reaches paused
-// in this epic (spec #194 Handoffs row), so they stay unreachable until
-// Epic 3 (#192) emits agent.paused/agent.reviving.
+// is true when the edge from → to is legal. Epic 3 (#192, #251) wires the
+// Tier-2 revive edges: running → paused on sandbox death (spec #245 E5),
+// paused → running on daemon.boot + the first successful pull from the
+// replacement sandbox, paused → terminated as the Delete path. reviving stays
+// reserved and unreachable (no event type maps onto it).
+
+// lifecycle event names for the Tier-2 revive edges (#251). agent.paused and
+// agent.revived are full session lifecycle events (ReplaySession projects
+// them); the revive budget ledger rides non-lifecycle events (revive.go).
+const (
+	// lifecyclePaused: the sandbox/daemon died while a turn was in flight and
+	// the session paused for Tier-2 revive (spec #245 E5).
+	lifecyclePaused = "agent.paused"
+	// lifecycleRevived: the replacement sandbox's daemon booted and the first
+	// pull succeeded — the session resumed (paused → running).
+	lifecycleRevived = "agent.revived"
+)
+
 var sessionTransitions = map[SessionState]map[SessionState]bool{
 	SessionProvision: {SessionReady: true, SessionTerminated: true},
 	SessionReady:     {SessionRunning: true, SessionTerminated: true},
-	SessionRunning:   {SessionIdle: true, SessionTerminated: true},
+	SessionRunning:   {SessionIdle: true, SessionPaused: true, SessionTerminated: true},
 	SessionIdle:      {SessionRunning: true, SessionTerminated: true},
-	// paused/reviving rows are reserved for Epic 3 (#192): the table below
-	// already defines the resume edges, but no edge reaches paused in this
-	// epic, so the states are unreachable (issue #196).
-	SessionPaused:     {SessionReviving: true, SessionTerminated: true},
+	// paused is reached by running → paused on sandbox death (#251): the
+	// resume edge (paused → running) fires on daemon.boot + the first
+	// successful pull from the replacement sandbox; Delete terminates.
+	SessionPaused:     {SessionRunning: true, SessionTerminated: true},
 	SessionReviving:   {SessionReady: true, SessionTerminated: true},
 	SessionTerminated: {},
 }

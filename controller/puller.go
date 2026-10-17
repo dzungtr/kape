@@ -52,8 +52,9 @@ func (m *AgentManager) runPuller(agent *Agent, ctx context.Context) {
 	pendingDeath := false
 	for {
 		// Pending daemon death: drain the spool (partial lost-turn records =
-		// honest history), append daemon.boot, then mark failed. Retried on
-		// each cycle until the drain completes or ctx ends.
+		// honest history), then either Tier-2 revive (pause + budget +
+		// replacement hold, issue #251) or the legacy drain-then-mark (#213).
+		// Retried on each cycle until the drain completes or ctx ends.
 		if pendingDeath {
 			if !sleepCtx(ctx, backoff) {
 				return
@@ -62,12 +63,27 @@ func (m *AgentManager) runPuller(agent *Agent, ctx context.Context) {
 			if err != nil {
 				continue
 			}
-			if m.drainSpool(agent, ctx) {
-				m.recordDaemonBoot(agent, st)
-				m.fail(agent, "daemon restarted (new boot_id) and pi not running")
-				return // recovery = Delete → terminated (no failed session state)
+			if !m.drainSpool(agent, ctx) {
+				continue // drain failed; retry next cycle
 			}
-			continue // drain failed; retry next cycle
+			// Tier-2 revive (issue #251, spec #245 E5): a death while a turn is
+			// in flight pauses the session and spends revive budget; daemon.boot
+			// + the first successful pull from the replacement sandbox drive
+			// paused → running. Budget exhausted or replacement unreachable:
+			// the session stays paused + failed; only the re-arm verb revives.
+			if agent.fsm.State() == SessionRunning {
+				if m.pauseAndRevive(agent, ctx) {
+					return
+				}
+				pendingDeath = false
+				backoff = pullBackoffBase
+				continue
+			}
+			// Session not mid-turn (idle/settled): the legacy drain-then-mark
+			// (#213) — revive is pinned to the running → paused edge only.
+			m.recordDaemonBoot(agent, st)
+			m.fail(agent, "daemon restarted (new boot_id) and pi not running")
+			return
 		}
 		// The daemon client is resolved from the Sandbox CR on first use and
 		// re-resolved on every reconnect (issue #214, D7): podIPs churn when
@@ -132,6 +148,9 @@ func (m *AgentManager) runPuller(agent *Agent, ctx context.Context) {
 			}
 			m.onPiRecord(agent, rec.Data)
 		}
+		// Tier-2 revive completion (issue #251): daemon.boot + the first
+		// successful pull from the replacement sandbox drive paused → running.
+		m.completeRevive(agent)
 	}
 }
 
@@ -176,6 +195,15 @@ func (m *AgentManager) bootIDChanged(agent *Agent, bootID string) bool {
 	}
 	agent.bootID = bootID
 	return true
+}
+
+// setBootID overwrites the agent's known daemon boot identity — the revive
+// path stamps the replacement daemon's boot id as the baseline so the
+// puller's next comparison compares against the replacement (issue #251).
+func (m *AgentManager) setBootID(agent *Agent, bootID string) {
+	agent.mu.Lock()
+	agent.bootID = bootID
+	agent.mu.Unlock()
 }
 
 // setDegraded flips the transient degraded liveness flag (issue #213 D6).

@@ -58,6 +58,11 @@ spec:
               value: {{ .Values.controller.monitor.baseUrl | quote }}
             - name: KAPE_MONITOR_TIMEOUT_SECONDS
               value: {{ .Values.controller.monitor.timeoutSeconds | quote }}
+            # Tier-2 revive (issue #251, spec #245 E5).
+            - name: KAPE_REVIVE_MAX
+              value: {{ .Values.controller.revive.max | quote }}
+            - name: KAPE_REVIVE_COOLDOWN
+              value: {{ .Values.controller.revive.cooldownSeconds | quote }}
 {{- if .Values.controller.monitor.openrouterApiKey.secretRef }}
             - name: KAPE_MONITOR_OPENROUTER_API_KEY
               valueFrom:
