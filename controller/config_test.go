@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"testing"
+	"time"
 )
 
 // newTestFlagSet isolates flag parsing from the global CommandLine.
@@ -134,5 +135,103 @@ func TestResolveProfileFieldNamedErrors(t *testing.T) {
 		if !errors.As(err, &fe) || fe.Field != tc.field {
 			t.Fatalf("%s: err = %v, want field=%s", tc.name, err, tc.field)
 		}
+	}
+}
+
+// ---- Monitor config (issue #231) ----
+
+func TestMonitorConfigDefaults(t *testing.T) {
+	m := DefaultConfig().Monitor
+	if m.Interval != 60*time.Second {
+		t.Fatalf("interval = %v, want 60s", m.Interval)
+	}
+	if m.SummarizerModel != "scaledown/summarize" || m.ClassifierModel != "scaledown/classify-1" {
+		t.Fatalf("model ids = %q / %q", m.SummarizerModel, m.ClassifierModel)
+	}
+	if m.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("base URL = %q", m.BaseURL)
+	}
+	if m.Timeout != 5*time.Second {
+		t.Fatalf("timeout = %v, want 5s", m.Timeout)
+	}
+	if m.APIKey != "" {
+		t.Fatalf("APIKey default = %q, want empty", m.APIKey)
+	}
+}
+
+func TestMonitorDisabledOnEmptyKey(t *testing.T) {
+	var m MonitorConfig
+	if m.Enabled() {
+		t.Fatalf("empty key must disable the monitor")
+	}
+	m.APIKey = "  "
+	if !m.Enabled() {
+		t.Fatalf("whitespace key counts as set (disable semantics = empty string only)")
+	}
+	m.APIKey = ""
+	if m.Enabled() {
+		t.Fatalf("monitor enabled without key")
+	}
+}
+
+func TestMonitorEnvOverrides(t *testing.T) {
+	t.Setenv("KAPE_MONITOR_INTERVAL_SECONDS", "30")
+	t.Setenv("KAPE_MONITOR_SUMMARIZER_MODEL", "fb/sum")
+	t.Setenv("KAPE_MONITOR_CLASSIFIER_MODEL", "fb/cls")
+	t.Setenv("KAPE_MONITOR_BASE_URL", "http://gw.internal/api/v1")
+	t.Setenv("KAPE_MONITOR_OPENROUTER_API_KEY", "sk-live")
+	t.Setenv("KAPE_MONITOR_TIMEOUT_SECONDS", "3")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	m := cfg.Monitor
+	if m.Interval != 30*time.Second || m.Timeout != 3*time.Second {
+		t.Fatalf("durations = %v / %v", m.Interval, m.Timeout)
+	}
+	if m.SummarizerModel != "fb/sum" || m.ClassifierModel != "fb/cls" || m.BaseURL != "http://gw.internal/api/v1" {
+		t.Fatalf("overrides not applied: %+v", m)
+	}
+	if !m.Enabled() {
+		t.Fatalf("monitor disabled despite key")
+	}
+}
+
+func TestMonitorBadEnvRejected(t *testing.T) {
+	t.Setenv("KAPE_MONITOR_INTERVAL_SECONDS", "zero")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatalf("bad interval accepted")
+	}
+}
+
+func TestMonitorValidateEnablesBaseURLCheck(t *testing.T) {
+	cfg := testConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config invalid: %v", err)
+	}
+	cfg.Monitor.APIKey = "sk"
+	cfg.Monitor.BaseURL = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("enabled monitor with empty base URL accepted")
+	}
+	// Disabled monitor (empty key) never fails validation — missing key must
+	// not break anything else.
+	cfg.Monitor.APIKey = ""
+	cfg.Monitor.BaseURL = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled monitor broke validation: %v", err)
+	}
+}
+
+func TestMonitorFlagsRegistered(t *testing.T) {
+	cfg := testConfig()
+	fs := newTestFlagSet()
+	cfg.RegisterFlags(fs)
+	if err := fs.Parse([]string{"--monitor-interval-seconds", "120", "--monitor-openrouter-api-key", "sk-f", "--monitor-timeout-seconds", "7"}); err != nil {
+		t.Fatalf("flag parse: %v", err)
+	}
+	if cfg.Monitor.Interval != 120*time.Second || cfg.Monitor.APIKey != "sk-f" || cfg.Monitor.Timeout != 7*time.Second {
+		t.Fatalf("flag overrides not applied: %+v", cfg.Monitor)
 	}
 }

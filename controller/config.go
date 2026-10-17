@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Validation sentinel + per-field error: transports map ErrValidation to 400
@@ -201,7 +202,29 @@ type Config struct {
 
 	ControllerServiceHost string // controller in-cluster service FQDN (D2/D7 deny rule)
 	ControllerServicePort int    // controller in-cluster service port (D2/D7 deny rule)
+
+	// SLM monitor (issue #231, spec #230). Empty APIKey disables the monitor
+	// entirely (single log line, everything else unaffected).
+	Monitor MonitorConfig
 }
+
+// MonitorConfig exposes the monitor knobs (issue #230, Q2/Q5/Q11):
+// interval, model IDs, base URL, credentials, per-call timeout. The base
+// URL is any OpenRouter-compatible endpoint — a local gateway, proxy, or
+// alternative provider can serve the pipeline; swapping endpoints touches
+// config only, never code.
+type MonitorConfig struct {
+	Interval        time.Duration // per-running-agent tick period (default 60s)
+	SummarizerModel string        // summarizer model id (default scaledown/summarize)
+	ClassifierModel string        // decision-modality classifier id (default scaledown/classify-1)
+	BaseURL         string        // OpenRouter-compatible API base (default https://openrouter.ai/api/v1)
+	APIKey          string        // OpenRouter API key (from K8s Secret); empty disables the monitor
+	Timeout         time.Duration // per-call timeout (default 5s)
+}
+
+// Enabled reports whether the monitor is active: a missing or empty API key
+// disables it entirely (issue #230, story 11).
+func (m MonitorConfig) Enabled() bool { return m.APIKey != "" }
 
 // DefaultConfig is the compiled-in baseline (matches the spike's flags).
 func DefaultConfig() Config {
@@ -221,6 +244,14 @@ func DefaultConfig() Config {
 		ControllerServicePort: 8081,
 		SpawnMaxDepth:         2, // D8: root → subagent → sub-subagent
 		SpawnMaxChildren:      8,
+		Monitor: MonitorConfig{
+			Interval:        60 * time.Second, // spec #230 Q2 default
+			SummarizerModel: "scaledown/summarize",
+			ClassifierModel: "scaledown/classify-1",
+			BaseURL:         "https://openrouter.ai/api/v1",
+			APIKey:          "",              // empty key → monitor disabled (single log line)
+			Timeout:         5 * time.Second, // per-call (spec #230 Q10)
+		},
 	}
 }
 
@@ -292,6 +323,32 @@ func envConfig(def Config) (Config, error) {
 		}
 		def.SpawnMaxChildren = n
 	}
+	if v := os.Getenv("KAPE_MONITOR_INTERVAL_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return def, fmt.Errorf("KAPE_MONITOR_INTERVAL_SECONDS %q must be a positive integer", v)
+		}
+		def.Monitor.Interval = time.Duration(n) * time.Second
+	}
+	if v := os.Getenv("KAPE_MONITOR_SUMMARIZER_MODEL"); v != "" {
+		def.Monitor.SummarizerModel = v
+	}
+	if v := os.Getenv("KAPE_MONITOR_CLASSIFIER_MODEL"); v != "" {
+		def.Monitor.ClassifierModel = v
+	}
+	if v := os.Getenv("KAPE_MONITOR_BASE_URL"); v != "" {
+		def.Monitor.BaseURL = v
+	}
+	if v := os.Getenv("KAPE_MONITOR_OPENROUTER_API_KEY"); v != "" {
+		def.Monitor.APIKey = v
+	}
+	if v := os.Getenv("KAPE_MONITOR_TIMEOUT_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return def, fmt.Errorf("KAPE_MONITOR_TIMEOUT_SECONDS %q must be a positive integer", v)
+		}
+		def.Monitor.Timeout = time.Duration(n) * time.Second
+	}
 	return def, nil
 }
 
@@ -323,6 +380,26 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 		c.DefaultResources = r
 		return nil
 	})
+	fs.Func("monitor-interval-seconds", "monitor tick period for running agents (env KAPE_MONITOR_INTERVAL_SECONDS)", func(v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("monitor-interval-seconds %q must be a positive integer", v)
+		}
+		c.Monitor.Interval = time.Duration(n) * time.Second
+		return nil
+	})
+	fs.StringVar(&c.Monitor.SummarizerModel, "monitor-summarizer-model", c.Monitor.SummarizerModel, "summarizer model id (env KAPE_MONITOR_SUMMARIZER_MODEL)")
+	fs.StringVar(&c.Monitor.ClassifierModel, "monitor-classifier-model", c.Monitor.ClassifierModel, "decision-modality classifier id (env KAPE_MONITOR_CLASSIFIER_MODEL)")
+	fs.StringVar(&c.Monitor.BaseURL, "monitor-base-url", c.Monitor.BaseURL, "OpenRouter-compatible API base URL (env KAPE_MONITOR_BASE_URL)")
+	fs.StringVar(&c.Monitor.APIKey, "monitor-openrouter-api-key", c.Monitor.APIKey, "OpenRouter API key; empty disables the monitor (env KAPE_MONITOR_OPENROUTER_API_KEY)")
+	fs.Func("monitor-timeout-seconds", "SLM per-call timeout (env KAPE_MONITOR_TIMEOUT_SECONDS)", func(v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("monitor-timeout-seconds %q must be a positive integer", v)
+		}
+		c.Monitor.Timeout = time.Duration(n) * time.Second
+		return nil
+	})
 }
 
 // Validate checks the resolved config itself (flag/env mistakes surface at
@@ -343,6 +420,14 @@ func (c *Config) Validate() error {
 	}
 	if c.EventStorePath == "" {
 		return fieldErr("event-store", "durable event log path is required")
+	}
+	if c.Monitor.Enabled() {
+		if c.Monitor.BaseURL == "" || !strings.HasPrefix(c.Monitor.BaseURL, "http") {
+			return fieldErr("monitor-base-url", "must be an http(s) base URL")
+		}
+		if c.Monitor.Interval <= 0 || c.Monitor.Timeout <= 0 {
+			return fieldErr("monitor", "interval and per-call timeout must be positive")
+		}
 	}
 	switch c.Transport {
 	case TransportPull:

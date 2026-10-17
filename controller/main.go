@@ -29,6 +29,13 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
+	// SLM monitor (issue #231): a missing or empty OpenRouter API key
+	// disables the monitor entirely — single log line, everything else
+	// unaffected (issue #230, story 11).
+	if !cfg.Monitor.Enabled() {
+		log.Printf("SLM monitor disabled: no OpenRouter API key configured (KAPE_MONITOR_OPENROUTER_API_KEY)")
+	}
+
 	tlsCfg, err := loadMtlsConfig(cfg.CredsDir)
 	if err != nil {
 		log.Fatalf("load mTLS creds from %s: %v", cfg.CredsDir, err)
