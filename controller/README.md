@@ -240,6 +240,16 @@ ports (3000, 5173) are allowed to listen, so pass `-listen :3000`:
 
 ## Smoke (live cluster)
 
+Daemon-as-canonical-main-process smoke (issue #247, spec #245 E2):
+`./smoke-247.sh` builds nothing locally — it drives the in-cluster smoke
+controller (`KAPE_DAEMON_COMMAND=kape-daemon`, `-image
+ghcr.io/dzungtr/kape-daemon:smoke-217d`) through three live legs: command
+threading (the pod's `OPENSHELL_MAIN_PROCESS_SPEC` carries kape-daemon and
+the daemon runs as the supervisor's direct child), daemon death (SIGKILL →
+workload container exit 137/Error → sandbox ERROR), and pod restart (delete
+the Failed pod → recreated pod re-runs the daemon with a fresh `boot_id`).
+Requires the pushed `ghcr.io/dzungtr/kape-controller:smoke-247` image.
+
 `./smoke.sh` drives the full v1 flow against the live k8s gateway and is
 the executable v1 contract check: build → run on `:3000` → create agent
 (default profile + one overridden) → SSE subscribe → prompt round trip in
