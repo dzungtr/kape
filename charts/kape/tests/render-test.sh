@@ -17,6 +17,19 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 helm template t "$CHART" > "$TMP/default.yaml"
 assert_has "$TMP/default.yaml" 'name: kape-controller' "default: controller deployment"
 assert_has "$TMP/default.yaml" 'kind: ServiceAccount' "default: controller ServiceAccount"
+assert_has "$TMP/default.yaml" 'kind: ClusterRole' "default: sandbox-reader ClusterRole"
+assert_has "$TMP/default.yaml" 'kind: ClusterRoleBinding' "default: sandbox-reader ClusterRoleBinding"
+for obj in ClusterRole ClusterRoleBinding; do
+  block=$(awk "/kind: $obj/{f=1} f" "$TMP/default.yaml")
+  [[ "$block" == *'kape-controller-sandbox-reader'* ]] || fail "default: $obj missing sandbox-reader"
+done
+binding=$(awk '/kind: ClusterRoleBinding/{f=1} f' "$TMP/default.yaml")
+[[ "$binding" == *'name: kape-controller'* ]] || fail "default: binding does not reference kape-controller SA"
+# controller ClusterRole rules: sandboxes + get/watch (before the next Source marker)
+ctlrole=$(sed -n '/Source: kape\/templates\/controller\/rbac.yaml/,/^---/p' "$TMP/default.yaml")
+[[ "$ctlrole" == *'sandboxes'* ]] || fail "default: controller ClusterRole lacks sandboxes resource"
+[[ "$ctlrole" == *'watch'* ]] || fail "default: controller ClusterRole lacks watch verb"
+[[ "$ctlrole" == *'agents.x-k8s.io'* ]] || fail "default: ClusterRole lacks agents.x-k8s.io group"
 assert_has "$TMP/default.yaml" 'name: KAPE_GATEWAY_ADDR' "default: gateway env"
 assert_has "$TMP/default.yaml" 'name: KAPE_CREDS_DIR' "default: creds env"
 assert_has "$TMP/default.yaml" 'name: KAPE_DEFAULT_IMAGE' "default: image env"
