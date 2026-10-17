@@ -295,17 +295,18 @@ func TestMonitorTerminalAssessmentFailureSettleProceeds(t *testing.T) {
 	}
 }
 
-// TestMonitorTerminalAssessmentBudgetBound: a hung SLM cannot hold settle —
-// the pipeline gives up at its context deadline (scaled down here) instead of
-// hanging.
+// TestMonitorTerminalAssessmentBudgetBound: a hung SLM cannot hold settle
+// indefinitely — the pipeline gives up at its context deadline instead of
+// hanging. The budget itself is the fixed 10s terminalAssessBudget (not
+// interval-scaled); here the 1s delayed fake is well inside it, so the test
+// pins the non-hang property and the shape of the bound (the failure-path
+// test above pins the prompt-return path).
 func TestMonitorTerminalAssessmentBudgetBound(t *testing.T) {
 	h := newMonitorHarness(t)
 	h.startTurn(t, "ship the PR")
 	h.slm.mu.Lock()
-	h.slm.summarizeDelay = time.Second // far beyond the scaled pipeline budget
+	h.slm.summarizeDelay = time.Second // far beyond a tick budget; inside the 10s terminal budget
 	h.slm.mu.Unlock()
-	// Scale the budget: 50ms interval → 100ms per-tick pipeline budget; the
-	// hung summarizer must give up at the context deadline, not hang for 1s.
 	mon := NewMonitor(h.slm, 50*time.Millisecond)
 	mon.Arm("a1", h.hub)
 	start := time.Now()

@@ -359,12 +359,24 @@ func (m *Monitor) assess(id string, hub *EventHub, e *monitorEntry, w turnWindow
 		return
 	}
 	if !terminal {
+		// Check-then-act must be atomic: gen read and the publish hold e.mu
+		// together, so a disarm (gen bump) landing between them can never let
+		// a stale tick append after the terminal assessment/agent.settled.
 		e.mu.Lock()
-		gateOpen := e.gen == 0 // bumped on disarm/settle → this tick is stale
-		e.mu.Unlock()
-		if !gateOpen {
+		if e.gen != 0 { // bumped on disarm/settle → this tick is stale
+			e.mu.Unlock()
 			return
 		}
+		hub.PublishLifecycle(EventTypeAssessed, map[string]interface{}{
+			"agent_id":    id,
+			"verdict":     verdict.Verdict,
+			"summary":     summary,
+			"confidence":  verdict.Confidence,
+			"reason":      verdict.Reason,
+			"assessed_at": m.now().UTC().Format(time.RFC3339Nano),
+		})
+		e.mu.Unlock()
+		return
 	}
 	hub.PublishLifecycle(EventTypeAssessed, map[string]interface{}{
 		"agent_id":    id,

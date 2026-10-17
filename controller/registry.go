@@ -429,7 +429,11 @@ func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
 		// Restart re-arm (issue #232): a replayed agent whose projected state
 		// is running gets its monitor timer re-armed from the replayed state —
 		// timers are derived, never persisted (≤1 interval grace accepted).
-		if state == SessionRunning {
+		// Both projections must agree: the session FSM is blind to liveness
+		// (fsm.go ignores agent.failed), so a liveness-failed agent replays
+		// as running-session but dead (StatusFailed) — arming it would accrue
+		// SLM spend and agent.assessed events on a dead agent.
+		if state == SessionRunning && ReplayAgentStatus(evs) == StatusWorking {
 			m.monitor.Arm(id, hub)
 		}
 	}
