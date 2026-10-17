@@ -222,9 +222,10 @@ func (p *Pi) trackQueueUpdate(line string) {
 }
 
 // drainNotice spools the queue_drained honest-history notice (spec #245 E6)
-// when the tracked queue is non-empty, then clears the tracker. Called before
-// clear_queue is sent on the abort path, so the notice lands before the abort
-// reaches pi's stdin.
+// when the tracked queue is non-empty, then clears the tracker. Called on the
+// abort path only after the clear_queue write reached pi's stdin (fix round 1
+// spool-guard): a failed write leaves the tracker intact, so the still-queued
+// texts remain tracked for a retry instead of being cleared as drained.
 func (p *Pi) drainNotice() {
 	p.piQueueMu.Lock()
 	steer, follow := p.queuedSteering, p.queuedFollowUp
@@ -250,14 +251,15 @@ func (p *Pi) drainNotice() {
 // Abort is the Esc mapping (spec #245 E6, issue #250): the drained queue
 // texts are spooled as a queue_drained notice, then clear_queue, then abort —
 // pi's abort alone continues queued messages, so the order is the semantics.
-// A standalone clear_queue command is forwarded as-is (ADR-0083 D4
-// break-glass): no notice, no pairing.
+// The notice is spooled after the clear_queue write succeeds (fix round 1
+// spool-guard): a failed write must not clear the tracker or claim a drain
+// that never happened. A standalone clear_queue command is forwarded as-is
+// (ADR-0083 D4 break-glass): no notice, no pairing.
 func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 	if c.Type == CommandAbort {
 		if err := p.Start(); err != nil {
 			return err
 		}
-		p.drainNotice()
 		clearLine, _ := (json.Marshal)(map[string]any{
 			"type":       CommandClearQueue,
 			"command_id": c.ID,
@@ -273,6 +275,10 @@ func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 		if _, err := p.stdin.Write(append(clearLine, '\n')); err != nil {
 			return fmt.Errorf("send clear_queue (abort pair): %w", err)
 		}
+		// Spool-guard (fix round 1, issue #250): the notice is spooled and the
+		// tracker cleared only after clear_queue reached pi's stdin — a failed
+		// write leaves the queue tracked and no drain is claimed.
+		p.drainNotice()
 		_, err := p.stdin.Write(append(abortLine, '\n'))
 		return err
 	}
@@ -292,8 +298,44 @@ func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 	if p.stdin == nil {
 		return fmt.Errorf("pi stdin unavailable")
 	}
+	// Optimistic steer tracking (fix round 1, issue #250): pi's queue_update
+	// for this steer may not be relayed yet when an abort follows immediately,
+	// and drainNotice would see an empty tracker and lose the text. Recorded
+	// under the same mutex as the write, so an abort that follows is ordered
+	// after the steer reaches stdin and sees the pending text; the next
+	// authoritative queue_update overwrites the optimistic entry.
+	if c.Type == CommandSteer {
+		p.trackPendingSteer(c.Payload)
+	}
 	_, err = p.stdin.Write(append(line, '\n'))
 	return err
+}
+
+// trackPendingSteer optimistically records a steer command's message into
+// the queue tracker before the stdin write (fix round 1, issue #250). Called
+// under p.mu; the next authoritative queue_update replaces the entry.
+func (p *Pi) trackPendingSteer(payload json.RawMessage) {
+	if text := steerText(payload); text != "" {
+		p.piQueueMu.Lock()
+		p.queuedSteering = append(p.queuedSteering, text)
+		p.piQueueMu.Unlock()
+	}
+}
+
+// steerText extracts the human-readable message from a steer payload
+// ({"message": "..."}); non-object payloads fall back to compact JSON.
+func steerText(payload json.RawMessage) string {
+	var m struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(payload, &m); err == nil && m.Message != "" {
+		return m.Message
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, payload); err == nil {
+		return buf.String()
+	}
+	return string(payload)
 }
 
 // Kill terminates the pi process (SIGTERM then SIGKILL); the exit surfaces
