@@ -89,6 +89,24 @@ A fresh random id per daemon start, reported on `/status`. The partition-vs-deat
 A child sandbox agent created through the front door with parent linkage; capped (`SPAWN_MAX_DEPTH`, `SPAWN_MAX_CHILDREN`) and cascade-terminated with its parent. In-sandbox parallelism is the agent's own business, not this.
 _Avoid_: pi conversation fork (in-sandbox parallelism — not a platform concept).
 
+**Assessment**:
+The controller's SLM-judged view of a running turn: a verdict plus a short summary, written as a controller-owned `agent.assessed` event and projected (latest only) onto agent status. Advisory — never an FSM state or transition.
+_Avoid_: monitor state, health status (deterministic liveness is a separate concept).
+
+**Verdict**:
+The assessment's classification: `healthy | stuck | finished | failed`. Cheap purpose-built endpoints produce it (summarizer + decision-modality classifier); deterministic events stay authoritative.
+_Avoid_: agent status, session state (the FSM has no stuck state).
+
+**Tick**:
+One periodic mid-turn assessment firing while a turn runs (60s default, configurable); armed and disarmed by registry lifecycle transitions, never persisted.
+
+**Terminal assessment**:
+The single settle-path assessment: synchronous but hard-bounded (10s budget); failure yields no terminal verdict and never blocks settle.
+
+**Wait**:
+The host-side blocking long-poll (`wait_agent`): one held connection returning a minimal coalesced snapshot on FSM state change, verdict transition, liveness failure, or timeout. The host's primary monitoring interface; raw records never cross it.
+_Avoid_: polling `read_events` as monitoring (demoted to a tail-pull mechanism).
+
 ## Relationships
 
 - A **KapeHandler** references zero or more **KapeTool** and **KapeSkill** resources; the **Operator** unions their tool refs into one **KapeProxy** config.
