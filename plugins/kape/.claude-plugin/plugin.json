@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "kape",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "kape platform skills for consuming the kape-controller MCP interface: dispatch sandbox agents, consume their output, classify errors.",
   "author": { "name": "dzungtr", "url": "https://github.com/dzungtr" },
   "homepage": "https://github.com/dzungtr/kape",
