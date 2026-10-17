@@ -69,11 +69,17 @@ func (q *CommandQueue) Get(id string) (Command, bool) {
 }
 
 // Status is the GET /status body: reconnect preflight (ADR-0083 D6) —
-// boot_id distinguishes partition from daemon death.
+// boot_id distinguishes partition from daemon death — extended by the E4/E8
+// crash-ownership surface: spool_depth (records held in the spool window),
+// pi_restarts (respawns since daemon boot), and the current respawn backoff
+// ("0s" when none).
 type Status struct {
-	AgentID   string `json:"agent_id"`
-	BootID    string `json:"boot_id"`
-	PiRunning bool   `json:"pi_running"`
+	AgentID    string `json:"agent_id"`
+	BootID     string `json:"boot_id"`
+	PiRunning  bool   `json:"pi_running"`
+	SpoolDepth int    `json:"spool_depth"`
+	PiRestarts int    `json:"pi_restarts"`
+	Backoff    string `json:"backoff"`
 }
 
 // NewRouter wires the D3 endpoint surface:
@@ -92,7 +98,11 @@ func NewRouter(agentID, bootID string, spool *Spool, pi *Pi, queue *CommandQueue
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, Status{AgentID: agentID, BootID: bootID, PiRunning: pi.Running()})
+		writeJSON(w, http.StatusOK, Status{
+			AgentID: agentID, BootID: bootID, PiRunning: pi.Running(),
+			SpoolDepth: spool.Depth(), PiRestarts: pi.Restarts(),
+			Backoff: pi.Backoff().String(),
+		})
 	})
 	mux.HandleFunc("GET /records", func(w http.ResponseWriter, r *http.Request) {
 		after, err := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)

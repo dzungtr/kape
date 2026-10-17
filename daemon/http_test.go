@@ -85,6 +85,19 @@ func TestStatusShape(t *testing.T) {
 	if !s.PiRunning {
 		t.Fatal("pi_running = false before Start, want true")
 	}
+	// E4/E8 extended fields: fresh boot has an empty spool, no respawns, no
+	// backoff.
+	if s.SpoolDepth != 0 || s.PiRestarts != 0 || s.Backoff != "0s" {
+		t.Fatalf("extended status = %+v, want spool_depth 0 pi_restarts 0 backoff 0s", s)
+	}
+	f.spool.Append(`{"type":"turn_started"}`) //nolint:errcheck
+	rec = f.do(t, "GET", "/status", "tok", nil)
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil { //nolint:errcheck
+		t.Fatalf("decode status: %v", err)
+	}
+	if s.SpoolDepth != 1 {
+		t.Fatalf("spool_depth = %d, want 1", s.SpoolDepth)
+	}
 	f.pi.Kill()
 	deadline := time.Now().Add(time.Second)
 	for f.pi.Running() && time.Now().Before(deadline) {
