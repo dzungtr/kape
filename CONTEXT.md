@@ -96,6 +96,7 @@ _Avoid_: monitor state, health status (deterministic liveness is a separate conc
 **Verdict**:
 The assessment's classification: `healthy | looping | blocked | degraded | finished | failed` — single responsibility: one owner and one action class per verdict (healthy→wait; looping→host steers/aborts; blocked→re-provision+revive; degraded→halt dispatches+diagnose platform; finished→consume; failed→retry/re-dispatch). Cheap purpose-built endpoints produce it (summarizer + decision-modality classifier); deterministic events stay authoritative.
 _Avoid_: agent status, session state (the FSM has no stuck/looping/blocked state).
+_Disambiguate_: the verdict `degraded` (SLM, provider/infra read) vs the liveness layer's `degraded` daemon state (deterministic, ADR-0083) — same word, different layers.
 
 **Tick**:
 One periodic mid-turn assessment firing while a turn runs (60s default, configurable); armed and disarmed by registry lifecycle transitions, never persisted.
