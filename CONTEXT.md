@@ -83,7 +83,22 @@ The daemon's unacked-record buffer on the sandbox volume: verbatim pi records pl
 The controller-side per-agent loop that long-polls the daemon's spool and appends into the event log. The controller stays seq authority — the daemon never assigns client-facing seqs.
 
 **boot_id**:
-A fresh random id per daemon start, reported on `/status`. The partition-vs-death distinguisher: same boot_id after a pull outage means partition; a new one means the daemon (and pi with it) died.
+A fresh random id per daemon start, reported on `/status`. The partition-vs-replacement distinguisher: same boot_id after a pull outage means partition; a new one means the sandbox (and daemon and pi with it) was replaced (ADR-0086: the daemon is the sandbox's main process, so daemon death collapses into sandbox death).
+
+**Main process**:
+The canonical command the OpenShell supervisor launches once per sandbox (the `CreateSandboxRequest.command` field) — for KAPE agents, the **Daemon**. Image entrypoints never run; daemon lifetime equals sandbox lifetime.
+_Avoid_: entrypoint, init container, profile hook (fallback pattern only).
+
+**Revive**:
+The automatic replacement of a dead agent while its **Session** persists. Tier 1 is in-place (the daemon lazily respawns a crashed pi on the same session, no budget); Tier 2 replaces the sandbox on the same PVC with `pi --resume` from the session-pinned session tree, budgeted (`REVIVE_MAX`, `REVIVE_COOLDOWN`) and driven from the event log.
+_Avoid_: restart, retry (infrastructure acts; revive is session semantics).
+
+**Paused (session state)**:
+The FSM state a running session occupies while a Tier 2 revive is in flight or the revive budget is exhausted (`running ⇄ paused`, ADR-0086). Commands are rejected fail-fast while paused; exit is re-arm, successful revive, or Delete.
+_Avoid_: stopped, suspended (OpenShell suspend/resume is a different mechanism), failed (sessions have no failed state).
+
+**Crash window**:
+What a sandbox or pi death loses: one in-flight turn plus pi's in-memory queue of steers/follow-ups. Accepted-but-undelivered commands stay derivable from the event log; nothing is auto-replayed after a revive.
 
 **Subagent (sandbox sense)**:
 A child sandbox agent created through the front door with parent linkage; capped (`SPAWN_MAX_DEPTH`, `SPAWN_MAX_CHILDREN`) and cascade-terminated with its parent. In-sandbox parallelism is the agent's own business, not this.
