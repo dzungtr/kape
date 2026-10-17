@@ -215,7 +215,7 @@ type Config struct {
 // config only, never code.
 type MonitorConfig struct {
 	Interval        time.Duration // per-running-agent tick period (default 60s)
-	SummarizerModel string        // summarizer model id (default scaledown/summarize)
+	SummarizerModel string        // summarizer model id (default ~deepseek/deepseek-v4-flash-latest)
 	ClassifierModel string        // decision-modality classifier id (default scaledown/classify-1)
 	BaseURL         string        // OpenRouter-compatible API base (default https://openrouter.ai/api/v1)
 	APIKey          string        // OpenRouter API key (from K8s Secret); empty disables the monitor
@@ -246,7 +246,7 @@ func DefaultConfig() Config {
 		SpawnMaxChildren:      8,
 		Monitor: MonitorConfig{
 			Interval:        60 * time.Second, // spec #230 Q2 default
-			SummarizerModel: "scaledown/summarize",
+			SummarizerModel: "~deepseek/deepseek-v4-flash-latest",
 			ClassifierModel: "scaledown/classify-1",
 			BaseURL:         "https://openrouter.ai/api/v1",
 			APIKey:          "",              // empty key → monitor disabled (single log line)

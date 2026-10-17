@@ -145,7 +145,7 @@ func TestMonitorConfigDefaults(t *testing.T) {
 	if m.Interval != 60*time.Second {
 		t.Fatalf("interval = %v, want 60s", m.Interval)
 	}
-	if m.SummarizerModel != "scaledown/summarize" || m.ClassifierModel != "scaledown/classify-1" {
+	if m.SummarizerModel != "~deepseek/deepseek-v4-flash-latest" || m.ClassifierModel != "scaledown/classify-1" {
 		t.Fatalf("model ids = %q / %q", m.SummarizerModel, m.ClassifierModel)
 	}
 	if m.BaseURL != "https://openrouter.ai/api/v1" {
