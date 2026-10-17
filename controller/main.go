@@ -58,6 +58,11 @@ func main() {
 	defer store.Close()
 
 	mgr := NewAgentManager(gw, cfg, store)
+	if cfg.Monitor.Enabled() {
+		// SLM monitor loop (issue #232): one timer per running agent,
+		// assessment projection, terminal assessment in the settle path.
+		mgr = mgr.WithMonitor(NewMonitor(NewSLMClient(cfg.Monitor, nil), cfg.Monitor.Interval))
+	}
 	if cfg.Transport == TransportPull {
 		// Daemon addressing comes from the Sandbox CR (issue #214, D7): the
 		// controller's first k8s API client (in-cluster SA, get/watch
