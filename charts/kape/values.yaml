@@ -20,6 +20,12 @@ controller:
   credsDir: /var/run/kape-controller/creds
   creds:
     secretRef: ""
+  # NOTE: there is no sandboxNamespace knob. The controller resolves Sandbox
+  # CRs in the compiled-default `openshell` namespace
+  # (controller/config.go:242). For a non-default sandbox namespace, inject
+  # KAPE_SANDBOX_NAMESPACE into the controller pod out-of-band (the chart
+  # does not wire it); the ClusterRole in controller/rbac.yaml is
+  # cluster-scoped, so no RBAC change is needed.
   # defaultImage: sandbox agent image handed to the gateway.
   defaultImage: ghcr.io/dzungtr/pi-openshell:openrouter
   # modelGatewayUrl: in-cluster model gateway (config.go compiled default).

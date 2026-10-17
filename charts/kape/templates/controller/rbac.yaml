@@ -4,8 +4,11 @@
      agents.x-k8s.io sandboxes every resolution returns 403. Cluster-scoped
      grant bound to the controller SA, mirroring the standalone
      controller/deploy/rbac.yaml pattern (namespace-scoped Role there;
-     ClusterRole here since the chart's controller namespace and the sandbox
-     namespace are configurable independently). */ -}}
+     ClusterRole here because the grant is cluster-scoped regardless of the
+     sandbox namespace: the chart does NOT expose a sandbox-namespace knob —
+     the controller resolves Sandbox CRs in the compiled-default `openshell`
+     namespace (controller/config.go) unless KAPE_SANDBOX_NAMESPACE is
+     injected out-of-band; see charts/kape/values.yaml). */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
