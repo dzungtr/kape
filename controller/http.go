@@ -25,6 +25,7 @@ import (
 //	POST   /agents/{id}/abort      -> stop the in-flight turn
 //	POST   /agents/{id}/steer      {"message": ...} -> mid-turn steer (409 if idle)
 //	GET    /agents/{id}/events     -> SSE: buffered replay then live
+//	GET    /agents/{id}/wait?timeout= -> long-poll wake snapshot (issue #233)
 //	DELETE /agents/{id}            -> abort exec + delete sandbox
 func NewRouter(mgr *AgentManager) http.Handler {
 	mux := http.NewServeMux()
@@ -146,6 +147,7 @@ func NewRouter(mgr *AgentManager) http.Handler {
 		}
 		serveSSE(w, r, agent)
 	})
+	mux.HandleFunc("GET /agents/{id}/wait", handleWait(mgr))
 	mux.HandleFunc("DELETE /agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := mgr.Delete(r.Context(), r.PathValue("id")); err != nil {
 			httpError(w, statusForErr(err), err)
