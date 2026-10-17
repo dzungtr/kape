@@ -48,13 +48,75 @@ func TestFakePiDeterministicTurns(t *testing.T) {
 	if out.String() != out2.String() {
 		t.Fatal("fake pi output is not deterministic across runs")
 	}
+}
 
-	// Steer/abort/clear_queue are accepted and emit nothing in the stub.
-	var quiet bytes.Buffer
-	if err := runFakePi(strings.NewReader(`{"type":"steer"}`+"\n"+`{"type":"abort"}`+"\n"+`{"type":"clear_queue"}`+"\n"), &quiet, &bytes.Buffer{}); err != nil {
-		t.Fatalf("runFakePi quiet: %v", err)
+// Non-prompt commands drive the queue (issue #250): steer/follow_up enqueue
+// and emit queue_update; abort settles without touching the queue (pi's abort
+// alone continues queued messages — the reason Esc-abort is clear_queue THEN
+// abort); clear_queue drains and reports the empty queue.
+func TestFakePiQueueAndAbort(t *testing.T) {
+	in := strings.Join([]string{
+		`{"type":"steer","payload":{"message":"add salt"}}`,
+		`{"type":"follow_up","payload":{"message":"and pepper"}}`,
+		`{"type":"abort"}`,
+		`{"type":"clear_queue"}`,
+	}, "\n") + "\n"
+	var out, stderr bytes.Buffer
+	if err := runFakePi(strings.NewReader(in), &out, &stderr); err != nil {
+		t.Fatalf("runFakePi: %v", err)
 	}
-	if quiet.Len() != 0 {
-		t.Fatalf("non-prompt commands emitted records: %s", quiet.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
+	var recs []map[string]any
+	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("record %q not JSON: %v", line, err)
+		}
+		recs = append(recs, m)
+	}
+	checkQueue := func(i int, steering, followUp any) {
+		t.Helper()
+		if i >= len(recs) {
+			t.Fatalf("expected record %d, got %d records", i, len(recs))
+		}
+		if recs[i]["type"] != "queue_update" {
+			t.Fatalf("record %d = %v, want queue_update", i, recs[i])
+		}
+		if got := recs[i]["steering"]; !sameElements(got, steering) {
+			t.Fatalf("queue_update %d steering = %v, want %v", i, got, steering)
+		}
+		if got := recs[i]["followUp"]; !sameElements(got, followUp) {
+			t.Fatalf("queue_update %d followUp = %v, want %v", i, got, followUp)
+		}
+	}
+	// Each enqueued message appends to that queue half; queue_update carries
+	// the queue's full state, not just the delta.
+	checkQueue(0, []any{"add salt"}, nil)
+	checkQueue(1, []any{"add salt"}, []any{"and pepper"})
+	// Abort settles without clearing the queue: no queue_update around the
+	// settle marker, and aborted = true (issue #246 real-pi vocabulary).
+	if recs[2]["type"] != "agent_settled" || recs[2]["aborted"] != true {
+		t.Fatalf("record 2 = %v, want agent_settled {aborted:true}", recs[2])
+	}
+	// clear_queue drains both halves and reports the now-empty queue.
+	checkQueue(3, nil, nil)
+}
+
+// sameElements compares a decoded JSON value against an expected []any (or
+// nil, meaning an absent/empty value is not required — empty vs missing both
+// pass as nil).
+func sameElements(got, want any) bool {
+	gotArr, _ := got.([]any)
+	wantArr, _ := want.([]any)
+	if len(gotArr) != len(wantArr) {
+		return false
+	}
+	for i := range gotArr {
+		if gotArr[i] != wantArr[i] {
+			return false
+		}
+	}
+	return true
 }

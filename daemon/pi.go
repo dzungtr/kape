@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,14 @@ type Pi struct {
 	running atomic.Bool
 	notices *Spool
 	command []string // pi command line; empty means self-fakepi
+
+	// piQueueMu guards the last-known pi queue state, tracked from the
+	// queue_update records relayed on stdout (issue #250 / spec #245 E6):
+	// the abort front door must spool the drained texts as honest history.
+	// The queue is pi-runtime-only (issue #246 findings): it resets on exit.
+	piQueueMu      sync.Mutex
+	queuedSteering []string
+	queuedFollowUp []string
 }
 
 // NewPi wires the pi subprocess manager; command is the argv to run (nil = the
@@ -109,6 +118,8 @@ func (p *Pi) spoolStdoutLine(line string) {
 		if raw, err := json.Marshal(line); err == nil {
 			data = string(raw)
 		}
+	} else {
+		p.trackQueueUpdate(line)
 	}
 	if _, err := p.notices.Append(data); err != nil {
 		log.Printf("spool append failed: %v", err)
@@ -158,15 +169,112 @@ func (p *Pi) awaitExit(cmd *exec.Cmd) {
 	if _, err := p.notices.Append(string(n)); err != nil {
 		log.Printf("spool append failed: %v", err)
 	}
+	// The pi queue is runtime-only (issue #246 findings): whatever was queued
+	// died with the process. Reset the tracker so a later abort does not
+	// re-notice already-lost texts.
+	p.piQueueMu.Lock()
+	p.queuedSteering, p.queuedFollowUp = nil, nil
+	p.piQueueMu.Unlock()
+}
+
+// queueTexts flattens queue_update elements to human-readable texts: JSON
+// strings unwrap to their text, objects stay compact JSON (honest history).
+func queueTexts(elems []json.RawMessage) []string {
+	texts := make([]string, 0, len(elems))
+	for _, e := range elems {
+		var s string
+		if err := json.Unmarshal(e, &s); err == nil {
+			texts = append(texts, s)
+			continue
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, e); err == nil {
+			texts = append(texts, buf.String())
+		} else {
+			texts = append(texts, string(e))
+		}
+	}
+	return texts
+}
+
+// trackQueueUpdate records queue_update records relayed on stdout into the
+// last-known pi queue state (issue #250 / spec #245 E6). queue_update
+// carries the queue's full state (issue #246 findings: {steering[],
+// followUp[]}); elements are free-form: plain texts become the element
+// string, objects keep their compact JSON.
+func (p *Pi) trackQueueUpdate(line string) {
+	if !strings.Contains(line, `"queue_update"`) {
+		return
+	}
+	var rec struct {
+		Type     string            `json:"type"`
+		Steering []json.RawMessage `json:"steering"`
+		FollowUp []json.RawMessage `json:"followUp"`
+	}
+	if err := json.Unmarshal([]byte(line), &rec); err != nil || rec.Type != "queue_update" {
+		return
+	}
+	steer := queueTexts(rec.Steering)
+	follow := queueTexts(rec.FollowUp)
+	p.piQueueMu.Lock()
+	p.queuedSteering, p.queuedFollowUp = steer, follow
+	p.piQueueMu.Unlock()
+}
+
+// drainNotice spools the queue_drained honest-history notice (spec #245 E6)
+// when the tracked queue is non-empty, then clears the tracker. Called before
+// clear_queue is sent on the abort path, so the notice lands before the abort
+// reaches pi's stdin.
+func (p *Pi) drainNotice() {
+	p.piQueueMu.Lock()
+	steer, follow := p.queuedSteering, p.queuedFollowUp
+	p.queuedSteering, p.queuedFollowUp = nil, nil
+	p.piQueueMu.Unlock()
+	if len(steer) == 0 && len(follow) == 0 {
+		return // empty queue: no spurious notice
+	}
+	n, _ := json.Marshal(map[string]any{
+		"type":      "queue_drained",
+		"steering":  steer,
+		"follow_up": follow,
+	})
+	if _, err := p.notices.Append(string(n)); err != nil {
+		log.Printf("spool append failed: %v", err)
+	}
 }
 
 // SendCommand writes a command to pi's stdin as one JSON line. A prompt on a
 // dead pi respawns it (silent respawn in the stub — the pi_restart notice is
 // reserved for Epic 3).
+//
+// Abort is the Esc mapping (spec #245 E6, issue #250): the drained queue
+// texts are spooled as a queue_drained notice, then clear_queue, then abort —
+// pi's abort alone continues queued messages, so the order is the semantics.
+// A standalone clear_queue command is forwarded as-is (ADR-0083 D4
+// break-glass): no notice, no pairing.
 func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 	if c.Type == CommandAbort {
-		p.Kill()
-		return nil
+		if err := p.Start(); err != nil {
+			return err
+		}
+		p.drainNotice()
+		clearLine, _ := (json.Marshal)(map[string]any{
+			"type":       CommandClearQueue,
+			"command_id": c.ID,
+		})
+		// abort is a bare object with no id field (verified against pi
+		// rpc-commands.md; see controller/agent.go piAbortCommand).
+		abortLine := []byte(`{"type":"abort"}`)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.stdin == nil {
+			return fmt.Errorf("pi stdin unavailable")
+		}
+		if _, err := p.stdin.Write(append(clearLine, '\n')); err != nil {
+			return fmt.Errorf("send clear_queue (abort pair): %w", err)
+		}
+		_, err := p.stdin.Write(append(abortLine, '\n'))
+		return err
 	}
 	if err := p.Start(); err != nil {
 		return err
@@ -188,7 +296,10 @@ func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 	return err
 }
 
-// Kill aborts pi: SIGTERM then SIGKILL; the exit surfaces as pi_exit.
+// Kill terminates the pi process (SIGTERM then SIGKILL); the exit surfaces
+// as pi_exit. Not used by the abort front door since Esc-abort (issue #250):
+// abort is a pi stdin command pair, not a process kill. Kill stays for
+// daemon-side teardown (Epic 3 #248 shutdown/backoff) and tests.
 func (p *Pi) Kill() {
 	p.mu.Lock()
 	cmd := p.cmd
@@ -214,14 +325,33 @@ type fakePiRecord struct {
 
 // runFakePi is the built-in scriptable emitter (this binary with argv[1]
 // "fakepi"): reads one JSON command per stdin line and, for each prompt, emits
-// the deterministic four-record turn on stdout. Steer/abort/clear_queue are
-// accepted and no-op in the stub. Determinism: turn ids are ordinal counters.
+// the deterministic four-record turn on stdout. Steer/follow_up enqueue into
+// the runtime queue and emit a queue_update carrying the queue's full state;
+// abort settles the turn without touching the queue (pi's abort alone
+// continues queued messages — the Esc-abort ordering constraint, issue #250);
+// clear_queue drains both halves and reports the empty queue. Determinism:
+// turn ids are ordinal counters.
 func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 	out := bufio.NewWriter(stdout)
 	defer out.Flush() //nolint:errcheck
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	turn := 0
+	var queuedSteering, queuedFollowUp []string
+	emitQueue := func() {
+		steer := queuedSteering
+		if steer == nil {
+			steer = []string{}
+		}
+		follow := queuedFollowUp
+		if follow == nil {
+			follow = []string{}
+		}
+		n, _ := json.Marshal(map[string]any{"type": "queue_update", "steering": steer, "followUp": follow})
+		out.Write(n)        //nolint:errcheck
+		out.WriteByte('\n') //nolint:errcheck
+		out.Flush()         //nolint:errcheck
+	}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -237,7 +367,29 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "fakepi: bad command line: %v\n", err) //nolint:errcheck
 			continue
 		}
-		if c.Type != CommandPrompt {
+		switch c.Type {
+		case CommandPrompt:
+			// (fall through to the turn emission below)
+		case CommandSteer:
+			queuedSteering = append(queuedSteering, c.Payload.Message)
+			emitQueue()
+			continue
+		case "follow_up":
+			queuedFollowUp = append(queuedFollowUp, c.Payload.Message)
+			emitQueue()
+			continue
+		case CommandAbort:
+			// No queue_update: the stub models pi's abort-continues-queue.
+			out.Write([]byte(`{"type":"agent_settled","aborted":true}`))
+			out.WriteByte('\n') //nolint:errcheck
+			out.Flush()         //nolint:errcheck
+			continue
+		case CommandClearQueue:
+			queuedSteering, queuedFollowUp = nil, nil
+			emitQueue()
+			continue
+		default:
+			fmt.Fprintf(stderr, "fakepi: unknown command type %q\n", c.Type) //nolint:errcheck
 			continue
 		}
 		turn++

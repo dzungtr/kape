@@ -29,7 +29,9 @@ heartbeat.
 ## Records and notices
 
 `data` is the verbatim pi JSONL record (never re-wrapped, `text_delta`
-included) or a daemon notice: `pi_stderr`, `pi_exit`, `spool_truncated`.
+included) or a daemon notice: `pi_stderr`, `pi_exit`, `spool_truncated`,
+`queue_drained` (Esc-abort, issue #250: the texts drained by the
+`clear_queue` half of the abort pair, spooled before the abort lands).
 `pi_restart` is reserved for Epic 3. Spool ids recover from the file tail —
 monotonic across daemon restarts; `boot_id` is fresh random per daemon start.
 
