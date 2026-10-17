@@ -111,6 +111,10 @@ func pullTestConfig(_ *httptest.Server) Config {
 	cfg := testConfig() // exec baseline (image/provider overrides)
 	cfg.Transport = TransportPull
 	cfg.DaemonToken = "s3cret"
+	// Tier-2 revive defaults are slow test knobs (60s cooldown); tests that
+	// exercise the cooldown build their own config and inject a fake clock
+	// (revive_test.go).
+	cfg.ReviveCooldown = 0
 	return cfg
 }
 

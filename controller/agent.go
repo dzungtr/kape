@@ -89,6 +89,17 @@ type Agent struct {
 	// successful pull. Surfaced on agent_view, never durable.
 	degraded bool
 
+	// reviveMu serializes the Tier-2 revive ledger decision per agent
+	// (issue #251): pause/spend, replay revival, and re-arm never interleave.
+	reviveMu sync.Mutex
+
+	// pendingRevive is the Tier-2 revive completion flag (issue #251): set
+	// when a paused session's replacement daemon is up, consumed by the
+	// puller's next successful pull (daemon.boot + first pull → paused →
+	// running). In-memory only: a controller restart re-drives the revive
+	// from the paused replay state (revive.go).
+	pendingRevive bool
+
 	hub   *EventHub   // buffered + fan-out of raw JSONL records from pi stdout
 	fsm   *SessionFSM // session lifecycle projection over the log (issue #196)
 	stdin chan []byte // exec break-glass path only; nil under the pull transport
@@ -163,10 +174,13 @@ type AgentManager struct {
 	// disarmed on settle/termination/liveness failure, terminal assessment
 	// in the settle path. Nil (config-disabled) → every hook is a no-op.
 	monitor *Monitor
+	// now is the clock seam for the Tier-2 revive ledger cooldown (issue
+	// #251); tests inject a fake clock.
+	now func() time.Time
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
-	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store}
+	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store, now: time.Now}
 }
 
 // WithResolver sets the daemon address resolver (issue #214, D7).
@@ -622,10 +636,9 @@ func (a *Agent) sendPrompt(message string) error {
 	defer a.mu.Unlock()
 	if a.pullTransport {
 		// Pull transport: the daemon is the command path; there is no stdin.
-		dc, err := a.mgr.daemonFor(context.Background(), a)
-		if err != nil {
-			return fmt.Errorf("resolve daemon address for %s: %w", a.Sandbox, err)
-		}
+		// The FSM gate comes FIRST (fail-fast, spec #245 E5): a paused session
+		// (Tier-2 revive in flight or exhausted, issue #251) rejects before any
+		// daemon resolution or POST — no command is queued behind a dead turn.
 		switch a.fsm.State() {
 		case SessionRunning:
 			return errTurnInFlight(a.ID)
@@ -635,6 +648,10 @@ func (a *Agent) sendPrompt(message string) error {
 			}
 		default:
 			return errNotReady(a.ID, a.status)
+		}
+		dc, err := a.mgr.daemonFor(context.Background(), a)
+		if err != nil {
+			return fmt.Errorf("resolve daemon address for %s: %w", a.Sandbox, err)
 		}
 		a.cmdSeq++
 		payload, _ := json.Marshal(map[string]string{"message": message})
@@ -996,20 +1013,22 @@ func (m *AgentManager) fail(agent *Agent, reason string) {
 		return
 	}
 	agent.status = StatusFailed
-	agent.mu.Unlock()
-	// Liveness failure disarms the monitor timer (issue #232): a failed agent
-	// is not running, no SLM spend accrues.
-	m.monitor.Disarm(agent.ID)
 	// The session vocabulary has no failed state (issue #196: failures are
 	// an agent-liveness concern; Epic 3 owns paused/reviving recovery), so
 	// this lifecycle event is for the agent dimension and is ignored by the
-	// session replay projection.
-	log.Printf("[agent %s] failed: %s", agent.ID, reason)
+	// session replay projection. Published INSIDE the critical section: any
+	// observer that sees the failed status must observe the event too (the
+	// status/event gap was a wait_agent race, issue #251).
 	agent.hub.PublishLifecycle("agent.failed", map[string]interface{}{
 		"agent_id": agent.ID,
 		"status":   StatusFailed,
 		"reason":   reason,
 	})
+	agent.mu.Unlock()
+	// Liveness failure disarms the monitor timer (issue #232): a failed agent
+	// is not running, no SLM spend accrues.
+	m.monitor.Disarm(agent.ID)
+	log.Printf("[agent %s] failed: %s", agent.ID, reason)
 }
 
 // splitLines splits on LF (strict JSONL framing), tolerating CRLF.

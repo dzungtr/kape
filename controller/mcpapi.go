@@ -29,6 +29,7 @@ func RestVerbs() []string {
 		"prompt_agent",
 		"steer_agent",
 		"abort",
+		"resume_session",
 		"stream_events",
 		"wait_agent",
 		"read_events",
@@ -64,6 +65,10 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 		Name:        "abort",
 		Description: "Abort the agent's in-flight turn. The stream stays open; the turn settles.",
 	}, handleAbort(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "resume_session",
+		Description: "Re-arm a paused agent (Tier-2 revive, spec #245 E5): resets the log-derived revive budget and re-drives the revive from paused — the controller holds for the replacement sandbox's daemon, then daemon.boot + the first successful pull resume the session. Only a paused agent re-arms; anything else errors (409-equivalent).",
+	}, handleResume(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "wait_agent",
 		Description: "Block until something worth deciding happens on an agent: an FSM state change, a verdict transition (a repeated identical verdict does NOT wake; confidence-only changes do NOT wake — v1 semantic), a liveness failure, or timeout expiry. Returns exactly once with the coalesced snapshot {agentId, changed, state, assessment}; assessment is the latest projected {verdict, summary, assessedAt, seq} or null — raw records never cross this surface. timeout is seconds (default 300, server-capped 600). An already-idle agent returns immediately; unknown ids error.",
@@ -281,6 +286,18 @@ func handleAbort(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, map[string]
 			return nil, nil, errUnknownAgent(input.AgentID)
 		}
 		if err := mgr.Abort(input.AgentID); err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]string{"status": "accepted"}, nil
+	}
+}
+
+func handleResume(mgr *AgentManager) mcp.ToolHandlerFor[agentIDInput, map[string]string] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input agentIDInput) (*mcp.CallToolResult, map[string]string, error) {
+		if mgr.Get(input.AgentID) == nil {
+			return nil, nil, errUnknownAgent(input.AgentID)
+		}
+		if err := mgr.Resume(ctx, input.AgentID); err != nil {
 			return nil, nil, err
 		}
 		return nil, map[string]string{"status": "accepted"}, nil

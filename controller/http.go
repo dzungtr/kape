@@ -98,6 +98,19 @@ func NewRouter(mgr *AgentManager) http.Handler {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
+	mux.HandleFunc("POST /agents/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if mgr.Get(id) == nil {
+			httpError(w, http.StatusNotFound, errUnknownAgent(id))
+			return
+		}
+		if err := mgr.Resume(r.Context(), id); err != nil {
+			httpError(w, statusForErr(err), err)
+			return
+		}
+		log.Printf("[http] resume accepted for agent %s", id)
+		w.WriteHeader(http.StatusAccepted)
+	})
 	mux.HandleFunc("POST /agents/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if mgr.Get(id) == nil {
