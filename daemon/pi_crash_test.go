@@ -44,7 +44,7 @@ func newCrashPi(t *testing.T, script string) (*Pi, *Spool, *fakeClock) {
 		t.Fatalf("spool: %v", err)
 	}
 	t.Cleanup(func() { spool.Close() }) //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	clk := &fakeClock{}
 	pi.now = clk.now
 	pi.sleep = clk.sleep
