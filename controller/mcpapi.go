@@ -30,6 +30,7 @@ func RestVerbs() []string {
 		"steer_agent",
 		"abort",
 		"stream_events",
+		"wait_agent",
 		"read_events",
 		"delete_agent",
 		"list_agents",
@@ -63,6 +64,10 @@ func NewMCPServer(mgr *AgentManager) *mcp.Server {
 		Name:        "abort",
 		Description: "Abort the agent's in-flight turn. The stream stays open; the turn settles.",
 	}, handleAbort(mgr))
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "wait_agent",
+		Description: "Block until something worth deciding happens on an agent: an FSM state change, a verdict transition (a repeated identical verdict does NOT wake; confidence-only changes do NOT wake — v1 semantic), a liveness failure, or timeout expiry. Returns exactly once with the coalesced snapshot {agentId, changed, state, assessment}; assessment is the latest projected {verdict, summary, assessedAt, seq} or null — raw records never cross this surface. timeout is seconds (default 300, server-capped 600). An already-idle agent returns immediately; unknown ids error.",
+	}, handleWaitAgent(mgr))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "stream_events",
 		Description: "Subscribe to an agent's event stream from a cursor. Over MCP this returns the durable replay from the cursor as one batch (tool results cannot stream); for live push use the REST SSE endpoint GET /agents/{id}/events with Accept: text/event-stream (re-attach via Last-Event-ID or after).",
@@ -156,6 +161,27 @@ func toMCPResponse(res readEventsResponse) mcpReadEventsResponse {
 		evs = []mcpEvent{}
 	}
 	return mcpReadEventsResponse{AgentID: res.AgentID, Events: evs, Truncated: res.Truncated}
+}
+
+type waitInput struct {
+	AgentID string `json:"agent_id"`
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// handleWaitAgent is the MCP tool twin of the REST long-poll: identical
+// semantics, tool error instead of HTTP status.
+func handleWaitAgent(mgr *AgentManager) mcp.ToolHandlerFor[waitInput, WaitResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input waitInput) (*mcp.CallToolResult, WaitResult, error) {
+		timeout, err := parseWaitTimeout(input.Timeout)
+		if err != nil {
+			return nil, WaitResult{}, err
+		}
+		res, err := mgr.Wait(ctx, input.AgentID, timeout)
+		if err != nil {
+			return nil, WaitResult{}, err
+		}
+		return nil, *res, nil
+	}
 }
 
 // --- tool handlers ---------------------------------------------------------

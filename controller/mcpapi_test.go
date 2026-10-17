@@ -78,15 +78,16 @@ func callTool[In any, Out any](t *testing.T, cs *mcp.ClientSession, name string,
 // input mirrors — the params half of the contract-equality gate. Fields with
 // json:"...,omitempty" are optional; all others are required.
 var toolContract = map[string]any{
-	"create_agent":  CreateProfile{},
-	"get_agent":     agentIDInput{},
-	"prompt_agent":  promptInput{},
-	"steer_agent":   steerInput{},
-	"abort":         agentIDInput{},
-	"stream_events": streamEventsInput{},
-	"read_events":   readEventsInput{},
-	"delete_agent":  agentIDInput{},
-	"list_agents":   struct{}{},
+	"create_agent":   CreateProfile{},
+	"get_agent":      agentIDInput{},
+	"prompt_agent":   promptInput{},
+	"steer_agent":    steerInput{},
+	"abort":          agentIDInput{},
+	"stream_events":  streamEventsInput{},
+	"wait_agent":     waitInput{},
+	"read_events":    readEventsInput{},
+	"delete_agent":   agentIDInput{},
+	"list_agents":    struct{}{},
 	"list_providers": struct{}{},
 }
 
