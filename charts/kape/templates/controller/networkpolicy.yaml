@@ -5,11 +5,18 @@
      proxy, alternative provider) touches chart values only.
 
      Two egress shapes by destination kind:
-     - external host (default): ipBlock 0.0.0.0/0 excluding private CIDRs on
-       the URL port (private exclusions keep cluster-internal addresses out —
-       the DNS rule below is what resolves the external hostname);
-     - in-cluster host (…svc / …svc.cluster.local FQDN): namespace selector
-       derived from the FQDN's namespace segment, on the URL port. */ -}}
+     - external host: ipBlock 0.0.0.0/0 excluding private CIDRs on the URL
+       port (private exclusions keep cluster-internal addresses out — the
+       DNS rule below is what resolves the external hostname);
+     - in-cluster host (…svc / …svc.cluster.local FQDN with ≥3 segments):
+       namespace selector derived from the FQDN's namespace segment, on the
+       URL port; fewer segments is a render error.
+
+     NOTE: this policy is default-deny egress — enabling it permits only
+     DNS/53, the SLM endpoint, and (assumption, see values.yaml) the kube API
+     via kube-system pods on 443. It does NOT open the OpenShell gateway or
+     model-gateway paths; default is enabled=false so core traffic is not
+     broken (issue #234 fix round 1). */ -}}
 {{- if .Values.controller.networkPolicy.enabled }}
 {{- $baseURL := .Values.controller.monitor.baseUrl }}
 {{- $scheme := "https" }}
@@ -21,6 +28,12 @@
 {{- $parts := splitList "." $host }}
 {{- $ns := "" }}
 {{- if $inCluster }}
+{{- /* In-cluster namespace extraction needs a ≥3-segment FQDN
+       (svc-name.namespace[.svc[.cluster.local]]); a 2-part host like
+       gw.svc would mis-derive the service name as the namespace. */ -}}
+{{- if lt (len $parts) 3 }}
+{{- fail (printf "controller.networkPolicy: in-cluster monitor baseUrl host %q must be an FQDN with at least 3 segments (service.namespace[.svc[.cluster.local]])" $host) }}
+{{- end }}
 {{- if hasSuffix ".cluster.local" $host }}
 {{- $ns = index $parts (sub (len $parts) 4) }}
 {{- else }}
@@ -50,6 +63,9 @@ spec:
         - port: 53
           protocol: TCP
     # Kubernetes API — Sandbox CR reads (ADR-0083 D7), leader election.
+    # ASSUMPTION: the API server is reachable via pods in kube-system on
+    # 443 (kubeadm/k3s/GKE shape). Override this rule if your control plane
+    # differs.
     - to:
         - namespaceSelector:
             matchLabels:
