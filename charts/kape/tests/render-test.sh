@@ -81,4 +81,16 @@ helm template t "$CHART" --set controller.creds.secretRef=controller-gateway-cre
 assert_has "$TMP/creds.yaml" 'secretName: "controller-gateway-creds"' "creds: secret volume"
 assert_has "$TMP/creds.yaml" 'mountPath: "/var/run/kape-controller/creds"' "creds: mounted at credsDir"
 
+# 6. SA override: controller.serviceAccountName must propagate to the
+#    ServiceAccount resource and the ClusterRoleBinding subjects.
+helm template t "$CHART" --set controller.serviceAccountName=my-sa > "$TMP/sa.yaml"
+sa=$(sed -n '/Source: kape\/templates\/controller\/serviceaccount.yaml/,$p' "$TMP/sa.yaml")
+[[ "$sa" == *'name: my-sa'* ]] || fail "SA override: controller ServiceAccount not named my-sa"
+# controller rbac.yaml is the last Source block: grab from its final marker
+binding=$(sed -n '/Source: kape\/templates\/controller\/rbac.yaml/,$p' "$TMP/sa.yaml" | tail -n +2)
+[[ "$binding" == *'name: my-sa'* ]] || fail "SA override: ClusterRoleBinding subjects do not reference my-sa"
+[[ "$binding" == *'namespace: kape-system'* ]] || fail "SA override: binding subject namespace wrong"
+[[ "$binding" == *'name: my-sa'* ]] || fail "SA override: ClusterRoleBinding subjects do not reference my-sa"
+[[ "$binding" == *'namespace: kape-system'* ]] || fail "SA override: binding subject namespace wrong"
+
 echo "OK: all chart render assertions passed"
