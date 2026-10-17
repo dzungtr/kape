@@ -37,8 +37,10 @@ heartbeat.
 
 `data` is the verbatim pi JSONL record (never re-wrapped, `text_delta`
 included) or a daemon notice: `pi_stderr`, `pi_exit`, `pi_restart`,
-`spool_truncated`. Spool ids recover from the file tail — monotonic across
-daemon restarts; `boot_id` is fresh random per daemon start.
+`spool_truncated`, `queue_drained` (Esc-abort, issue #250: the texts drained
+by the `clear_queue` half of the abort pair, spooled before the abort lands).
+Spool ids recover from the file tail — monotonic across daemon restarts;
+`boot_id` is fresh random per daemon start.
 
 ## Pi crash ownership (spec #245 E4)
 

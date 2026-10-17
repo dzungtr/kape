@@ -234,3 +234,28 @@ func recordTypes(recs []Record) []string {
 	}
 	return types
 }
+
+// Esc-abort (issue #250): the abort front door sends clear_queue + abort to
+// pi's stdin — it must NOT kill the pi subprocess, which keeps serving the
+// subsequent settle records and any later commands.
+func TestAbortCommandKeepsPiAlive(t *testing.T) {
+	f := newFixture(t, "tok")
+	rec := f.do(t, "POST", "/commands", "tok", Command{ID: "a1", Type: CommandAbort})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /commands abort = %d, want 202", rec.Code)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !f.pi.Running() {
+			t.Fatal("abort killed the pi subprocess; it must keep running")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !f.pi.Running() {
+		t.Fatal("pi not running after abort")
+	}
+	var stored Command
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil || stored.Status != "queued" {
+		t.Fatalf("stored abort command = %+v (%v), want status queued", stored, err)
+	}
+}
