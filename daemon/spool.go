@@ -215,3 +215,11 @@ func toRecords(recs []spoolEntry) []Record {
 
 // Close releases the file.
 func (s *Spool) Close() error { return s.f.Close() } //nolint:errcheck
+
+// Depth reports the number of records currently held in the spool window
+// (post-truncation) for GET /status's spool_depth.
+func (s *Spool) Depth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.recs)
+}
