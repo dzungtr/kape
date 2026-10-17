@@ -94,8 +94,8 @@ The controller's SLM-judged view of a running turn: a verdict plus a short summa
 _Avoid_: monitor state, health status (deterministic liveness is a separate concept).
 
 **Verdict**:
-The assessment's classification: `healthy | stuck | finished | failed`. Cheap purpose-built endpoints produce it (summarizer + decision-modality classifier); deterministic events stay authoritative.
-_Avoid_: agent status, session state (the FSM has no stuck state).
+The assessment's classification: `healthy | looping | blocked | degraded | finished | failed` — single responsibility: one owner and one action class per verdict (healthy→wait; looping→host steers/aborts; blocked→re-provision+revive; degraded→halt dispatches+diagnose platform; finished→consume; failed→retry/re-dispatch). Cheap purpose-built endpoints produce it (summarizer + decision-modality classifier); deterministic events stay authoritative.
+_Avoid_: agent status, session state (the FSM has no stuck/looping/blocked state).
 
 **Tick**:
 One periodic mid-turn assessment firing while a turn runs (60s default, configurable); armed and disarmed by registry lifecycle transitions, never persisted.
