@@ -32,6 +32,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // Verdict values (issue #230, Q17 — single responsibility: one owner + one
@@ -87,6 +89,11 @@ type SLMClient struct {
 	summarizerModel string
 	classifierModel string
 	httpClient      *http.Client
+	// timeout is the per-call deadline (MonitorConfig.Timeout), stored
+	// explicitly rather than sourced from httpClient.Timeout: an injected
+	// zero-Timeout client (common for fakes) must not yield an
+	// instantly-expired context (PR #238 review P2).
+	timeout time.Duration
 }
 
 // NewSLMClient builds a client from the monitor config. The decisions URL
@@ -106,6 +113,7 @@ func NewSLMClient(m MonitorConfig, httpClient *http.Client) *SLMClient {
 		summarizerModel: m.SummarizerModel,
 		classifierModel: m.ClassifierModel,
 		httpClient:      httpClient,
+		timeout:         m.Timeout,
 	}
 }
 
@@ -146,7 +154,7 @@ func (c *SLMClient) summarize(ctx context.Context, transcript string, terminal b
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.httpClient.Timeout)
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	body := map[string]any{
@@ -213,7 +221,7 @@ func (c *SLMClient) Classify(ctx context.Context, t TurnTelemetry) (Verdict, err
 	if ctx.Err() != nil {
 		return Verdict{}, ctx.Err()
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.httpClient.Timeout)
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	// Live-pinned: ScaleDown state must be a string — serialize the
@@ -309,6 +317,11 @@ func (c *SLMClient) post(ctx context.Context, url string, body any, out any) err
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Back off to a rune boundary: never split mid-rune on non-ASCII turn
+	// prompts (PR #238 review P2).
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

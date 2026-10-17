@@ -72,6 +72,11 @@ type AgentView struct {
 	// Source records how this view was derived: "live" (in-memory agent,
 	// exec state available) or "cr" (gateway sandbox labels/phase only).
 	Source string `json:"source"`
+	// Assessment is the minimal projected latest assessment of the current
+	// turn (issue #232, spec #230 Q8): {verdict, summary, assessedAt, seq}.
+	// Nil when the current turn has no assessment yet — a new turn's
+	// agent.turn_started nulls the previous turn's terminal verdict.
+	Assessment *AssessmentView `json:"assessment,omitempty"`
 }
 
 // agentView builds the view of a registered agent: "live" when this process
@@ -99,6 +104,11 @@ func (a *Agent) agentView() AgentView {
 	children := a.mgr.liveChildIDs(a.ID)
 	if len(children) > 0 {
 		view.Children = children
+	}
+	// Latest-assessment projection (issue #232): read from the durable log —
+	// full history stays in the log, only the minimal shape projects.
+	if evs, err := a.hub.SubscribeSnapshot(); err == nil {
+		view.Assessment = assessmentFromEvents(evs)
 	}
 	return view
 }
@@ -130,6 +140,17 @@ func crView(info SandboxInfo) AgentView {
 		Parent:  info.Labels[LabelParentAgentID], // durable parent linkage (issue #216)
 		Source:  SourceCR,
 	}
+}
+
+// assessmentFor replays the durable log for a CR-derived (post-restart)
+// view and projects the latest current-turn assessment; nil when the log is
+// unreadable or carries no assessment (issue #232).
+func (m *AgentManager) assessmentFor(id string) *AssessmentView {
+	evs, err := m.store.Replay(id, 0)
+	if err != nil {
+		return nil
+	}
+	return assessmentFromEvents(evs)
 }
 
 // statusFromPhase maps a gateway sandbox phase to the agent FSM status for
@@ -189,7 +210,9 @@ func (m *AgentManager) List(ctx context.Context) ([]AgentView, error) {
 			views = append(views, view)
 			continue
 		}
-		views = append(views, crView(info))
+		cv := crView(info)
+		cv.Assessment = m.assessmentFor(cv.ID)
+		views = append(views, cv)
 	}
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Created != nil && views[j].Created != nil {
@@ -233,7 +256,9 @@ func (m *AgentManager) GetView(ctx context.Context, id string) (AgentView, error
 	}
 	for _, info := range infos {
 		if m.owned(info) && info.Labels[LabelAgentID] == id {
-			return crView(info), nil
+			cv := crView(info)
+			cv.Assessment = m.assessmentFor(id)
+			return cv, nil
 		}
 	}
 	return AgentView{}, errUnknownAgent(id)
@@ -400,6 +425,12 @@ func (m *AgentManager) RebuildFromLog(ctx context.Context) error {
 			a.cancel = cancel
 			a.pullTransport = true
 			go m.runPuller(a, ctx)
+		}
+		// Restart re-arm (issue #232): a replayed agent whose projected state
+		// is running gets its monitor timer re-armed from the replayed state —
+		// timers are derived, never persisted (≤1 interval grace accepted).
+		if state == SessionRunning {
+			m.monitor.Arm(id, hub)
 		}
 	}
 	return nil

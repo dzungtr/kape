@@ -158,6 +158,10 @@ type AgentManager struct {
 	// resolver resolves the per-agent daemon address from the Sandbox CR
 	// (issue #214, D7). Set in main when transport is pull.
 	resolver DaemonAddressResolver
+	// monitor is the SLM monitor loop (issue #232): armed on turn_started,
+	// disarmed on settle/termination/liveness failure, terminal assessment
+	// in the settle path. Nil (config-disabled) → every hook is a no-op.
+	monitor *Monitor
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
@@ -167,6 +171,13 @@ func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManag
 // WithResolver sets the daemon address resolver (issue #214, D7).
 func (m *AgentManager) WithResolver(r DaemonAddressResolver) *AgentManager {
 	m.resolver = r
+	return m
+}
+
+// WithMonitor attaches the SLM monitor loop (issue #232). A nil monitor
+// (disabled config) keeps every hook a nil-receiver no-op.
+func (m *AgentManager) WithMonitor(mo *Monitor) *AgentManager {
+	m.monitor = mo
 	return m
 }
 
@@ -561,6 +572,8 @@ func (m *AgentManager) deleteOne(ctx context.Context, id string) error {
 	if err := agent.fsm.Transition(SessionTerminated, "agent.terminated", nil); err != nil {
 		log.Printf("[agent %s] record session terminated failed: %v", id, err)
 	}
+	// Termination disarms the monitor timer (issue #232).
+	m.monitor.Disarm(id)
 	agent.hub.Close()
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
@@ -625,12 +638,15 @@ func (a *Agent) sendPrompt(message string) error {
 			a.mgr.invalidateDaemon(a)
 			return fmt.Errorf("daemon rejected prompt: %w", err)
 		}
-		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
+		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", map[string]interface{}{"prompt": message}); err != nil {
 			// The 202 landed but the transition did not make the log; surface
 			// it — the turn boundary is no longer derivable from replay alone.
 			log.Printf("[agent %s] record turn_started failed: %v", a.ID, err)
 		}
 		a.status = StatusWorking
+		// The monitor timer is armed on the turn-start transition (issue #232):
+		// derived from the registry transition, never persisted.
+		a.mgr.monitor.Arm(a.ID, a.hub)
 		log.Printf("[agent %s] prompt accepted via daemon: %q", a.ID, message)
 		return nil
 	}
@@ -660,13 +676,15 @@ func (a *Agent) sendPrompt(message string) error {
 	raw, _ := json.Marshal(cmd)
 	select {
 	case a.stdin <- append(raw, '\n'):
-		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", nil); err != nil {
+		if err := a.fsm.Transition(SessionRunning, "agent.turn_started", map[string]interface{}{"prompt": message}); err != nil {
 			// The pi command was sent but the transition did not land in
 			// the log; surface it — the turn boundary is no longer
 			// derivable from replay alone.
 			log.Printf("[agent %s] record turn_started failed: %v", a.ID, err)
 		}
 		a.status = StatusWorking
+		// The monitor timer is armed on the turn-start transition (issue #232).
+		a.mgr.monitor.Arm(a.ID, a.hub)
 		log.Printf("[agent %s] prompt accepted: %q", a.ID, message)
 		return nil
 	default:
@@ -908,7 +926,13 @@ func (m *AgentManager) onPiRecord(agent *Agent, raw json.RawMessage) {
 	var rec struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(raw, &rec); err != nil || rec.Type != piSettledEventType {
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return
+	}
+	// Silence anchors for the monitor's telemetry (issue #232): last record
+	// time + type, updated on every record while a timer is armed.
+	m.monitor.NoteRecord(agent.ID, rec.Type)
+	if rec.Type != piSettledEventType {
 		return
 	}
 	agent.mu.Lock()
@@ -918,6 +942,12 @@ func (m *AgentManager) onPiRecord(agent *Agent, raw json.RawMessage) {
 	}
 	agent.status = StatusReady
 	agent.mu.Unlock()
+	// Terminal assessment (issue #232, spec #230 Q10): disarm the timer and
+	// invalidate in-flight ticks, then run the terminal assessment
+	// synchronously (hard-bounded 10s) so the agent.assessed event appends
+	// BEFORE agent.settled — every settle wake carries the terminal verdict.
+	// Failure or budget exhaustion: settle proceeds without a verdict.
+	agent.mgr.monitor.SettleAssess(agent.ID)
 	// running → idle in the session FSM (issue #196).
 	if err := agent.fsm.Transition(SessionIdle, "agent.settled", nil); err != nil {
 		log.Printf("[agent %s] record settled failed: %v", agent.ID, err)
@@ -957,6 +987,9 @@ func (m *AgentManager) fail(agent *Agent, reason string) {
 	}
 	agent.status = StatusFailed
 	agent.mu.Unlock()
+	// Liveness failure disarms the monitor timer (issue #232): a failed agent
+	// is not running, no SLM spend accrues.
+	m.monitor.Disarm(agent.ID)
 	// The session vocabulary has no failed state (issue #196: failures are
 	// an agent-liveness concern; Epic 3 owns paused/reviving recovery), so
 	// this lifecycle event is for the agent dimension and is ignored by the
