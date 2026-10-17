@@ -91,10 +91,6 @@ func TestWaitImmediateReturnIdleWithTerminalAssessment(t *testing.T) {
 	if res.Assessment == nil || res.Assessment.Verdict != "finished" {
 		t.Fatalf("assessment = %+v, want terminal finished verdict", res.Assessment)
 	}
-	if !strings.Contains(rec.Body.String(), "raw") || strings.Contains(rec.Body.String(), "text_delta") {
-		// raw-record guarantee asserted structurally below; keep this cheap.
-		_ = rec
-	}
 }
 
 // TestWaitNoRawRecordsEverCrossSurface: even with noisy verbatim records in
@@ -428,5 +424,42 @@ func TestMCPWaitAgentHandler(t *testing.T) {
 	_, _, err = h(context.Background(), nil, waitInput{AgentID: agent.ID, Timeout: "0"})
 	if err == nil {
 		t.Fatal("invalid timeout via MCP tool: want error")
+	}
+}
+
+// consumeWakeEvents folds replayed events through the wake filter — the
+// lost-wake path for events appended between the baseline snapshot and
+// Subscribe (PR #241 review P1). Direct unit test: the gap is not
+// deterministically reachable end-to-end.
+func TestConsumeWakeEventsReplayPath(t *testing.T) {
+	mk := func(typ string, verdict string) Event {
+		data, _ := json.Marshal(map[string]string{"verdict": verdict, "confidence": "likely"})
+		return Event{Seq: 1, Type: typ, Data: data}
+	}
+	changed := map[string]bool{}
+	lv := "healthy"
+	// Repeated verdict in the replay: suppressed, no wake.
+	if consumeWakeEvents([]Event{mk(EventTypeAssessed, "healthy")}, changed, &lv) {
+		t.Fatal("replayed repeated verdict woke")
+	}
+	// Verdict transition in the replay: wakes as assessment.
+	if !consumeWakeEvents([]Event{mk(EventTypeAssessed, "looping")}, changed, &lv) {
+		t.Fatal("replayed verdict transition did not wake")
+	}
+	if !changed["assessment"] || changed["state"] || lv != "looping" {
+		t.Fatalf("changed=%v lastVerdict=%q, want assessment wake, lastVerdict looping", changed, lv)
+	}
+	// FSM lifecycle and liveness events in the replay: wake as state.
+	changed = map[string]bool{}
+	if !consumeWakeEvents([]Event{mk("agent.settled", ""), mk("agent.failed", "")}, changed, &lv) {
+		t.Fatal("replayed state event did not wake")
+	}
+	if !changed["state"] || changed["assessment"] {
+		t.Fatalf("changed=%v, want [state]", changed)
+	}
+	// Verbatim records never wake.
+	changed = map[string]bool{}
+	if consumeWakeEvents([]Event{mk("text_delta", ""), mk("raw", "")}, changed, &lv) {
+		t.Fatal("replayed verbatim record woke")
 	}
 }

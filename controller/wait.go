@@ -136,13 +136,22 @@ func (m *AgentManager) Wait(ctx context.Context, id string, timeout time.Duratio
 	if len(evs) > 0 {
 		after = evs[len(evs)-1].Seq
 	}
-	_, live, unsub, err := hub.Subscribe(after)
+	replay, live, unsub, err := hub.Subscribe(after)
 	if err != nil {
 		return nil, err
 	}
 	defer unsub()
 
 	changed := map[string]bool{}
+	// Lost-wake race (PR #241 review, P1): events appended between the
+	// baseline snapshot and Subscribe — including settle/failed/assessed the
+	// immediate-return checks just missed — arrive as Subscribe replay.
+	// Consume the replay through the same wake filter BEFORE the select loop;
+	// dropping it blocked a wake-worthy wait to timeout.
+	if wake := consumeWakeEvents(replay, changed, &lastVerdict); wake {
+		waitDrain(live, changed, &lastVerdict) // coalesce anything already queued live
+		return m.waitSnapshot(id, "", changed)
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
@@ -152,13 +161,13 @@ func (m *AgentManager) Wait(ctx context.Context, id string, timeout time.Duratio
 		case <-timer.C:
 			// Timeout expiry: current state + latest assessment, changed
 			// ["timeout"].
-			return m.waitSnapshot(id, waitChangedTimeout, changed), nil
+			return m.waitSnapshot(id, waitChangedTimeout, changed)
 		case ev, ok := <-live:
 			if !ok {
 				// Hub closed (agent deleted): the terminated lifecycle event
 				// already fired as a state wake on the buffered channel —
 				// this is the post-drain safe path.
-				return m.waitSnapshot(id, waitChangedState, changed), nil
+				return m.waitSnapshot(id, waitChangedState, changed)
 			}
 			kind, verdict := wakeOf(ev)
 			if kind == "" {
@@ -177,9 +186,33 @@ func (m *AgentManager) Wait(ctx context.Context, id string, timeout time.Duratio
 			// trigger that fires (verdict + settle landing together return
 			// once, both kinds listed).
 			waitDrain(live, changed, &lastVerdict)
-			return m.waitSnapshot(id, "", changed), nil
+			return m.waitSnapshot(id, "", changed)
 		}
 	}
+}
+
+// consumeWakeEvents folds a replayed event slice through the wake filter,
+// accumulating trigger kinds and applying the lastVerdict suppression rule.
+// Returns true when at least one wake fired. Shared by the Subscribe replay
+// path and unit-tested directly (the snapshot→Subscribe gap is not
+// deterministically reachable end-to-end).
+func consumeWakeEvents(evs []Event, changed map[string]bool, lastVerdict *string) bool {
+	woke := false
+	for i := range evs {
+		kind, verdict := wakeOf(&evs[i])
+		if kind == "" {
+			continue
+		}
+		if kind == waitChangedAssessment && verdict == *lastVerdict {
+			continue
+		}
+		if kind == waitChangedAssessment {
+			*lastVerdict = verdict
+		}
+		changed[kind] = true
+		woke = true
+	}
+	return woke
 }
 
 // waitDrain consumes events for the coalesce window (bounded by
@@ -213,22 +246,23 @@ func waitDrain(live chan *Event, changed map[string]bool, lastVerdict *string) {
 
 // waitSnapshot builds the response: latest projected state + assessment, no
 // raw records. The changed list is deterministic order [state, assessment,
-// timeout] filtered to what fired; kind merges one more trigger in.
-func (m *AgentManager) waitSnapshot(id, kind string, changed map[string]bool) *WaitResult {
+// timeout] filtered to what fired; kind merges one more trigger in. Store
+// read failures are surfaced (hub contract: never a silent null assessment).
+func (m *AgentManager) waitSnapshot(id, kind string, changed map[string]bool) (*WaitResult, error) {
 	if kind != "" {
 		changed[kind] = true
 	}
 	agent := m.Get(id)
 	if agent == nil {
 		// Deleted between wake and snapshot: report terminated, no assessment.
-		return &WaitResult{AgentID: id, Changed: finalizeChanged(changed), State: SessionTerminated}
+		return &WaitResult{AgentID: id, Changed: finalizeChanged(changed), State: SessionTerminated}, nil
 	}
 	state := agent.fsm.State()
-	var assessment *AssessmentView
-	if evs, err := agent.hub.SubscribeSnapshot(); err == nil {
-		assessment = assessmentFromEvents(evs)
+	evs, err := agent.hub.SubscribeSnapshot()
+	if err != nil {
+		return nil, err
 	}
-	return &WaitResult{AgentID: id, Changed: finalizeChanged(changed), State: state, Assessment: assessment}
+	return &WaitResult{AgentID: id, Changed: finalizeChanged(changed), State: state, Assessment: assessmentFromEvents(evs)}, nil
 }
 
 // finalizeChanged serializes the trigger set in fixed order.
