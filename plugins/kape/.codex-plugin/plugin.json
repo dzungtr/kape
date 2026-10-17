@@ -1,6 +1,6 @@
 {
   "name": "kape",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "kape ships the kape-controller dispatch skill as a self-contained plugin for Claude Code and Codex, living under plugins/kape/ in the kape-io repo.",
   "author": { "name": "dzungtr", "url": "https://github.com/dzungtr" },
   "homepage": "https://github.com/dzungtr/kape",
@@ -16,7 +16,7 @@
     "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
       "Dispatch a task to a kape sandbox agent.",
-      "How do I poll a kape sandbox agent's output?",
+      "How do I wait for a kape sandbox agent's output?",
       "A kape-controller tool call failed — what should I check?"
     ],
     "websiteURL": "https://github.com/dzungtr/kape"
