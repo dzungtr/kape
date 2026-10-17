@@ -39,6 +39,7 @@ test: ## Run all tests (Go, Python, dashboard)
 	$(PODMAN_ENV) go test ./daemon/...
 	cd runtime && conda run -n kape-runtime pytest
 	cd dashboard && bun run test -- --passWithNoTests
+	./charts/kape/tests/render-test.sh
 
 lint: ## Run golangci-lint and ruff across all modules
 	golangci-lint run ./operator/... ./task-service/... ./adapters/... ./kapeproxy/... ./daemon/...

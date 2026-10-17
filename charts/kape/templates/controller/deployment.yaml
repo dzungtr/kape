@@ -1,0 +1,75 @@
+{{- /* kape-controller Deployment (issue #234): full env wiring so the pod
+     is functional, not just the monitor. Env names and defaults match
+     controller/config.go envConfig and controller/README.md.
+     Monitor: no openrouterApiKey.secretRef → no API key env → monitor
+     disabled (single log line, spec #230 / ADR-0084). */ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: kape-controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      app: kape-controller
+  template:
+    metadata:
+      labels:
+        app: kape-controller
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccountName }}
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          volumeMounts:
+            - name: event-store
+              mountPath: /var/lib/kape-controller
+{{- if .Values.controller.creds.secretRef }}
+            - name: creds
+              mountPath: {{ .Values.controller.credsDir | quote }}
+              readOnly: true
+{{- end }}
+          env:
+            # Core runtime (controller/config.go envConfig names).
+            - name: KAPE_GATEWAY_ADDR
+              value: {{ .Values.controller.gatewayAddr | quote }}
+            - name: KAPE_CREDS_DIR
+              value: {{ .Values.controller.credsDir | quote }}
+            - name: KAPE_DEFAULT_IMAGE
+              value: {{ .Values.controller.defaultImage | quote }}
+            - name: KAPE_MODEL_GATEWAY_URL
+              value: {{ .Values.controller.modelGatewayUrl | quote }}
+            - name: KAPE_TRANSPORT
+              value: {{ .Values.controller.transport | quote }}
+            - name: KAPE_EVENT_STORE
+              value: {{ .Values.controller.eventStore | quote }}
+            # SLM monitor (spec #230, ADR-0084).
+            - name: KAPE_MONITOR_INTERVAL_SECONDS
+              value: {{ .Values.controller.monitor.intervalSeconds | quote }}
+            - name: KAPE_MONITOR_SUMMARIZER_MODEL
+              value: {{ .Values.controller.monitor.summarizerModel | quote }}
+            - name: KAPE_MONITOR_CLASSIFIER_MODEL
+              value: {{ .Values.controller.monitor.classifierModel | quote }}
+            - name: KAPE_MONITOR_BASE_URL
+              value: {{ .Values.controller.monitor.baseUrl | quote }}
+            - name: KAPE_MONITOR_TIMEOUT_SECONDS
+              value: {{ .Values.controller.monitor.timeoutSeconds | quote }}
+{{- if .Values.controller.monitor.openrouterApiKey.secretRef }}
+            - name: KAPE_MONITOR_OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.monitor.openrouterApiKey.secretRef | quote }}
+                  key: {{ .Values.controller.monitor.openrouterApiKey.key | quote }}
+{{- end }}
+      volumes:
+        - name: event-store
+          emptyDir: {}
+{{- if .Values.controller.creds.secretRef }}
+        - name: creds
+          secret:
+            secretName: {{ .Values.controller.creds.secretRef | quote }}
+{{- end }}

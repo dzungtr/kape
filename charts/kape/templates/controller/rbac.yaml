@@ -1,0 +1,33 @@
+{{- /* kape-controller RBAC (issue #234 review round 2): the pull-transport
+     daemon resolution reads agent-sandbox Sandbox CRs in-cluster
+     (controller/sandboxresolver.go, ADR-0083 D7) — without get/watch on
+     agents.x-k8s.io sandboxes every resolution returns 403. Cluster-scoped
+     grant bound to the controller SA, mirroring the standalone
+     controller/deploy/rbac.yaml pattern (namespace-scoped Role there;
+     ClusterRole here since the chart's controller namespace and the sandbox
+     namespace are configurable independently). */ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kape-controller-sandbox-reader
+  labels:
+    app: kape-controller
+rules:
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kape-controller-sandbox-reader
+  labels:
+    app: kape-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kape-controller-sandbox-reader
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.controller.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
