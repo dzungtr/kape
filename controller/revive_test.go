@@ -22,6 +22,13 @@ import (
 func pausedTestAgent(t *testing.T) (*AgentManager, *fakeDaemon, *Agent) {
 	t.Helper()
 	mgr, _, d, agent := pullTestAgent(t)
+	return pausedTestAgentWith(t, mgr, d, agent)
+}
+
+// pausedTestAgentWith pauses an existing pull-transport agent (shared setup
+// for tests that need a custom manager configuration).
+func pausedTestAgentWith(t *testing.T, mgr *AgentManager, d *fakeDaemon, agent *Agent) (*AgentManager, *fakeDaemon, *Agent) {
+	t.Helper()
 	if err := mgr.Prompt(agent.ID, "in-flight turn"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -137,6 +144,8 @@ func TestReviveLedgerFromEvents(t *testing.T) {
 		{name: "rearm resets", evs: []Event{consumed(at(0)), consumed(at(1)), {Type: agentResumedEventType}}, used: 0, open: false,
 			wantAt: time.Time{}, wantCd: 0},
 		{name: "revived closes the open attempt", evs: []Event{consumed(at(4)), {Type: lifecycleRevived}}, used: 1, open: false,
+			wantAt: mustTime(t, at(4)), wantCd: 30 * time.Second},
+		{name: "abandoned closes the open attempt without refunding", evs: []Event{consumed(at(4)), {Type: reviveAbandonedEventType}}, used: 1, open: false,
 			wantAt: mustTime(t, at(4)), wantCd: 30 * time.Second},
 	}
 	now := time.Date(2026, 10, 17, 12, 4, 30, 0, time.UTC)
@@ -289,6 +298,211 @@ func TestResumeRearmsExhaustedSession(t *testing.T) {
 	}
 	if got := len(eventsOfType(evs, lifecycleRevived)); got != 2 {
 		t.Fatalf("agent.revived events = %d, want 2", got)
+	}
+}
+
+// --- AC: a hold that never lands (deadline expiry) abandons the open attempt; the re-arm recovers ---
+
+// expireHoldClock returns a clock that reads base for the first n calls (the
+// deadline computation inside waitForReplacementDaemon) and past the 10-minute
+// hold deadline afterwards, forcing the first deadline check to expire.
+func expireHoldClock(base time.Time, deadlineCalls int) func() time.Time {
+	calls := 0
+	return func() time.Time {
+		calls++
+		if calls <= deadlineCalls {
+			return base
+		}
+		return base.Add(11 * time.Minute)
+	}
+}
+
+// recoverViaResume performs the post-abandonment recovery: the re-arm verb
+// must be accepted (pre-fix it 409ed forever on the stuck open attempt) and
+// the re-driven hold must complete paused → idle.
+func recoverViaResume(t *testing.T, mgr *AgentManager, d *fakeDaemon, agent *Agent) {
+	t.Helper()
+	mgr.daemon = daemonClientFor(d.handler()) // restore the reachable daemon
+	d.SetPiRunning(true)
+	mgr.now = time.Now
+	if err := mgr.Resume(context.Background(), agent.ID); err != nil {
+		t.Fatalf("Resume after abandonment: %v", err)
+	}
+	waitFor(t, func() bool { return agent.fsm.State() == SessionIdle && agent.Status() == StatusReady }, "re-armed revive completes")
+}
+
+// stopAgentPuller cancels the agent's puller (and any Resume-re-driven one)
+// at test end — leftover pull loops spin against the daemon seam and pollute
+// timing-sensitive tests elsewhere in the package.
+func stopAgentPuller(t *testing.T, agent *Agent) {
+	t.Helper()
+	t.Cleanup(func() {
+		agent.mu.Lock()
+		cancel := agent.cancel
+		agent.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+}
+
+func TestReviveHoldDeadlineAbandonsAttempt(t *testing.T) {
+	d := newFakeDaemon()
+	cfg := pullTestConfig(httptest.NewServer(nil))
+	gw := NewFakeGateway()
+	mgr := NewAgentManager(gw, cfg, testStore(t))
+	mgr.daemon = daemonClientFor(d.handler())
+	base := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	mgr.now = expireHoldClock(base, 3) // cooldown, consumption, deadline; the expiry check reads past-deadline
+	agent, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stopAgentPuller(t, agent)
+	if err := mgr.Prompt(agent.ID, "turn"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	mgr.daemon = nil // no resolver: every replacement preflight fails (D7 re-resolve loop)
+	if m := mgr.pauseAndRevive(agent, context.Background()); !m {
+		t.Fatal("pauseAndRevive reported puller-continue on hold failure, want stop")
+	}
+	if agent.Status() != StatusFailed || agent.fsm.State() != SessionPaused {
+		t.Fatalf("after hold failure: %s/%s, want failed/paused", agent.Status(), agent.fsm.State())
+	}
+	evs := agent.hub.Events()
+	if got := len(eventsOfType(evs, reviveAbandonedEventType)); got != 1 {
+		t.Fatalf("revive_abandoned events = %d, want 1 (open attempt must be closed)", got)
+	}
+	if got := len(eventsOfType(evs, reviveConsumedEventType)); got != 1 {
+		t.Fatalf("revive_consumed events = %d, want 1", got)
+	}
+	// The ledger is no longer open: the re-arm verb is accepted and recovers
+	// the session (pre-fix, Resume 409ed forever on the stuck open attempt).
+	recoverViaResume(t, mgr, d, agent)
+}
+
+func TestReviveFromPausedOpenAttemptBeatsBudgetCheck(t *testing.T) {
+	d := newFakeDaemon()
+	cfg := pullTestConfig(httptest.NewServer(nil))
+	cfg.ReviveMax = 1
+	gw := NewFakeGateway()
+	mgr := NewAgentManager(gw, cfg, testStore(t))
+	mgr.daemon = daemonClientFor(d.handler())
+	base := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	mgr.now = expireHoldClock(base, 1) // deadline computation only; the expiry check reads past-deadline
+	agent, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stopAgentPuller(t, agent)
+	if err := mgr.Prompt(agent.ID, "turn"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if !mgr.pauseSession(agent, "test pause") {
+		t.Fatal("pauseSession rejected a running session")
+	}
+	// Craft an open attempt that is also the last budget unit: used == max.
+	if agent.hub.PublishLifecycle(reviveConsumedEventType, map[string]interface{}{
+		"agent_id": agent.ID, "attempt": 1, "at": base.Format(time.RFC3339Nano),
+	}) == nil {
+		t.Fatal("ledger append failed")
+	}
+	mgr.daemon = nil // no resolver: every replacement preflight fails (D7 re-resolve loop)
+	mgr.reviveFromPaused(agent, context.Background())
+	evs := agent.hub.Events()
+	if got := len(eventsOfType(evs, reviveAbandonedEventType)); got != 1 {
+		t.Fatalf("revive_abandoned events = %d, want 1 (open attempt resumed despite used==max)", got)
+	}
+	if got := len(eventsOfType(evs, reviveConsumedEventType)); got != 1 {
+		t.Fatalf("revive_consumed events = %d, want 1 (resuming an open hold spends nothing)", got)
+	}
+	// Recovery: the abandon closed the attempt, so the re-arm is accepted even
+	// though used still equals max.
+	recoverViaResume(t, mgr, d, agent)
+}
+
+// --- AC: the cooldown wait must not hold reviveMu (a Resume during a live
+// cooldown fails fast instead of blocking on the mutex) ---
+
+func TestReviveCooldownSleepOutsideReviveMu(t *testing.T) {
+	d := newFakeDaemon()
+	cfg := pullTestConfig(httptest.NewServer(nil))
+	cfg.ReviveCooldown = 1 * time.Second
+	gw := NewFakeGateway()
+	mgr := NewAgentManager(gw, cfg, testStore(t))
+	mgr.daemon = daemonClientFor(d.handler())
+	agent, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stopAgentPuller(t, agent)
+	if err := mgr.Prompt(agent.ID, "turn"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if !mgr.pauseSession(agent, "test pause") {
+		t.Fatal("pauseSession rejected a running session")
+	}
+	ctx := context.Background()
+	if _, ok := mgr.consumeReviveAttempt(agent, ctx); !ok {
+		t.Fatal("first consumption aborted")
+	}
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := mgr.consumeReviveAttempt(agent, ctx) // second attempt: cooldown-paced
+		done <- ok
+	}()
+	// The cooldown sleep happens outside reviveMu: the mutex is free while
+	// the second attempt waits. (Pre-fix, TryLock blocked for the full
+	// cooldown.)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	free := false
+	for time.Now().Before(deadline) {
+		if agent.reviveMu.TryLock() {
+			agent.reviveMu.Unlock()
+			free = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !free {
+		t.Fatal("reviveMu held during the cooldown sleep")
+	}
+	if ok := <-done; !ok {
+		t.Fatal("cooldown-paced consumption aborted")
+	}
+	if got := len(eventsOfType(agent.hub.Events(), reviveConsumedEventType)); got != 2 {
+		t.Fatalf("revive_consumed events = %d, want 2 (attempt consumed after the cooldown)", got)
+	}
+}
+
+// --- AC: a lost ledger append aborts the attempt (no free revive on replay) ---
+
+func TestReviveAppendFailureAbortsAttempt(t *testing.T) {
+	d := newFakeDaemon()
+	cfg := pullTestConfig(httptest.NewServer(nil))
+	gw := NewFakeGateway()
+	mgr := NewAgentManager(gw, cfg, testStore(t))
+	mgr.daemon = daemonClientFor(d.handler())
+	agent, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stopAgentPuller(t, agent)
+	mgr, _, agent = pausedTestAgentWith(t, mgr, d, agent)
+	// PublishLifecycle returns nil once the store appends fail — a lost
+	// revive_consumed would under-count replay budget (free revive).
+	agent.hub.store = appendFailingStore{}
+	if _, ok := mgr.consumeReviveAttempt(agent, context.Background()); ok {
+		t.Fatal("consumption accepted with a failing ledger append, want abort")
+	}
+	// The abort happens before the hold: no replacement preflight is issued.
+	statusCallsBefore := d.StatusCalls()
+	mgr.reviveFromPaused(agent, context.Background())
+	if got := d.StatusCalls(); got != statusCallsBefore {
+		t.Fatalf("replacement preflights = %d, want %d (aborted attempt must not hold)", got, statusCallsBefore)
+	}
+	if err := mgr.Resume(context.Background(), agent.ID); err == nil {
+		t.Fatal("Resume accepted with a failing ledger append, want error")
 	}
 }
 

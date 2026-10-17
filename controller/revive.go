@@ -38,10 +38,18 @@ const reviveConsumedEventType = "agent.revive_consumed"
 // resume_session front door: it resets the revive budget for the session.
 const agentResumedEventType = "agent.resumed"
 
-// reviveWaitDeadline bounds the hold for the replacement sandbox's daemon
-// (the pod re-creation window; matches waitReady's provision budget). On
-// expiry the session stays paused + failed; a re-arm re-drives the revive.
-const reviveWaitDeadline = 10 * time.Minute
+// reviveAbandonedEventType closes an open revive attempt whose hold failed
+// (replacement daemon never reachable, or the puller died mid-pause): the
+// fold treats it like agent.revived for openAttempt=false WITHOUT refunding
+// the spent attempt — the budget stays consumed, only the attempt is closed
+// so the re-arm verb and the replay revival can re-drive the revive.
+const reviveAbandonedEventType = "agent.revive_abandoned"
+
+// defaultReviveWaitDeadline bounds the hold for the replacement sandbox's
+// daemon (the pod re-creation window; matches waitReady's provision budget).
+// On expiry the attempt is abandoned (agent.revive_abandoned) and the session
+// stays paused + failed; a re-arm re-drives the revive.
+const defaultReviveWaitDeadline = 10 * time.Minute
 
 // revivePollInterval is the preflight poll period while holding for the
 // replacement daemon.
@@ -75,6 +83,10 @@ func reviveLedgerFromEvents(evs []Event) reviveLedger {
 				}
 			}
 		case lifecycleRevived:
+			l.openAttempt = false
+		case reviveAbandonedEventType:
+			// The hold failed: the attempt is dead, not completed. Budget stays
+			// spent; only the open marker clears so recovery can re-drive.
 			l.openAttempt = false
 		case agentResumedEventType:
 			l = reviveLedger{} // re-arm: budget reset (spec #245 E5)
@@ -172,34 +184,24 @@ func (m *AgentManager) pauseSession(agent *Agent, reason string) bool {
 // pauseAndRevive runs the Tier-2 revive decision after death detection and a
 // complete spool drain: pause the session, spend budget (cooldown-paced),
 // hold for the replacement daemon, and record its boot identity. Reports
-// true when the puller must stop — budget exhausted or the replacement never
-// answered — leaving the session paused + failed; only the re-arm verb (or a
-// controller restart resuming an open attempt) drives the next try.
+// true when the puller must stop — budget exhausted, the ledger append was
+// lost, or the replacement never answered — leaving the session paused +
+// failed; only the re-arm verb (or a controller restart resuming an open
+// attempt) drives the next try.
 func (m *AgentManager) pauseAndRevive(agent *Agent, ctx context.Context) bool {
 	if !m.pauseSession(agent, "sandbox death detected (new boot_id)") {
 		return true
 	}
-	// The ledger decision (read → cooldown → consume) is serialized per
-	// agent: concurrent revive decisions (a fresh death racing a re-arm or
-	// replay revival) must never double-spend or interleave ledger resets.
-	agent.reviveMu.Lock()
-	led, _ := m.reviveLedgerOf(agent)
-	if led.remaining(m.cfg.ReviveMax) <= 0 {
-		agent.reviveMu.Unlock()
-		log.Printf("[agent %s] revive budget exhausted (%d used of %d); session stays paused + failed", agent.ID, led.used, m.cfg.ReviveMax)
+	led, ok := m.consumeReviveAttempt(agent, ctx)
+	if !ok {
 		return true
 	}
-	if d := led.cooldownRemaining(m.now(), m.cfg.ReviveCooldown); d > 0 {
-		log.Printf("[agent %s] revive cooldown: holding %s", agent.ID, d)
-		if !sleepCtx(ctx, d) {
-			agent.reviveMu.Unlock()
-			return true
-		}
-	}
-	m.recordReviveConsumed(agent, led.used+1)
-	agent.reviveMu.Unlock()
-	st, ok := m.waitForReplacementDaemon(agent, ctx)
-	if !ok {
+	st, holdOK := m.waitForReplacementDaemon(agent, ctx)
+	if !holdOK {
+		// Close the open attempt: a hold that never lands must not leave the
+		// ledger open forever (pre-fix, Resume 409ed and the replay revival
+		// bailed on the budget check — the session was stuck paused+failed).
+		m.recordReviveAbandoned(agent, led.used+1, "replacement daemon not reachable within the hold deadline")
 		return true
 	}
 	m.recordBootOnce(agent, st)
@@ -209,38 +211,67 @@ func (m *AgentManager) pauseAndRevive(agent *Agent, ctx context.Context) bool {
 	return false
 }
 
+// consumeReviveAttempt performs the cooldown-paced ledger consumption for one
+// revive attempt. The cooldown wait happens OUTSIDE reviveMu (a concurrent
+// Resume must fail fast, not block up to the full cooldown on the mutex);
+// after the wait the ledger is re-read and re-validated. Reports false when
+// the attempt must abort — budget exhausted meanwhile, context ended, or the
+// ledger append failed (a lost consumption event would under-count replay
+// budget: a free revive on replay).
+func (m *AgentManager) consumeReviveAttempt(agent *Agent, ctx context.Context) (reviveLedger, bool) {
+	agent.reviveMu.Lock()
+	defer agent.reviveMu.Unlock()
+	for {
+		led, _ := m.reviveLedgerOf(agent)
+		if led.remaining(m.cfg.ReviveMax) <= 0 {
+			log.Printf("[agent %s] revive budget exhausted (%d used of %d); session stays paused + failed", agent.ID, led.used, m.cfg.ReviveMax)
+			return led, false
+		}
+		d := led.cooldownRemaining(m.now(), m.cfg.ReviveCooldown)
+		if d <= 0 {
+			if !m.recordReviveConsumed(agent, led.used+1) {
+				log.Printf("[agent %s] revive ledger append failed; attempt aborted", agent.ID)
+				return led, false
+			}
+			return led, true
+		}
+		log.Printf("[agent %s] revive cooldown: holding %s", agent.ID, d)
+		agent.reviveMu.Unlock()
+		awake := sleepCtx(ctx, d)
+		agent.reviveMu.Lock()
+		if !awake {
+			return led, false
+		}
+	}
+}
+
 // reviveFromPaused re-drives a revive for an already-paused session: the
 // re-arm verb (fresh or reset budget) and the controller-restart replay of a
 // paused session whose attempt is still open. An open attempt (a
-// revive_consumed with no agent.revived after it) is resumed without
-// spending budget again.
+// revive_consumed with no agent.revived or agent.revive_abandoned after it)
+// is resumed BEFORE the budget check and without spending budget again —
+// resuming an open hold costs nothing, so an exhausted ledger with an open
+// attempt is still recoverable.
 func (m *AgentManager) reviveFromPaused(agent *Agent, ctx context.Context) {
-	agent.reviveMu.Lock()
 	led, _ := m.reviveLedgerOf(agent)
-	if led.remaining(m.cfg.ReviveMax) <= 0 {
-		agent.reviveMu.Unlock()
-		log.Printf("[agent %s] revive budget exhausted; re-arm required", agent.ID)
-		return
-	}
 	if !led.openAttempt {
-		if d := led.cooldownRemaining(m.now(), m.cfg.ReviveCooldown); d > 0 {
-			if !sleepCtx(ctx, d) {
-				agent.reviveMu.Unlock()
-				return
-			}
+		if _, ok := m.consumeReviveAttempt(agent, ctx); !ok {
+			return
 		}
-		m.recordReviveConsumed(agent, led.used+1)
 	}
-	agent.reviveMu.Unlock()
 	m.holdAndResumePuller(agent, ctx)
 }
 
 // holdAndResumePuller runs the revive hold: wait for the replacement daemon,
 // record its boot identity once, arm the pending-revive flag, and restart
-// the pull loop — its first successful pull completes paused → running.
+// the pull loop — its first successful pull completes paused → running. On
+// hold failure the open attempt is abandoned (agent.revive_abandoned) so the
+// ledger never stays open on a dead hold.
 func (m *AgentManager) holdAndResumePuller(agent *Agent, ctx context.Context) {
+	led, _ := m.reviveLedgerOf(agent) // the open (or just-consumed) attempt number
 	st, ok := m.waitForReplacementDaemon(agent, ctx)
 	if !ok {
+		m.recordReviveAbandoned(agent, led.used, "replacement daemon not reachable within the hold deadline")
 		return
 	}
 	m.recordBootOnce(agent, st)
@@ -251,12 +282,29 @@ func (m *AgentManager) holdAndResumePuller(agent *Agent, ctx context.Context) {
 
 // recordReviveConsumed appends the budget-ledger event for one revive
 // attempt: {attempt, at}. Non-FSM: the session projection ignores it.
-func (m *AgentManager) recordReviveConsumed(agent *Agent, attempt int) {
-	agent.hub.PublishLifecycle(reviveConsumedEventType, map[string]interface{}{
+// Reports false when the append failed (PublishLifecycle returns nil) — the
+// caller must abort the attempt, or replay would under-count the budget.
+func (m *AgentManager) recordReviveConsumed(agent *Agent, attempt int) bool {
+	return agent.hub.PublishLifecycle(reviveConsumedEventType, map[string]interface{}{
 		"agent_id": agent.ID,
 		"attempt":  attempt,
 		"at":       m.now().UTC().Format(time.RFC3339Nano),
-	})
+	}) != nil
+}
+
+// recordReviveAbandoned appends the ledger-closing event for a failed hold:
+// {attempt, reason}. Best-effort — if even this append fails, the replayed
+// open attempt is re-driven by the next restart's reviveFromPaused.
+func (m *AgentManager) recordReviveAbandoned(agent *Agent, attempt int, reason string) {
+	if agent.hub.PublishLifecycle(reviveAbandonedEventType, map[string]interface{}{
+		"agent_id": agent.ID,
+		"attempt":  attempt,
+		"reason":   reason,
+	}) != nil {
+		log.Printf("[agent %s] revive attempt %d abandoned: %s", agent.ID, attempt, reason)
+	} else {
+		log.Printf("[agent %s] revive attempt %d abandoned (%s); ledger close event append failed", agent.ID, attempt, reason)
+	}
 }
 
 // waitForReplacementDaemon holds until the replacement sandbox's daemon
@@ -266,7 +314,7 @@ func (m *AgentManager) recordReviveConsumed(agent *Agent, attempt int) {
 // cached client is dropped so the address re-resolves from the Sandbox CR
 // (D7). Reports false on deadline expiry or context end.
 func (m *AgentManager) waitForReplacementDaemon(agent *Agent, ctx context.Context) (DaemonStatus, bool) {
-	deadline := m.now().Add(reviveWaitDeadline)
+	deadline := m.now().Add(m.reviveWaitDeadline)
 	for {
 		st, err := m.preflight(agent, ctx)
 		if err == nil {
@@ -274,7 +322,7 @@ func (m *AgentManager) waitForReplacementDaemon(agent *Agent, ctx context.Contex
 		}
 		m.invalidateDaemon(agent) // podIPs churn with the replacement pod (D7)
 		if !m.now().Before(deadline) {
-			log.Printf("[agent %s] replacement daemon not reachable within %s; session stays paused", agent.ID, reviveWaitDeadline)
+			log.Printf("[agent %s] replacement daemon not reachable within %s; session stays paused", agent.ID, m.reviveWaitDeadline)
 			return DaemonStatus{}, false
 		}
 		if !sleepCtx(ctx, revivePollInterval) {
@@ -349,7 +397,10 @@ func (m *AgentManager) Resume(ctx context.Context, id string) error {
 		// land together, under the revive lock: from the moment Resume
 		// returns the attempt is open, so a concurrent second Resume is
 		// rejected instead of resetting the ledger mid-attempt.
-		m.recordReviveConsumed(agent, led.used+1)
+		if !m.recordReviveConsumed(agent, led.used+1) {
+			agent.reviveMu.Unlock()
+			return fmt.Errorf("record revive attempt for %s failed", id)
+		}
 	}
 	agent.reviveMu.Unlock()
 	if agent.pullTransport {

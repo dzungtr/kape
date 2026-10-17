@@ -177,10 +177,14 @@ type AgentManager struct {
 	// now is the clock seam for the Tier-2 revive ledger cooldown (issue
 	// #251); tests inject a fake clock.
 	now func() time.Time
+	// reviveWaitDeadline bounds the replacement-daemon hold in the Tier-2
+	// revive (issue #251); test seam over defaultReviveWaitDeadline so the
+	// deadline-expiry path is testable without a 10-minute wait.
+	reviveWaitDeadline time.Duration
 }
 
 func NewAgentManager(gw GatewayClient, cfg Config, store EventStore) *AgentManager {
-	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store, now: time.Now}
+	return &AgentManager{agents: map[string]*Agent{}, gw: gw, cfg: cfg, managedBy: ManagedByValue, store: store, now: time.Now, reviveWaitDeadline: defaultReviveWaitDeadline}
 }
 
 // WithResolver sets the daemon address resolver (issue #214, D7).

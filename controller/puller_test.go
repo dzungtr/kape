@@ -28,6 +28,8 @@ type fakeDaemon struct {
 	commands []DaemonCommand
 	// failNext makes the next N /records calls fail with 500 (backoff tests).
 	failNext int
+	// statusCalls counts /status requests (revive preflight observability).
+	statusCalls int
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -46,6 +48,9 @@ func (d *fakeDaemon) Append(raw string) DaemonRecord {
 }
 
 func (d *fakeDaemon) FailNext(n int) { d.mu.Lock(); d.failNext = n; d.mu.Unlock() }
+
+// StatusCalls reports how many /status preflight requests reached the daemon.
+func (d *fakeDaemon) StatusCalls() int { d.mu.Lock(); defer d.mu.Unlock(); return d.statusCalls }
 
 func (d *fakeDaemon) Commands() []DaemonCommand {
 	d.mu.Lock()
