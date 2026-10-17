@@ -153,7 +153,7 @@ func TestSummarizeNoReasoningTemperatureZero(t *testing.T) {
 	if _, err := c.Summarize(context.Background(), "t"); err != nil {
 		t.Fatalf("Summarize: %v", err)
 	}
-	assertChatBody(t, ft.reqBody, "scaledown/summarize", 400)
+	assertChatBody(t, ft.reqBody, "~deepseek/deepseek-v4-flash-latest", 400)
 }
 
 // assertChatBody asserts the chat-completions request contract: correct
