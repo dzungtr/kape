@@ -1,0 +1,83 @@
+{{- /* kape-controller NetworkPolicy egress (issue #234, ADR-0084 egress stance).
+     The monitor destination is DERIVED from the configured
+     controller.monitor.baseUrl host — never hardcoded to openrouter.ai — so
+     swapping to any OpenRouter-compatible endpoint (in-cluster gateway,
+     proxy, alternative provider) touches chart values only.
+
+     Two egress shapes by destination kind:
+     - external host (default): ipBlock 0.0.0.0/0 excluding private CIDRs on
+       the URL port (private exclusions keep cluster-internal addresses out —
+       the DNS rule below is what resolves the external hostname);
+     - in-cluster host (…svc / …svc.cluster.local FQDN): namespace selector
+       derived from the FQDN's namespace segment, on the URL port. */ -}}
+{{- if .Values.controller.networkPolicy.enabled }}
+{{- $baseURL := .Values.controller.monitor.baseUrl }}
+{{- $scheme := "https" }}
+{{- if hasPrefix "http://" $baseURL -}}{{- $scheme = "http" -}}{{- end }}
+{{- $hostPortFull := regexReplaceAll "^https?://" $baseURL "" | splitList "/" | first }}
+{{- $host := regexReplaceAll ":[0-9]+$" $hostPortFull "" }}
+{{- $port := regexFind ":[0-9]+$" $hostPortFull | trimPrefix ":" | default (eq $scheme "http" | ternary "80" "443") }}
+{{- $inCluster := regexMatch "\\.svc(\\.cluster\\.local)?\\.?$" $host }}
+{{- $parts := splitList "." $host }}
+{{- $ns := "" }}
+{{- if $inCluster }}
+{{- if hasSuffix ".cluster.local" $host }}
+{{- $ns = index $parts (sub (len $parts) 4) }}
+{{- else }}
+{{- $ns = index $parts (sub (len $parts) 2) }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kape-controller-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: kape-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: kape-controller
+  policyTypes:
+    - Egress
+  egress:
+    # DNS — required for hostname resolution (monitor endpoint, k8s API).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Kubernetes API — Sandbox CR reads (ADR-0083 D7), leader election.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- if $baseURL }}
+    # SLM monitor destination — derived from controller.monitor.baseUrl
+    {{- if $inCluster }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns | quote }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+    {{- else }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+{{- end }}

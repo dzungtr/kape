@@ -1,0 +1,42 @@
+{{- /* kape-controller Deployment (issue #234): SLM monitor config wiring.
+     Monitor env names match controller/config.go envConfig (KAPE_MONITOR_*).
+     No secretRef → no API key env → monitor disabled (single log line,
+     spec #230 / ADR-0084); everything else in the deployment is unaffected. */ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kape-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: kape-controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      app: kape-controller
+  template:
+    metadata:
+      labels:
+        app: kape-controller
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccountName }}
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          env:
+            - name: KAPE_MONITOR_INTERVAL_SECONDS
+              value: {{ .Values.controller.monitor.intervalSeconds | quote }}
+            - name: KAPE_MONITOR_SUMMARIZER_MODEL
+              value: {{ .Values.controller.monitor.summarizerModel | quote }}
+            - name: KAPE_MONITOR_CLASSIFIER_MODEL
+              value: {{ .Values.controller.monitor.classifierModel | quote }}
+            - name: KAPE_MONITOR_BASE_URL
+              value: {{ .Values.controller.monitor.baseUrl | quote }}
+{{- if .Values.controller.monitor.openrouterApiKey.secretRef }}
+            - name: KAPE_MONITOR_OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.monitor.openrouterApiKey.secretRef | quote }}
+                  key: {{ .Values.controller.monitor.openrouterApiKey.key | quote }}
+{{- end }}

@@ -1,3 +1,24 @@
+# kape-controller (openshell controller, ADR-0083/0084) deploy wiring.
+controller:
+  image:
+    repository: ghcr.io/dzungtr/kape-controller
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  serviceAccountName: kape-controller
+  networkPolicy:
+    enabled: true
+  # SLM monitor (spec #230, issue #234). Empty openrouterApiKey.secretRef
+  # → no KAPE_MONITOR_OPENROUTER_API_KEY env → monitor disabled.
+  monitor:
+    intervalSeconds: 60
+    summarizerModel: scaledown/summarize
+    classifierModel: scaledown/classify-1
+    baseUrl: https://openrouter.ai/api/v1
+    openrouterApiKey:
+      secretRef: ""
+      key: OPENROUTER_API_KEY
+
 operator:
   image:
     repository: ghcr.io/kape-io/kape-operator
