@@ -30,6 +30,8 @@ heartbeat.
 | `KAPE_PI_BACKOFF_MAX` | `30s` | respawn backoff cap (E4) |
 | `KAPE_PI_STABLE_RUN_RESET` | `60s` | unexpected exit after a run ≥ this resets backoff (E4) |
 | `KAPE_PI_SHUTDOWN_GRACE` | `5s` | SIGTERM→SIGKILL grace when killing pi on daemon shutdown (E4) |
+| `KAPE_PI_SESSION_ID` | — | session-pinned pi `--session-id` (spec #245 E3, issue #249); threaded by the controller at create; empty ⇒ no session flags (built-in fake pi) |
+| `KAPE_PI_SESSION_DIR` | `/sandbox/kape/sessions` | pi `--session-dir` (PVC session tree; used only with a pinned session id) |
 
 ## Records and notices
 

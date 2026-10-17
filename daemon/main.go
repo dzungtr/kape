@@ -36,6 +36,8 @@ type Config struct {
 	PiBackoffMax      time.Duration // backoff cap
 	PiStableRunReset  time.Duration // unexpected exit after a run ≥ this resets backoff
 	PiShutdownGrace   time.Duration // SIGTERM→SIGKILL grace on daemon shutdown
+	PiSessionID       string        // session-pinned pi --session-id (spec #245 E3); empty = no session flags
+	PiSessionDir      string        // pi --session-dir (PVC session tree)
 }
 
 // bootID is a fresh random id per daemon start (ADR-0083 D6): partitions keep
@@ -68,6 +70,7 @@ func parseConfig(args []string) Config {
 		PiBackoffMax:      envDuration("KAPE_PI_BACKOFF_MAX", "30s"),
 		PiStableRunReset:  envDuration("KAPE_PI_STABLE_RUN_RESET", "60s"),
 		PiShutdownGrace:   envDuration("KAPE_PI_SHUTDOWN_GRACE", "5s"),
+		PiSessionDir:      env("KAPE_PI_SESSION_DIR", "/sandbox/kape/sessions"),
 	}
 	piCmd := env("KAPE_PI_COMMAND", "")
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
@@ -91,6 +94,8 @@ func parseConfig(args []string) Config {
 	dur("pi-backoff-max", "30s", "respawn backoff cap", &cfg.PiBackoffMax)
 	dur("pi-stable-run-reset", "60s", "unexpected exit after a run of at least this resets backoff", &cfg.PiStableRunReset)
 	dur("pi-shutdown-grace", "5s", "SIGTERM→SIGKILL grace when killing pi on daemon shutdown", &cfg.PiShutdownGrace)
+	fs.StringVar(&cfg.PiSessionID, "pi-session-id", env("KAPE_PI_SESSION_ID", ""), "session-pinned pi --session-id (spec #245 E3); empty = no session flags")
+	fs.StringVar(&cfg.PiSessionDir, "pi-session-dir", cfg.PiSessionDir, "pi --session-dir (PVC session tree)")
 	fs.StringVar(&piCmd, "pi-command", piCmd, "pi subprocess argv (comma-separated); empty = built-in fake pi")
 	_ = fs.Parse(args)
 	if piCmd != "" {
@@ -141,7 +146,7 @@ func run(cfg Config) error {
 		return err
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi(cfg.PiCommand, spool)
+	pi := NewPi(cfg.PiCommand, spool, cfg.PiSessionID, cfg.PiSessionDir)
 	pi.rapidExitWindow = cfg.PiRapidExitWindow
 	pi.backoffInitial = cfg.PiBackoffInitial
 	pi.backoffMax = cfg.PiBackoffMax

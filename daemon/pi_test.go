@@ -17,7 +17,7 @@ func TestPiRelayAndNotices(t *testing.T) {
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestPiPromptAndRespawn(t *testing.T) {
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", script}, spool)
+	pi := NewPi([]string{"sh", "-c", script}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestPiStaleExitDoesNotClobberRunning(t *testing.T) {
 		t.Fatalf("spool: %v", err)
 	}
 	defer spool.Close() //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", "true"}, spool)
+	pi := NewPi([]string{"sh", "-c", "true"}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start pi: %v", err)
 	}

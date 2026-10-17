@@ -29,12 +29,14 @@ import (
 // (1 s→30 s cap); a stable run ≥60 s resets the backoff. The daemon never
 // gives up permanently.
 type Pi struct {
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	running atomic.Bool
-	notices *Spool
-	command []string // pi command line; empty means self-fakepi
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	running    atomic.Bool
+	notices    *Spool
+	command    []string // pi command line; empty means self-fakepi
+	sessionID  string   // session-pinned --session-id (spec #245 E3); empty = no flags
+	sessionDir string   // pi --session-dir (PVC session tree)
 
 	// Crash-ownership state (all guarded by mu unless noted).
 	generation         int           // process generations started; 0 before the first
@@ -65,13 +67,18 @@ const (
 )
 
 // NewPi wires the pi subprocess manager; command is the argv to run (nil = the
-// built-in fake pi: this binary invoked with the fakepi subcommand). Backoff
-// policy defaults are the compiled E4 defaults; main.go overrides them from
-// KAPE_PI_* env.
-func NewPi(command []string, notices *Spool) *Pi {
+// built-in fake pi: this binary invoked with the fakepi subcommand). The
+// session-pinned pi session id (spec #245 E3, issue #249) and its PVC
+// session dir are appended to the launch argv in Start, so the built-in fake
+// pi (self-resolved there) stays argv-compatible and an empty session id
+// leaves the argv unchanged (local runs). Backoff policy defaults are the
+// compiled E4 defaults; main.go overrides them from KAPE_PI_* env.
+func NewPi(command []string, notices *Spool, sessionID, sessionDir string) *Pi {
 	return &Pi{
 		notices:         notices,
 		command:         command,
+		sessionID:       sessionID,
+		sessionDir:      sessionDir,
 		rapidExitWindow: defaultRapidExitWindow,
 		backoffInitial:  defaultBackoffInitial,
 		backoffMax:      defaultBackoffMax,
@@ -81,6 +88,29 @@ func NewPi(command []string, notices *Spool) *Pi {
 	}
 }
 
+// piArgv resolves the launch argv for a configured command: the command with
+// the session-pinned resume flags appended (spec #245 E3, issue #249), or nil
+// when no command is configured — Start then resolves the built-in fake pi
+// with the same flags.
+func piArgv(command []string, sessionID, sessionDir string) []string {
+	if len(command) == 0 {
+		return nil // built-in fake pi; Start appends the flags to self+fakepi
+	}
+	return append(append([]string{}, command...), piFlags(sessionID, sessionDir)...)
+}
+
+// piFlags renders the pi resume flags for a session-pinned session id; the
+// dir defaults to the sandbox PVC path when unset alongside a pinned id.
+func piFlags(sessionID, sessionDir string) []string {
+	if sessionID == "" {
+		return nil
+	}
+	if sessionDir == "" {
+		sessionDir = "/sandbox/kape/sessions"
+	}
+	return []string{"--session-dir", sessionDir, "--session-id", sessionID}
+}
+
 // Start launches pi and its stdout/stderr relay pumps. pi_running flips true.
 func (p *Pi) Start() error {
 	p.mu.Lock()
@@ -88,13 +118,13 @@ func (p *Pi) Start() error {
 	if p.running.Load() {
 		return nil
 	}
-	argv := p.command
+	argv := piArgv(p.command, p.sessionID, p.sessionDir)
 	if len(argv) == 0 {
 		self, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("resolve self for fake pi: %w", err)
 		}
-		argv = []string{self, "fakepi"}
+		argv = append([]string{self, "fakepi"}, piFlags(p.sessionID, p.sessionDir)...)
 	}
 	// Lazy-respawn backoff (E4): when the previous generation exited
 	// unexpectedly, hold the respawn for the current backoff before

@@ -23,7 +23,7 @@ func newFixture(t *testing.T, token string) *fixture {
 		t.Fatalf("spool: %v", err)
 	}
 	t.Cleanup(func() { spool.Close() }) //nolint:errcheck
-	pi := NewPi([]string{"sh", "-c", "sleep 30"}, spool)
+	pi := NewPi([]string{"sh", "-c", "sleep 30"}, spool, "", "")
 	if err := pi.Start(); err != nil {
 		t.Fatalf("start fake pi: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCommandsDeliveredToPi(t *testing.T) {
 {"type":"text_delta"}
 {"type":"agent_settled"}
 '; done`
-	pi := NewPi([]string{"sh", "-c", fake}, spool)
+	pi := NewPi([]string{"sh", "-c", fake}, spool, "", "")
 	router := NewRouter("agent-1", "boot-abc", spool, pi, NewCommandQueue(), "tok")
 
 	req, _ := json.Marshal(Command{ID: "c1", Type: CommandPrompt, Payload: json.RawMessage(`"hello"`)})

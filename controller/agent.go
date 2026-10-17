@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -278,7 +279,7 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		// CR-derived views, and post-restart cascade termination.
 		labels[LabelParentAgentID] = parent.ID
 	}
-	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, labels)
+	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, labels, PiSessionID(id))
 	if err != nil {
 		return nil, err
 	}
@@ -372,6 +373,15 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	agent.status = StatusReady
 	agent.mu.Unlock()
 	return agent, nil
+}
+
+// PiSessionID derives the session-pinned pi --session-id from the durable
+// session's agent id (spec #245 E3, issue #249): deterministic, so any
+// replacement sandbox for the same session (Tier-2 revive, #251) threads the
+// same id and pi resumes the session tree on the PVC. Agent ids stay
+// per-instance naming; the pi id is the session-scoped resume key.
+func PiSessionID(agentID string) string {
+	return "kape-" + strings.TrimPrefix(agentID, "agent-")
 }
 
 // resolveParent validates the optional parent_id (issue #216 D8) and returns
