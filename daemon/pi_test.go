@@ -80,14 +80,14 @@ func TestPiPromptAndRespawn(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(recs))
 	} else {
 		var record struct {
-			CommandID string          `json:"command_id"`
-			Type      string          `json:"type"`
-			Payload   json.RawMessage `json:"payload"`
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
 		}
 		if err := json.Unmarshal(recs[0].Data, &record); err != nil {
 			t.Fatalf("decode echo: %v (%s)", err, recs[0].Data)
 		}
-		if record.CommandID != "c1" || record.Type != "prompt" || string(record.Payload) != `{"message":"hi"}` {
+		if record.ID != "c1" || record.Type != "prompt" || record.Message != "hi" {
 			t.Fatalf("pi did not receive the command verbatim: %s", recs[0].Data)
 		}
 	}
@@ -109,9 +109,9 @@ func TestPiPromptAndRespawn(t *testing.T) {
 		t.Fatalf("got %d records, want >= 3 after respawn", len(recs))
 	}
 	var record struct {
-		CommandID string `json:"command_id"`
+		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recs[2].Data, &record); err != nil || record.CommandID != "c2" {
+	if err := json.Unmarshal(recs[2].Data, &record); err != nil || record.ID != "c2" {
 		t.Fatalf("respawned pi record = %s, want c2 echo", recs[2].Data)
 	}
 }

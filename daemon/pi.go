@@ -419,8 +419,8 @@ func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 			return err
 		}
 		clearLine, _ := (json.Marshal)(map[string]any{
-			"type":       CommandClearQueue,
-			"command_id": c.ID,
+			"id":   c.ID,
+			"type": CommandClearQueue,
 		})
 		// abort is a bare object with no id field (verified against pi
 		// rpc-commands.md; see controller/agent.go piAbortCommand).
@@ -443,11 +443,20 @@ func (p *Pi) SendCommand(ctx context.Context, c Command) error {
 	if err := p.Start(); err != nil {
 		return err
 	}
-	line, err := json.Marshal(map[string]any{
-		"type":       c.Type,
-		"command_id": c.ID,
-		"payload":    c.Payload,
-	})
+	// pi RPC wire format (pi docs/rpc-commands.md, verified live in
+	// smoke-252 run 5): message is TOP-LEVEL, requests are id-correlated.
+	// The daemon's legacy {type,command_id,payload:{message}} envelope left
+	// pi's prompt handler with an undefined text and it threw
+	// "Cannot read properties of undefined (reading 'startsWith')"
+	// (agent-session expandPromptTemplates) — every prompt was rejected and
+	// no session tree file was ever written.
+	cmdLine := map[string]any{"id": c.ID, "type": c.Type}
+	if c.Type == CommandPrompt || c.Type == CommandSteer {
+		if text := steerText(c.Payload); text != "" {
+			cmdLine["message"] = text
+		}
+	}
+	line, err := json.Marshal(cmdLine)
 	if err != nil {
 		return err
 	}
@@ -577,6 +586,7 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		var c struct {
 			Type    string `json:"type"`
+			Message string `json:"message"`
 			Payload struct {
 				Message string `json:"message"`
 			} `json:"payload"`
@@ -585,15 +595,18 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "fakepi: bad command line: %v\n", err) //nolint:errcheck
 			continue
 		}
+		if c.Message == "" {
+			c.Message = c.Payload.Message // legacy daemon envelope
+		}
 		switch c.Type {
 		case CommandPrompt:
 			// (fall through to the turn emission below)
 		case CommandSteer:
-			queuedSteering = append(queuedSteering, c.Payload.Message)
+			queuedSteering = append(queuedSteering, c.Message)
 			emitQueue()
 			continue
 		case "follow_up":
-			queuedFollowUp = append(queuedFollowUp, c.Payload.Message)
+			queuedFollowUp = append(queuedFollowUp, c.Message)
 			emitQueue()
 			continue
 		case CommandAbort:
@@ -621,7 +634,7 @@ func runFakePi(stdin io.Reader, stdout, stderr io.Writer) error {
 		var msg struct {
 			HoldMs int `json:"hold_ms"`
 		}
-		_ = json.Unmarshal([]byte(c.Payload.Message), &msg)
+		_ = json.Unmarshal([]byte(c.Message), &msg)
 		hold := time.Duration(msg.HoldMs) * time.Millisecond
 		recs := []fakePiRecord{
 			{Type: "turn_started", TurnID: turnID},

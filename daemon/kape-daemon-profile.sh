@@ -7,7 +7,16 @@
 if ! kill -0 "$(cat /tmp/kape-daemon.pid 2>/dev/null)" 2>/dev/null; then
     KAPE_DAEMON_ADDR="${KAPE_DAEMON_ADDR:-0.0.0.0:9090}"
     KAPE_SPOOL_PATH="/sandbox/kape-daemon-spool.jsonl"
-    export KAPE_DAEMON_ADDR KAPE_SPOOL_PATH
+    # Real-pi smoke posture (issue #249/#252): the openshell k8s compute
+    # driver rebuilds the container env from the Sandbox CR spec and DROPS
+    # the image ENV block (verified live run 8: pid1 env had neither
+    # KAPE_PI_COMMAND nor KAPE_PI_AUTOSTART=1), so the daemon silently fell
+    # back to its built-in fakepi stub. Re-assert the defaults here, in the
+    # login-shell profile that actually starts the daemon; ${VAR:-default}
+    # keeps any explicit env authoritative.
+    KAPE_PI_COMMAND="${KAPE_PI_COMMAND:-/usr/bin/pi,--mode,rpc}"
+    KAPE_PI_AUTOSTART="${KAPE_PI_AUTOSTART:-1}"
+    export KAPE_DAEMON_ADDR KAPE_SPOOL_PATH KAPE_PI_COMMAND KAPE_PI_AUTOSTART
     # retried: the very first exec at container start can transiently fail
     # with EACCES (rootfs/label settling during container init, verified
     # live on microk8s, #217); copy-to-/tmp + a long backoff window makes

@@ -76,7 +76,7 @@ func TestPiAbortEmptyQueueCommandPair(t *testing.T) {
 			t.Fatalf("record %d type = %q, want %q (Esc ordering: clear_queue before abort)", i, typ, wantTypes[i])
 		}
 		var id string
-		json.Unmarshal(got["command_id"], &id) //nolint:errcheck
+		json.Unmarshal(got["id"], &id) //nolint:errcheck
 		ids = append(ids, id)
 	}
 	// clear_queue carries the transport id; abort is a bare object (verified
@@ -118,7 +118,7 @@ done`
 		t.Fatalf("SendCommand abort: %v", err)
 	}
 	recs := waitForSpool(t, spool, 5) // steer echo, queue_update, notice, clear_queue echo, abort echo
-	// Echo capture: {type, command_id} pairs of stdin-written records.
+	// Echo capture: {type, id} pairs of stdin-written records.
 	type echo struct {
 		typ, id string
 		at      int
@@ -147,7 +147,7 @@ done`
 			}
 		case CommandSteer, CommandClearQueue, CommandAbort:
 			var id string
-			json.Unmarshal(m["command_id"], &id) //nolint:errcheck
+			json.Unmarshal(m["id"], &id) //nolint:errcheck
 			echoes = append(echoes, echo{typ, id, i})
 		}
 	}
@@ -240,7 +240,7 @@ func TestPiStandaloneClearQueueForwardedUnpaired(t *testing.T) {
 	got := decodeType(t, string(recs[0].Data))
 	var typ, id string
 	json.Unmarshal(got["type"], &typ)      //nolint:errcheck
-	json.Unmarshal(got["command_id"], &id) //nolint:errcheck
+	json.Unmarshal(got["id"], &id) //nolint:errcheck
 	if typ != CommandClearQueue || id != "cq1" {
 		t.Fatalf("echo = %s, want clear_queue with id cq1", recs[0].Data)
 	}

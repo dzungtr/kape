@@ -320,6 +320,24 @@ ensure_ingress() { # agent id → install the DNAT shim for its current pod
     ip=$(kubectl get pod -n "$NS" "$pod" -o jsonpath='{.status.podIP}' 2>/dev/null)
     [ -n "$ip" ] && open_daemon_ingress "$ip"
 }
+# Shim watchdog (run-4 triage): a pod replacement destroys the pod netns and
+# with it the DNAT shim, while the controller keeps dialling podIP:9090 and
+# the revive waits DEPEND on those pulls succeeding (shim was re-installed
+# only after the waits — deadlock window). The watchdog re-installs the shim
+# every 5s for the current pod so revive pulls recover immediately.
+SHIM_PID=""
+shim_watchdog_stop() { [ -n "$SHIM_PID" ] && kill "$SHIM_PID" 2>/dev/null; wait "$SHIM_PID" 2>/dev/null; SHIM_PID=""; }
+shim_watchdog_start() { # $1 = agent id
+    shim_watchdog_stop
+    (
+        local id=$1 end=$((SECONDS + 900))
+        while [ "$SECONDS" -lt "$end" ]; do
+            ensure_ingress "$id" 2>/dev/null
+            sleep 5
+        done
+    ) &
+    SHIM_PID=$!
+}
 wait_pod_replaced() { # oldpod, agentid, timeout → new pod name ("" on timeout)
     local old=$1 id=$2 deadline=$((SECONDS+$3)) new
     while [ "$SECONDS" -lt "$deadline" ]; do
@@ -348,6 +366,7 @@ start_turn() { # id, seed-word → 0 once the session is mid-turn (running)
 cleanup() {
     local rc=$?
     note "teardown"
+    shim_watchdog_stop
     for id in "${CREATED_IDS[@]:-}"; do
         [ -z "$id" ] && continue
         curl -s -X DELETE "$BASE/agents/$id" >/dev/null 2>&1 || true
@@ -445,6 +464,7 @@ echo "pod=$POD_A pvc=$PVC_A session_file=$FA lines=$LA head5_md5=$HA want_sessio
 assert "pi session tree file exists on the PVC mid-turn" "[ -n '$FA' ]"
 
 kubectl delete pod -n "$NS" "$POD_A" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$A"
 # Tier-2: death detection mid-turn → running→paused (agent.paused, liveness
 # failed), budget spent, replacement held → agent.revived + first pull →
 # status ready (completeRevive also closes the lost turn as revive_settled).
@@ -563,6 +583,7 @@ FB=$(wait_session_file "$POD_B" 120)
 # crash window: one in-flight turn — killing now may leave an unsettled
 # entry at the session-file head (dangling branch head)
 kubectl delete pod -n "$NS" "$POD_B" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$B"
 wait_session "$B" paused "$TIMEOUT_CYCLE" && pass "B session paused after the mid-turn kill" \
     || fail "B session never paused"
 wait_status "$B" ready "$TIMEOUT_CYCLE" && pass "B revived to ready" || fail "B never revived"
@@ -595,6 +616,7 @@ wait_status "$C" ready "$TIMEOUT_READY" && pass "C ready" || { fail "C not ready
 start_turn "$C" "distributed systems fallacies" && pass "C turn in flight (kill #1)" || fail "C turn never started"
 POD_C=$(sandbox_pod "$C")
 kubectl delete pod -n "$NS" "$POD_C" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$C"
 wait_session "$C" paused "$TIMEOUT_CYCLE" || fail "kill #1: session never paused"
 wait_status "$C" ready "$TIMEOUT_CYCLE" && pass "kill #1 revived (budget 1/1 spent)" || fail "kill #1 did not revive"
 ensure_ingress "$C"
@@ -602,6 +624,7 @@ ensure_ingress "$C"
 start_turn "$C" "garbage collection" && pass "C turn in flight (kill #2)" || fail "C turn never started (kill #2)"
 POD_C2=$(sandbox_pod "$C")
 kubectl delete pod -n "$NS" "$POD_C2" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$C"
 wait_session "$C" paused "$TIMEOUT_CYCLE" && pass "kill #2 leaves the session paused (budget exhausted, E5)" \
     || fail "kill #2: session never paused"
 sleep 10
@@ -634,6 +657,7 @@ assert "agent.resumed on the log (ledger reset)" "$(has_event "$C" 'agent.resume
 start_turn "$C" "consistent hashing" && pass "C turn in flight (kill #3)" || fail "C turn never started (kill #3)"
 POD_C3=$(sandbox_pod "$C")
 kubectl delete pod -n "$NS" "$POD_C3" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$C"
 wait_session "$C" paused "$TIMEOUT_CYCLE" || fail "kill #3: session never paused"
 wait_status "$C" ready "$TIMEOUT_CYCLE" && pass "kill #3 revived on the re-armed budget" || fail "kill #3 did not revive"
 ensure_ingress "$C"
@@ -641,6 +665,7 @@ ensure_ingress "$C"
 start_turn "$C" "raft consensus" && pass "C turn in flight (kill #4)" || fail "C turn never started (kill #4)"
 POD_C4=$(sandbox_pod "$C")
 kubectl delete pod -n "$NS" "$POD_C4" --ignore-not-found >/dev/null 2>&1
+shim_watchdog_start "$C"
 wait_session "$C" paused "$TIMEOUT_CYCLE" && pass "kill #4 exhausts again → paused" || fail "kill #4: session never paused"
 DL=$(http_code -X DELETE "$BASE/agents/$C")
 echo "DELETE from paused code: $DL"
@@ -663,6 +688,7 @@ echo "daemon host PID: $DPID"
 assert "kape-daemon is the sandbox main process (E2)" "[ -n '$DPID' ]"
 POD_D=$(sandbox_pod "$D")
 kubectl exec -n default kape-smoke-killer -- sh -c "kill -KILL '$DPID' 2>/dev/null" || fail "daemon kill failed"
+shim_watchdog_start "$D" # container/pod may be recreated → fresh netns
 sleep 8
 EXIT=$(kubectl get pod -n "$NS" "$POD_D" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null)
 [ -z "$EXIT" ] && EXIT=$(kubectl get pod -n "$NS" "$POD_D" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null)
