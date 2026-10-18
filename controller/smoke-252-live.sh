@@ -357,9 +357,41 @@ create_agent() { # → agent id ("" on failure)
     [ -n "$id" ] && CREATED_IDS+=("$id")
     echo "$id"
 }
+wait_pi_idle() { # id, timeout → 0 when the agent's event stream has been quiet ~15s
+    # (run-12 triage: pi's first boot runs a plugin reconcile that spools
+    # hundreds of notify records for minutes; a prompt sent during reconcile
+    # is only processed after it finishes, so the "mid-turn" kill landed
+    # while pi was still initializing. Wait for stream quiescence first.)
+    local id=$1 deadline=$((SECONDS+$2)) last_seq quiet
+    last_seq=$(max_seq "$id")
+    quiet=""
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        ensure_pf
+        local n
+        n=$(curl -s --max-time 5 "$BASE/agents/$id/events?after=$last_seq&limit=1000" \
+            | python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("events",[])))' 2>/dev/null)
+        [ -z "$n" ] && n=0
+        if [ "$n" -gt 0 ]; then
+            last_seq=$((last_seq+n))
+            quiet=""
+        else
+            [ -z "$quiet" ] && quiet=$SECONDS
+            [ $((SECONDS-quiet)) -ge 15 ] && return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 start_turn() { # id, seed-word → 0 once the session is mid-turn (running)
+    wait_pi_idle "$1" 300 || fail "pi never went idle (reconcile did not settle)"
+    # Deterministic mid-turn window (run-13 triage): glm-5.3-flash writes
+    # even a "10000-word essay" via a single write-tool call in ~25s, so the
+    # pod kill kept landing after the settle (idle death → legacy-fail, no
+    # revive). A shell `sleep 240` tool call holds the turn open for minutes
+    # regardless of model speed.
     curl -s -X POST "$BASE/agents/$1/prompt" -H 'Content-Type: application/json' \
-        -d "{\"message\":\"Write a very detailed 1000-word essay about $2. Do not stop early.\"}" >/dev/null
+        -d "{\"message\":\"Use your shell tool to run the command: sleep 240 . Do nothing else until it finishes, then reply with its exit code.\"}" >/dev/null
     wait_session "$1" running 60 && sleep 3
 }
 

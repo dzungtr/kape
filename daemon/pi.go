@@ -152,6 +152,12 @@ func (p *Pi) Start() error {
 	respawnAfterUnexpected := p.lastExitUnexpected
 	p.lastExitUnexpected = false
 	p.intentional = false
+	// Credential bridge for real pi only (fakepi needs no credentials): see
+	// pi_gateway.go — exports the dummy gateway key and patches the workspace
+	// models.json baseUrl before the first spawn (issue #252 blocker, #260).
+	if len(p.command) > 0 {
+		preparePiGateway()
+	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // configured pi command, daemon-side trust boundary
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
