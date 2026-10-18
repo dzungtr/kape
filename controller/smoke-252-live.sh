@@ -67,10 +67,26 @@ assert(){ if eval "$2"; then pass "$1"; else fail "$1"; fi; }
 http_code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 jqpy() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval(sys.argv[1]))" "$1"; }
 
+ensure_pf() { # restart the port-forward if the gateway API stopped answering
+    [ "$(http_code "$BASE/agents")" = "200" ] && return 0
+    echo "(port-forward down — restarting)"
+    [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null
+    pkill -f "kubectl port-forward -n $NS pod/$CTL" 2>/dev/null
+    kubectl port-forward -n "$NS" pod/"$CTL" "${PF_PORT}:8081" >/dev/null 2>&1 &
+    PF_PID=$!
+    local i
+    for i in $(seq 1 20); do
+        [ "$(http_code "$BASE/agents")" = "200" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 wait_status() { # id, want, timeout → 0 when reached
     local id=$1 want=$2 t=$3 i got
     for i in $(seq 1 $((t*2))); do
-        got=$(curl -s "$BASE/agents/$id" | jqpy 'd["status"]' 2>/dev/null) || got=""
+        got=$(curl -s --max-time 10 "$BASE/agents/$id" | jqpy 'd["status"]' 2>/dev/null) || got=""
+        [ -z "$got" ] && ensure_pf
         [ "$got" = "$want" ] && return 0
         sleep 0.5
     done
@@ -80,8 +96,9 @@ wait_status_in() { # id, timeout, want1 want2... → first matching status
     local id=$1 t=$2; shift 2
     local i got
     for i in $(seq 1 $((t*2))); do
-        got=$(curl -s "$BASE/agents/$id" | jqpy 'd["status"]' 2>/dev/null) || got=""
+        got=$(curl -s --max-time 10 "$BASE/agents/$id" | jqpy 'd["status"]' 2>/dev/null) || got=""
         for w in "$@"; do [ "$got" = "$w" ] && { echo "$got"; return 0; }; done
+        [ -z "$got" ] && ensure_pf
         sleep 0.5
     done
     return 1
@@ -95,27 +112,31 @@ wait_session_file() { # pod, timeout → first session tree entry ("" on timeout
     done
     return 1
 }
-wait_settle() { # id, timeout → 0 when agent_settled observed
-    local id=$1 t=$2 i
+wait_settle() { # id, timeout, [after] → 0 when agent_settled observed after the cursor
+    local id=$1 t=$2 after=${3:-0} i
     for i in $(seq 1 $((t*2))); do
-        curl -s "$BASE/agents/$id/events?after=0&limit=1000" | grep -q '"agent_settled"' && return 0
+        curl -s --max-time 10 "$BASE/agents/$id/events?after=$after&limit=1000" | grep -q '"agent_settled"' && return 0
         sleep 0.5
     done
     return 1
 }
-wait_no_settle() { # id, timeout → 0 when NO agent_settled appears in the window
-    local id=$1 t=$2 i
+max_seq() { # id → highest event seq so far (cursor for after-polls)
+    curl -s --max-time 10 "$BASE/agents/$1/events?after=0&limit=1000" \
+        | jqpy 'max([e["seq"] for e in d["events"]] or [0])' 2>/dev/null
+}
+wait_no_settle() { # id, after-cursor, timeout → 0 when NO agent_settled appears after the cursor
+    local id=$1 after=$2 t=$3 i
     for i in $(seq 1 $((t*2))); do
-        curl -s "$BASE/agents/$id/events?after=0&limit=1000" | grep -q '"agent_settled"' && return 1
+        curl -s --max-time 10 "$BASE/agents/$id/events?after=$after&limit=1000" | grep -q '"agent_settled"' && return 1
         sleep 0.5
     done
     return 0
 }
 has_event() { # id, type → 0 when the event type is on the log
-    curl -s "$BASE/agents/$1/events?after=0&limit=1000" | grep -q "\"$2\""
+    curl -s --max-time 10 "$BASE/agents/$1/events?after=0&limit=1000" | grep -q "\"$2\""
 }
 event_json() { # id, type → last matching event record (single line)
-    curl -s "$BASE/agents/$1/events?after=0&limit=1000" \
+    curl -s --max-time 10 "$BASE/agents/$1/events?after=0&limit=1000" \
         | python3 -c "
 import sys, json
 want = sys.argv[1]
@@ -141,8 +162,16 @@ sandbox_pvc() { # agent id → workspace PVC claim name
 session_files() { # pod → ls of the PVC session dir
     kubectl exec -n "$NS" "$1" -c agent -- ls -1 /sandbox/kape/sessions 2>/dev/null
 }
-session_file() { # pod → the pinned session tree file name (may be a path)
-    session_files "$1" | grep -E '\.jsonl$|/' | tail -1
+session_file() { # pod → the pinned session tree file name (resolves one directory level)
+    local f
+    f=$(session_files "$1" | grep -E '\.jsonl$' | head -1)
+    if [ -z "$f" ]; then
+        local d
+        d=$(session_files "$1" | grep '/' | tail -1)
+        [ -z "$d" ] && d=$(session_files "$1" | tail -1)
+        [ -n "$d" ] && f=$(kubectl exec -n "$NS" "$1" -c agent -- sh -c "ls -1 '/sandbox/kape/sessions/$d'" 2>/dev/null | grep '\.jsonl$' | head -1)
+    fi
+    [ -n "$f" ] && echo "$f"
 }
 session_linecount() { # pod, file → line count on the PVC
     kubectl exec -n "$NS" "$1" -c agent -- sh -c "wc -l < '/sandbox/kape/sessions/$2'" 2>/dev/null | tr -d ' '
@@ -171,10 +200,15 @@ pi_pid() { # → host PID of the pi subprocess (title-rewritten argv)
     return 1
 }
 daemon_status() { # → /status body from the daemon netns (killer pod wget, bearer)
-    local p; p=$(daemon_pid) || return 1
-    kubectl exec -n default kape-smoke-killer -- nsenter -t "$p" -n \
+    local p body
+    p=$(daemon_pid) || return 1
+    body=$(kubectl exec -n default kape-smoke-killer -- nsenter -t "$p" -n \
         wget -qO- --header "Authorization: Bearer $TOKEN" \
-        "http://127.0.0.1:${DAEMON_PORT}/status" 2>/dev/null
+        "http://127.0.0.1:${DAEMON_PORT}/status" 2>/dev/null)
+    [ -n "$body" ] && { echo "$body"; return 0; }
+    # some daemon builds leave the token empty (auth disabled) — retry bare
+    kubectl exec -n default kape-smoke-killer -- nsenter -t "$p" -n \
+        wget -qO- "http://127.0.0.1:${DAEMON_PORT}/status" 2>/dev/null
 }
 
 # Daemon reachability shim (issue #217, verified live in smoke-failures): the
@@ -335,6 +369,7 @@ for i in $(seq 1 20); do [ "$(http_code "$BASE/agents")" = "200" ] && break; sle
 # ==========================================================================
 # leg 1: revive — pod kill on a running session (#251 live, #249 AC3 re-run)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 1: revive — pod kill → paused → revived, session tree intact"
 A=$(create_agent); [ -n "$A" ] || { echo "FAIL: leg1 create"; exit 1; }
 echo "agent A=$A"
@@ -384,6 +419,7 @@ assert "replacement daemon pins the SAME session id (E3)" "[ '$ARGV_A' = '$SID' 
 # ==========================================================================
 # leg 2: pi kill mid-turn — lazy respawn, notices, never auto-reprompt (E4)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 2: pi kill mid-turn — pi_exit + pi_restart, no auto-reprompt"
 curl -s -X POST "$BASE/agents/$A/prompt" -H 'Content-Type: application/json' \
     -d '{"message":"Write a very detailed 1000-word essay about Kubernetes controllers. Do not stop early."}' >/dev/null
@@ -406,7 +442,7 @@ assert "extended /status fields present (E8)" \
     "echo '$ST_A' | jqpy '\"spool_depth\" in d and \"pi_restarts\" in d and \"backoff\" in d' 2>/dev/null | grep -q True"
 assert "/status pi_restarts >= 1 after the kill" \
     "echo '$ST_A' | jqpy 'd[\"pi_restarts\"]' 2>/dev/null | grep -qE '^[1-9]'"
-wait_no_settle "$A" 30 && pass "no auto-reprompt: the lost turn never settled (E4)" \
+wait_no_settle "$A" "$(max_seq "$A")" 30 && pass "no auto-reprompt: the lost turn never settled (E4)" \
     || fail "a settle appeared without a new prompt (unexpected auto-reprompt)"
 curl -s -X POST "$BASE/agents/$A/prompt" -H 'Content-Type: application/json' \
     -d '{"message":"Reply with exactly the word RESUMEDOK and nothing else."}' >/dev/null
@@ -415,6 +451,7 @@ wait_settle "$A" "$TIMEOUT_SETTLE" && pass "next prompt settles on the respawned
 # ==========================================================================
 # leg 3: abort with queued messages (E6)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 3: abort with queued steer — queue_drained notice, pi alive"
 curl -s -X POST "$BASE/agents/$A/prompt" -H 'Content-Type: application/json' \
     -d '{"message":"Write a very long numbered list of 300 facts about the ocean. Do not stop early."}' >/dev/null
@@ -435,13 +472,14 @@ assert "queue_drained carries the drained steer texts (E6)" \
 ST_A2=$(daemon_status)
 assert "pi stays alive after abort (abort no longer kills pi, E6)" \
     "echo '$ST_A2' | jqpy 'd[\"pi_running\"]' 2>/dev/null | grep -q True"
-AS_A=$(curl -s "$BASE/agents/$A" | jqpy 'd["status"]' 2>/dev/null)
+AS_A=$(curl -s --max-time 10 "$BASE/agents/$A" | jqpy 'd["status"]' 2>/dev/null)
 echo "agent status after abort: $AS_A"
 assert "agent still running after abort (nothing resumes the queue)" "[ '$AS_A' = 'running' ]"
 
 # ==========================================================================
 # leg 4: dangling-head resume — pod killed mid-turn (E7, #246 NO-GO verdict)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 4: dangling-head resume — pod kill mid-turn, real pi tolerates the head"
 B=$(create_agent); [ -n "$B" ] || { echo "FAIL: leg4 create"; exit 1; }
 echo "agent B=$B"
@@ -468,11 +506,12 @@ curl -s -X POST "$BASE/agents/$B/prompt" -H 'Content-Type: application/json' \
 wait_settle "$B" "$TIMEOUT_SETTLE" && pass "real pi tolerates the dangling head: next prompt settled (trimmer NO-GO holds)" \
     || fail "pi failed to resume the dangling-head session"
 assert "B lost turn closed as revive-settle, no auto-reinject (E7)" \
-    "$(curl -s "$BASE/agents/$B/events?after=0&limit=1000" | grep -q 'revive_settled')"
+    "$(curl -s --max-time 10 "$BASE/agents/$B/events?after=0&limit=1000" | grep -q 'revive_settled')"
 
 # ==========================================================================
 # leg 5: budget exhaustion, re-arm, delete-from-paused (AC2/AC4)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 5: budget exhaustion (REVIVE_MAX=$REVIVE_MAX) + re-arm + DELETE from paused"
 C=$(create_agent); [ -n "$C" ] || { echo "FAIL: leg5 create"; exit 1; }
 echo "agent C=$C"
@@ -490,9 +529,9 @@ echo "post kill #2 status: ${ST_C:-<timeout>}"
 assert "kill #2 leaves the session paused (budget exhausted, E5)" "[ '$ST_C' = 'paused' ]"
 assert "agent.failed on the log after exhaustion (liveness failed, AC2)" "$(has_event "$C" 'agent.failed')"
 assert "no second revive: only one agent.revive_consumed for C" \
-    "[ \$(curl -s "$BASE/agents/$C/events?after=0&limit=1000" | grep -c 'agent.revive_consumed') = '1' ]"
+    "[ \$(curl -s --max-time 10 "$BASE/agents/$C/events?after=0&limit=1000" | grep -c 'agent.revive_consumed') = '1' ]"
 # wait_agent surfaces the exhaustion: the liveness/FSM wake returns state=paused
-WAIT_C=$(curl -s "$BASE/agents/$C/wait?timeout=30")
+WAIT_C=$(curl -s --max-time 10 "$BASE/agents/$C/wait?timeout=30")
 echo "wait_agent: $WAIT_C"
 assert "wait_agent surfaces the exhausted paused session (AC2)" \
     "echo '$WAIT_C' | jqpy 'd[\"state\"]' 2>/dev/null | grep -q paused"
@@ -527,6 +566,7 @@ CREATED_IDS=("${CREATED_IDS[@]/$C/}")
 # ==========================================================================
 # leg 6: daemon-death collapse (E2, #247 record) — under Tier-2 revive
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 6: daemon SIGKILL → workload container dies non-zero → revive collapse"
 D=$(create_agent); [ -n "$D" ] || { echo "FAIL: leg6 create"; exit 1; }
 echo "agent D=$D"
@@ -549,6 +589,7 @@ ensure_ingress "$D"
 # ==========================================================================
 # leg 7 (best-effort): CR-ERROR → legacy-fail (#251 verifier live check)
 # ==========================================================================
+ensure_pf 2>/dev/null
 note "leg 7: CR-ERROR → legacy-fail (best-effort)"
 E=$(create_agent); [ -n "$E" ] || { echo "FAIL: leg7 create"; exit 1; }
 wait_status "$E" ready "$TIMEOUT_READY" && pass "E ready" || fail "E not ready"
@@ -559,7 +600,7 @@ if kubectl patch sandbox "$SBX" -n "$NS" --subresource=status --type=merge \
     -p '{"status":{"phase":"SANDBOX_PHASE_ERROR"}}' >/dev/null 2>&1; then
     sleep 10
     LEG=$(kubectl get sandbox "$SBX" -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null)
-    ES=$(curl -s "$BASE/agents/$E" | jqpy 'd["status"]' 2>/dev/null)
+    ES=$(curl -s --max-time 10 "$BASE/agents/$E" | jqpy 'd["status"]' 2>/dev/null)
     echo "phase after patch: $LEG; agent status: $ES"
     if [ "$LEG" = "SANDBOX_PHASE_ERROR" ] && [ "$ES" != "ready" ] && [ "$ES" != "running" ]; then
         pass "CR-ERROR surfaced as a legacy agent failure (non-ready status: $ES)"
