@@ -62,6 +62,26 @@ spec:
               value: "{{ .Values.kapeproxy.image.repository }}:{{ .Values.kapeproxy.image.tag }}"
             - name: RUNTIME_IMAGE
               value: "{{ .Values.runtime.image.repository }}:{{ .Values.runtime.image.tag }}"
+            {{- /* OpenShell credential writer (ADR-0088, issue #265): the operator's
+                 own gateway connection, used to push credentials[] Secrets into
+                 provider records. Disabled unless a creds Secret is configured —
+                 the CR then reports every credential as
+                 Pushed=False/GatewayNotConfigured instead of staying silently
+                 unprovisioned. */}}
+            {{- if .Values.operator.openshell.credsSecret }}
+            - name: KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR
+              value: {{ .Values.operator.openshell.gatewayAddr | default .Values.controllerWiring.gatewayAddr | quote }}
+            - name: KAPE_OPERATOR_OPENSHHELL_CREDS_DIR
+              value: {{ .Values.operator.openshell.credsDir | quote }}
+            - name: KAPE_OPERATOR_OPENSHHELL_WORKSPACE
+              value: {{ .Values.operator.openshell.workspace | quote }}
+            {{- end }}
+          {{- if .Values.operator.openshell.credsSecret }}
+          volumeMounts:
+            - name: openshell-mtls
+              mountPath: {{ .Values.operator.openshell.credsDir }}
+              readOnly: true
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -74,3 +94,9 @@ spec:
               port: 8081
             initialDelaySeconds: 15
             periodSeconds: 30
+      {{- if .Values.operator.openshell.credsSecret }}
+      volumes:
+        - name: openshell-mtls
+          secret:
+            secretName: {{ .Values.operator.openshell.credsSecret }}
+      {{- end }}

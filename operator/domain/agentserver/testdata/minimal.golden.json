@@ -30,7 +30,6 @@
       "metadata": {
         "name": "kape-controller-sre",
         "namespace": "kape-system",
-        "creationTimestamp": null,
         "labels": {
           "app.kubernetes.io/managed-by": "kape-operator",
           "app.kubernetes.io/name": "kape-controller-sre",
@@ -68,5 +67,6 @@
     },
     "Ingress": null
   },
+  "ProviderProfiles": null,
   "OpenShellRecords": null
 }

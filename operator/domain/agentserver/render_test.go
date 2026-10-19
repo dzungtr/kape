@@ -1,6 +1,7 @@
 package agentserver_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -232,4 +234,138 @@ func TestRenderServiceSelectorMatchesPodLabels(t *testing.T) {
 	assert.Equal(t, agentserver.ObjectLabels(server.Name)["app.kubernetes.io/managed-by"], "kape-operator")
 	assert.Equal(t, server.Name, agentserver.ObjectLabels(server.Name)[agentserver.AgentServerLabel])
 	assert.Equal(t, corev1.ProtocolTCP, svc.Spec.Ports[0].Protocol)
+}
+
+// credentialServer is a CR with two git-https credentials and one credential of
+// an unknown provider type.
+func credentialServer() *v1alpha1.KapeAgentServer {
+	server := testServer()
+	server.Spec.Credentials = []v1alpha1.AgentServerCredentialSpec{
+		{
+			Name:         "github",
+			SecretRef:    v1alpha1.AgentServerSecretRef{Name: "github-token"},
+			ProviderType: "git-https",
+			HostPatterns: []string{"github.com:443", "api.github.com:443"},
+		},
+		{
+			Name:         "gitlab",
+			SecretRef:    v1alpha1.AgentServerSecretRef{Name: "gitlab-token"},
+			ProviderType: "git-https",
+			HostPatterns: []string{"gitlab.com:443"},
+		},
+		{
+			Name:         "unknown",
+			SecretRef:    v1alpha1.AgentServerSecretRef{Name: "unknown-token"},
+			ProviderType: "no-such-profile",
+			HostPatterns: []string{"example.com:443"},
+		},
+	}
+	return server
+}
+
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// TestRenderCredentialBindings pins the KAPE_CREDENTIAL_BINDINGS wire shape
+// (handoff H1) and the D9 rule behind it: only credentials present in
+// resolvedSecrets — i.e. resolved and successfully pushed — are bound.
+func TestRenderCredentialBindings(t *testing.T) {
+	server := credentialServer()
+
+	// Only "github" resolved: the bindings table names exactly one provider.
+	desired := agentserver.Render(server, agentserver.ResolvedSecrets{
+		"github": {"token": "ghp_value"},
+	})
+	assert.JSONEq(t,
+		`[{"provider":"kape-kape-system-sre-github","hosts":["github.com:443","api.github.com:443"]}]`,
+		envValue(desired.DeploymentEnv, agentserver.EnvCredentialBindings))
+
+	// Two resolved: credential order is preserved so re-renders are stable.
+	desired = agentserver.Render(server, agentserver.ResolvedSecrets{
+		"gitlab": {"token": "glpat_value"},
+		"github": {"token": "ghp_value"},
+	})
+	assert.JSONEq(t,
+		`[{"provider":"kape-kape-system-sre-github","hosts":["github.com:443","api.github.com:443"]},
+		  {"provider":"kape-kape-system-sre-gitlab","hosts":["gitlab.com:443"]}]`,
+		envValue(desired.DeploymentEnv, agentserver.EnvCredentialBindings))
+
+	// Nothing resolved: the table is empty, never null and never a bare name.
+	assert.Equal(t, "[]", envValue(agentserver.Render(server, nil).DeploymentEnv, agentserver.EnvCredentialBindings))
+}
+
+// TestRenderProviderProfiles: one document per provider type, in first-use
+// order; a credential whose type has no document contributes none (the writer
+// reports it).
+func TestRenderProviderProfiles(t *testing.T) {
+	desired := agentserver.Render(credentialServer(), agentserver.ResolvedSecrets{
+		"github":  {"token": "ghp_value"},
+		"gitlab":  {"token": "glpat_value"},
+		"unknown": {"token": "value"},
+	})
+
+	require.Len(t, desired.ProviderProfiles, 1)
+	profile := desired.ProviderProfiles[0]
+	assert.Equal(t, "git-https", profile.ID)
+	assert.Equal(t, agentserver.CategorySourceControl, profile.Category)
+	require.Len(t, profile.Credentials, 1)
+	assert.Equal(t, "token", profile.Credentials[0].Name)
+	assert.Equal(t, "bearer", profile.Credentials[0].AuthStyle)
+	assert.Equal(t, "Authorization", profile.Credentials[0].HeaderName)
+
+	// The unknown type is still a record: dropping it silently is the
+	// miss-invoke failure mode D9 exists to prevent.
+	require.Len(t, desired.OpenShellRecords, 3)
+}
+
+// TestGitHTTPSProfileDocument pins the git-https provider-profile document — the
+// handoff H5 debugging reference — as rendered from the shipped registry, so the
+// document a human imports by hand cannot drift from what the operator imports.
+func TestGitHTTPSProfileDocument(t *testing.T) {
+	profile, ok := agentserver.Profile("git-https")
+	require.True(t, ok)
+
+	var document bytes.Buffer
+	encoder := yaml.NewEncoder(&document)
+	encoder.SetIndent(2)
+	require.NoError(t, encoder.Encode(profile))
+	require.NoError(t, encoder.Close())
+	rendered := document.Bytes()
+
+	goldenPath := filepath.Join("testdata", "git-https.profile.yaml")
+	if *update {
+		require.NoError(t, os.WriteFile(goldenPath, rendered, 0o644))
+	}
+	want, err := os.ReadFile(goldenPath)
+	require.NoError(t, err, "run with -update to write the golden file")
+	assert.Equal(t, string(want), string(rendered))
+
+	// Endpointless by design: the CR's hostPatterns are the credential boundary
+	// (KAPE_CREDENTIAL_BINDINGS), so a profile-side endpoint would collide
+	// (#269 finding 3). The document must therefore carry credentials only.
+	assert.NotContains(t, string(rendered), "endpoints:")
+}
+
+// TestProfileRegistryIsCopySafe: callers cannot mutate the shipped document.
+func TestProfileRegistryIsCopySafe(t *testing.T) {
+	first, _ := agentserver.Profile("git-https")
+	first.Credentials[0].Name = "mutated"
+
+	second, _ := agentserver.Profile("git-https")
+	assert.Equal(t, "token", second.Credentials[0].Name)
+	assert.Equal(t, []string{"git-https"}, agentserver.ProfileTypes())
+}
+
+// TestProfileMissingCredentialKeys names the keys a Secret must carry, without
+// ever touching the values.
+func TestProfileMissingCredentialKeys(t *testing.T) {
+	profile, _ := agentserver.Profile("git-https")
+	assert.Equal(t, []string{"token"}, profile.MissingCredentialKeys(map[string]string{"other": "value"}))
+	assert.Empty(t, profile.MissingCredentialKeys(map[string]string{"token": "value"}))
 }

@@ -4,8 +4,14 @@ metadata:
   name: kape-operator
 rules:
   - apiGroups: [""]
-    resources: [pods, services, configmaps, serviceaccounts, secrets, namespaces]
+    resources: [pods, services, configmaps, serviceaccounts, namespaces]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Credential transit (ADR-0088, issue #265): the operator reads credential
+  # Secrets and never writes them — get/list/watch only, label-gated in code
+  # (kape.io/credential=true) and same-namespace by construction.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get, list, watch, create, update, patch, delete]

@@ -2,13 +2,18 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/peterbourgon/ff/v3"
 	"github.com/peterbourgon/ff/v3/ffyaml"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,9 +30,60 @@ import (
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
+	openshellwriter "github.com/kape-io/kape/operator/infra/openshell"
+	"github.com/kape-io/kape/operator/infra/ports"
 	qdrantadapter "github.com/kape-io/kape/operator/infra/qdrant"
 	tomlrenderer "github.com/kape-io/kape/operator/infra/toml"
 )
+
+// newOpenShellWriter dials the gateway the operator writes provider records to
+// (ADR-0088). No configured gateway yields a nil writer: the reconciler reports
+// every credential as GatewayNotConfigured instead of guessing.
+func newOpenShellWriter(cfg *config, log logr.Logger) (ports.OpenShellApplyPort, error) {
+	if cfg.OpenShellGatewayAddr == "" {
+		log.Info("OpenShell credential writer disabled: set KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR to enable it")
+		return nil, nil
+	}
+	tlsCfg, err := loadMtlsConfig(cfg.OpenShellCredsDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading OpenShell mTLS creds from %s: %w", cfg.OpenShellCredsDir, err)
+	}
+	conn, err := grpc.NewClient(cfg.OpenShellGatewayAddr, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	if err != nil {
+		return nil, fmt.Errorf("dialling OpenShell gateway %s: %w", cfg.OpenShellGatewayAddr, err)
+	}
+	log.Info("OpenShell credential writer configured", "gateway", cfg.OpenShellGatewayAddr, "workspace", cfg.OpenShellWorkspace)
+	return openshellwriter.NewWriter(conn, cfg.OpenShellWorkspace), nil
+}
+
+// loadMtlsConfig builds the mTLS config the gateway requires from the creds dir
+// layout (ca.crt/tls.crt/tls.key).
+func loadMtlsConfig(dir string) (*tls.Config, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("creds dir is empty")
+	}
+	caPEM, err := os.ReadFile(dir + "/ca.crt")
+	if err != nil {
+		return nil, fmt.Errorf("read ca.crt: %w", err)
+	}
+	certPEM, err := os.ReadFile(dir + "/tls.crt")
+	if err != nil {
+		return nil, fmt.Errorf("read tls.crt: %w", err)
+	}
+	keyPEM, err := os.ReadFile(dir + "/tls.key")
+	if err != nil {
+		return nil, fmt.Errorf("read tls.key: %w", err)
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse client key pair: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse ca.crt")
+	}
+	return &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
+}
 
 // controllerWiring assembles the operator-level cluster wiring: the settings
 // every rendered kape-controller Deployment receives from the operator's own
@@ -85,6 +141,14 @@ type config struct {
 	// names no feature itself.
 	ControllerExtraEnv     string
 	ControllerExtraEnvFrom string
+
+	// OpenShell gateway the operator itself writes provider records to
+	// (ADR-0088, spec #261 M3). Empty gateway address disables the writer: every
+	// credential then reports Pushed=False/GatewayNotConfigured rather than
+	// silently staying unprovisioned.
+	OpenShellGatewayAddr string
+	OpenShellCredsDir    string
+	OpenShellWorkspace   string
 }
 
 func main() {
@@ -108,6 +172,9 @@ func main() {
 	fs.StringVar(&cfg.ControllerEventStore, "controller-event-store", "", "durable event log path written as KAPE_EVENT_STORE into rendered controllers")
 	fs.StringVar(&cfg.ControllerExtraEnv, "controller-extra-env", "", "JSON []corev1.EnvVar copied into rendered controllers (contract keys are ignored)")
 	fs.StringVar(&cfg.ControllerExtraEnvFrom, "controller-extra-env-from", "", "JSON []corev1.EnvFromSource copied into rendered controllers")
+	fs.StringVar(&cfg.OpenShellGatewayAddr, "openshell-gateway-addr", "", "OpenShell gateway host:port the operator writes provider records to (empty disables credential push)")
+	fs.StringVar(&cfg.OpenShellCredsDir, "openshell-creds-dir", "", "mTLS creds dir (ca.crt/tls.crt/tls.key) for the operator's own gateway connection")
+	fs.StringVar(&cfg.OpenShellWorkspace, "openshell-workspace", "default", "OpenShell workspace provider records are created in")
 
 	if err := ff.Parse(fs, os.Args[1:],
 		ff.WithEnvVarPrefix("KAPE_OPERATOR"),
@@ -218,9 +285,16 @@ func main() {
 		log.Error(err, "parsing controller wiring")
 		os.Exit(1)
 	}
+	credentialWriter, err := newOpenShellWriter(cfg, log)
+	if err != nil {
+		log.Error(err, "configuring OpenShell credential writer")
+		os.Exit(1)
+	}
 	agentServerRec := reconcilehandler.NewAgentServerReconciler(
 		k8sadapters.NewAgentServerRepository(k8sClient),
 		k8sadapters.NewAgentServerAdapter(k8sClient),
+		k8sadapters.NewSecretResolver(k8sClient),
+		credentialWriter,
 		wiring,
 	)
 	if err := kapecontroller.SetupAgentServerReconciler(mgr, agentServerRec, cfg.MaxConcurrentReconciles); err != nil {

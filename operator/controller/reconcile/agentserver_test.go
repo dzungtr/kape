@@ -22,6 +22,7 @@ import (
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
+	"github.com/kape-io/kape/operator/infra/ports"
 )
 
 var agentServerKey = types.NamespacedName{Namespace: "kape-system", Name: "sre"}
@@ -73,18 +74,42 @@ func controllerWiring() domainconfig.ControllerWiring {
 
 func newAgentServerReconciler(t *testing.T, wiring domainconfig.ControllerWiring, objs ...client.Object) (*reconcile.AgentServerReconciler, client.Client) {
 	t.Helper()
+	return newAgentServerReconcilerWith(t, wiring, nil, objs...)
+}
+
+// newAgentServerReconcilerWith builds the reconciler over a fake client, with an
+// optional OpenShell writer (nil = no gateway configured).
+func newAgentServerReconcilerWith(t *testing.T, wiring domainconfig.ControllerWiring, writer ports.OpenShellApplyPort, objs ...client.Object) (*reconcile.AgentServerReconciler, client.Client) {
+	t.Helper()
 	server := newAgentServer()
+	objects := objs
+	if !containsServer(objects) {
+		objects = append([]client.Object{server}, objs...)
+	}
 	c := fake.NewClientBuilder().
 		WithScheme(agentServerScheme()).
-		WithObjects(append([]client.Object{server}, objs...)...).
+		WithObjects(objects...).
 		WithStatusSubresource(server).
 		Build()
 	r := reconcile.NewAgentServerReconciler(
 		k8sadapters.NewAgentServerRepository(c),
 		k8sadapters.NewAgentServerAdapter(c),
+		k8sadapters.NewSecretResolver(c),
+		writer,
 		wiring,
 	)
 	return r, c
+}
+
+// containsServer reports whether the fixtures already carry the KapeAgentServer,
+// so a test can drive a CR with credentials without a duplicate-object panic.
+func containsServer(objs []client.Object) bool {
+	for _, obj := range objs {
+		if _, ok := obj.(*v1alpha1.KapeAgentServer); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func readyCondition(t *testing.T, c client.Client) *metav1.Condition {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 
 	kapecontroller "github.com/kape-io/kape/operator/controller"
 	reconcilehandler "github.com/kape-io/kape/operator/controller/reconcile"
+	"github.com/kape-io/kape/operator/domain/agentserver"
 	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
@@ -344,6 +346,8 @@ func TestAgentServerReconcileEnvtest(t *testing.T) {
 	rec := reconcilehandler.NewAgentServerReconciler(
 		k8sadapters.NewAgentServerRepository(mgr.GetClient()),
 		k8sadapters.NewAgentServerAdapter(mgr.GetClient()),
+		k8sadapters.NewSecretResolver(mgr.GetClient()),
+		nil, // no gateway: the envtest CR declares no credentials
 		domainconfig.ControllerWiring{
 			GatewayAddr:     "openshell.openshell.svc.cluster.local:8080",
 			CredsDir:        "/var/run/kape-controller/creds",
@@ -408,4 +412,139 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestAgentServerReconcileCredentialsEnvtest exercises the credential path end to
+// end against a real API server: the labelled Secret is read, the provider record
+// is pushed through a stand-in writer, KAPE_CREDENTIAL_BINDINGS carries it, and a
+// missing Secret degrades only its own credential. Rotation is the last step —
+// editing the Secret re-triggers the reconcile through the Secret watch.
+//
+// CI-only: envtest needs loopback, which the authoring sandbox denies (and CI has
+// no runners), so this case is authored, never executed there.
+func TestAgentServerReconcileCredentialsEnvtest(t *testing.T) {
+	cfg, c := startAgentServerEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kape-agentserver-creds"}}
+	require.NoError(t, c.Create(ctx, ns))
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                 agentServerScheme(),
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		LeaderElection:         false,
+	})
+	require.NoError(t, err)
+
+	writer := &pushThroughWriter{}
+	rec := reconcilehandler.NewAgentServerReconciler(
+		k8sadapters.NewAgentServerRepository(mgr.GetClient()),
+		k8sadapters.NewAgentServerAdapter(mgr.GetClient()),
+		k8sadapters.NewSecretResolver(mgr.GetClient()),
+		writer,
+		domainconfig.ControllerWiring{
+			GatewayAddr:     "openshell.openshell.svc.cluster.local:8080",
+			CredsDir:        "/var/run/kape-controller/creds",
+			CredsSecret:     "kape-controller-creds",
+			DefaultProvider: "openrouter",
+			Transport:       "pull",
+			EventStore:      "/var/lib/kape-controller/controller-events.db",
+		},
+	)
+	require.NoError(t, kapecontroller.SetupAgentServerReconciler(mgr, rec, 1))
+	go func() { _ = mgr.Start(ctx) }()
+
+	server := validAgentServer("creds")
+	server.Namespace = ns.Name
+	server.Spec.Network = nil
+	require.NoError(t, c.Create(ctx, server))
+
+	// The Secret does not exist yet: the credential is named on status and nothing
+	// is bound.
+	waitFor(t, "Degraded naming the missing Secret", func() bool {
+		var got v1alpha1.KapeAgentServer
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: "creds"}, &got); err != nil {
+			return false
+		}
+		for _, cond := range got.Status.Conditions {
+			if cond.Type == reconcilehandler.ConditionDegraded {
+				return cond.Status == metav1.ConditionTrue &&
+					strings.Contains(cond.Message, "github (SecretNotFound)")
+			}
+		}
+		return false
+	})
+
+	// Creating the labelled Secret recovers the credential and the binding env.
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "github-token",
+			Namespace: ns.Name,
+			Labels:    map[string]string{"kape.io/credential": "true"},
+		},
+		Data: map[string][]byte{"token": []byte("ghp_envtest")},
+	}
+	require.NoError(t, c.Create(ctx, secret))
+	waitFor(t, "pushed credential", func() bool {
+		var got v1alpha1.KapeAgentServer
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: "creds"}, &got); err != nil {
+			return false
+		}
+		for _, cond := range got.Status.Conditions {
+			if cond.Type == reconcilehandler.ConditionDegraded {
+				return cond.Status == metav1.ConditionFalse
+			}
+		}
+		return false
+	})
+
+	var dep appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: "kape-controller-creds"}, &dep))
+	var bindings string
+	for _, env := range dep.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == agentserverEnvCredentialBindings {
+			bindings = env.Value
+		}
+	}
+	assert.JSONEq(t, `[{"provider":"kape-kape-agentserver-creds-creds-github","hosts":["github.com:443","api.github.com:443","**.githubusercontent.com:443"]}]`, bindings)
+
+	// Rotation: editing the Secret re-enqueues the CR through the Secret watch and
+	// the writer sees the new value.
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: "github-token"}, secret))
+	secret.Data["token"] = []byte("ghp_envtest_rotated")
+	require.NoError(t, c.Update(ctx, secret))
+	waitFor(t, "rotated credential value", func() bool {
+		return writer.lastToken() == "ghp_envtest_rotated"
+	})
+}
+
+// agentserverEnvCredentialBindings is the env var name the assertion above reads.
+// Kept local so the envtest file does not import the domain package for one string.
+const agentserverEnvCredentialBindings = "KAPE_CREDENTIAL_BINDINGS"
+
+// pushThroughWriter is a stand-in OpenShellApplyPort: it reports every record as
+// pushed and remembers the last credential value it saw, so the envtest can prove
+// the Secret edit reached the writer.
+type pushThroughWriter struct {
+	mu    sync.Mutex
+	token string
+}
+
+func (w *pushThroughWriter) Apply(_ context.Context, records []agentserver.OpenShellRecord) ([]agentserver.CredentialOutcome, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	outcomes := make([]agentserver.CredentialOutcome, 0, len(records))
+	for _, rec := range records {
+		w.token = rec.Values["token"]
+		outcomes = append(outcomes, agentserver.PushedOutcome(rec))
+	}
+	return outcomes, nil
+}
+
+func (w *pushThroughWriter) lastToken() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.token
 }

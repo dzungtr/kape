@@ -98,4 +98,15 @@ helm template t "$CHART" \
 assert_has "$TMP/extra.yaml" 'KAPE_DAEMON_TOKEN' "extraEnv: custom entry merged"
 assert_has "$TMP/extra.yaml" 'controller-extra' "extraEnvFrom: custom entry merged"
 
+# 7. OpenShell credential writer (ADR-0088, #265): off by default, enabled by a
+#    creds Secret, and read-only on Secrets either way.
+assert_not "$TMP/default.yaml" 'KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR' "default: credential writer disabled without a creds secret"
+assert_has "$TMP/default.yaml" 'verbs: \[get, list, watch\]' "rbac: credential Secrets are read-only (get/list/watch)"
+helm template t "$CHART" --set operator.openshell.credsSecret=openshell-client-tls > "$TMP/writer.yaml"
+assert_has "$TMP/writer.yaml" 'name: KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR' "writer: gateway env rendered"
+assert_has "$TMP/writer.yaml" 'openshell.openshell.svc.cluster.local:8080' "writer: falls back to controllerWiring.gatewayAddr"
+assert_has "$TMP/writer.yaml" 'name: KAPE_OPERATOR_OPENSHHELL_WORKSPACE' "writer: workspace env rendered"
+assert_has "$TMP/writer.yaml" 'secretName: openshell-client-tls' "writer: mTLS secret mounted"
+assert_has "$TMP/writer.yaml" 'mountPath: /var/run/kape-operator/openshell-mtls' "writer: mTLS mount path"
+
 echo "OK: all chart render assertions passed"
