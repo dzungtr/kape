@@ -1,0 +1,13 @@
+id: git-https
+display_name: Git over HTTPS (GitHub)
+description: GitHub git and REST API over HTTPS with proxy-layer auth-header injection
+category: source_control
+credentials:
+  - name: token
+    description: GitHub token injected at the egress proxy
+    required: true
+    auth_style: bearer
+    header_name: Authorization
+binaries:
+  - path: /usr/bin/git
+  - path: /usr/bin/gh

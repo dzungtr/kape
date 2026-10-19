@@ -98,6 +98,21 @@ operator:
     pullPolicy: IfNotPresent
   replicaCount: 1
   leaderElect: true
+  # OpenShell credential writer (ADR-0088, issue #265): the operator pushes
+  # credentials[] Secrets into OpenShell provider records over mTLS. The writer
+  # is enabled only when credsSecret is set; without it every credential reports
+  # Pushed=False/GatewayNotConfigured on the CR.
+  openshell:
+    # Gateway the operator writes provider records to. Empty falls back to
+    # controllerWiring.gatewayAddr (the same gateway the controllers use).
+    gatewayAddr: ""
+    # Secret holding the operator's own mTLS client material
+    # (ca.crt / tls.crt / tls.key).
+    credsSecret: ""
+    # Mount path for that Secret.
+    credsDir: /var/run/kape-operator/openshell-mtls
+    # OpenShell workspace provider records are created in.
+    workspace: default
 
 taskService:
   image:

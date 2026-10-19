@@ -38,6 +38,14 @@ const (
 	AgentServerLabel = "kape.io/agentserver"
 )
 
+// Credential Secret gating (ADR-0088, D7/D10): the operator reads only Secrets
+// an admin explicitly labelled for credential transit, and only in the
+// KapeAgentServer's own namespace.
+const (
+	CredentialLabel      = "kape.io/credential"
+	CredentialLabelValue = "true"
+)
+
 // ControllerPort is the controller's HTTP/MCP container port (controller
 // Config.ListenAddr default ":8081").
 const ControllerPort int32 = 8081
@@ -47,14 +55,17 @@ const ControllerPort int32 = 8081
 func ControllerName(serverName string) string { return "kape-controller-" + serverName }
 
 // ResolvedSecrets holds the credential Secret material read by the operator's
-// secret resolver (M4, #265), keyed by credentials[].name. Empty until the
-// credential-automation slice: this slice renders no credential bindings.
+// secret resolver (M4, #265), keyed by credentials[].name, then by credential
+// key. The values are secret material: they feed provider records and nothing
+// else — they never reach the CR, the env contract, or a log line (ADR-0088).
 type ResolvedSecrets map[string]map[string]string
 
 // OpenShellRecord is the provider record the operator writes for one healthy
-// credential (M3, #265). Name is both the imported provider-profile name and
-// the provider name — one CR credential, one record.
+// credential (M3, #265): one CR credential, one provider, named by
+// ProviderName. Credential is the credentials[].name the record came from, so
+// status conditions can name the CR entry the gateway rejected.
 type OpenShellRecord struct {
+	Credential   string
 	Name         string
 	ProviderType string
 	HostPatterns []string
@@ -78,37 +89,73 @@ type DesiredState struct {
 	DeploymentEnv []corev1.EnvVar
 	// NetworkResources are the rendered Service (and Ingress when declared).
 	NetworkResources NetworkResources
-	// OpenShellRecords are the provider records the credential slices write
-	// (M3, #265). Render always produces them from resolvedSecrets; this slice
-	// passes none, so the list is empty and KAPE_CREDENTIAL_BINDINGS is [].
+	// ProviderProfiles are the provider-type profile documents the writer must
+	// import before it creates any provider, deduplicated by id in order of
+	// first appearance. A credential whose providerType has no document
+	// contributes no profile — the writer reports it instead (D9).
+	ProviderProfiles []ProviderProfile
+	// OpenShellRecords are the provider records the writer converges, one per
+	// credential present in resolvedSecrets. Credentials that did not resolve
+	// (or did not push) are absent, and absent means absent from
+	// KAPE_CREDENTIAL_BINDINGS too: the controller never binds an endpoint to a
+	// provider that is not there.
 	OpenShellRecords []OpenShellRecord
 }
 
 // Render maps a KapeAgentServer to its DesiredState. Same input, same output.
 //
-// KAPE_CREDENTIAL_BINDINGS is rendered empty ("[]") for every CR: the
-// credential-automation slice (#265) is what fills it. resolvedSecrets is
-// therefore unused this slice and takes no part in the env contract.
+// resolvedSecrets is the credential material that has been resolved *and* — on
+// the reconcile's second pass — successfully pushed to the gateway. Rendering
+// with the pushed subset is what keeps KAPE_CREDENTIAL_BINDINGS honest: it
+// carries exactly the providers the controller may bind (D9).
 func Render(server *v1alpha1.KapeAgentServer, resolvedSecrets ResolvedSecrets) DesiredState {
-	spec := server.Spec
+	records := openShellRecords(server, resolvedSecrets)
 	return DesiredState{
-		DeploymentEnv:    deploymentEnv(spec),
+		DeploymentEnv:    deploymentEnv(server.Spec, records),
 		NetworkResources: networkResources(server),
-		OpenShellRecords: openShellRecords(server, resolvedSecrets),
+		ProviderProfiles: providerProfiles(records),
+		OpenShellRecords: records,
 	}
 }
 
 // deploymentEnv renders the env contract in a fixed order so the golden output
 // is stable across reconciles.
-func deploymentEnv(spec v1alpha1.KapeAgentServerSpec) []corev1.EnvVar {
+func deploymentEnv(spec v1alpha1.KapeAgentServerSpec, records []OpenShellRecord) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: EnvDefaultImage, Value: spec.Sandbox.Image},
 		{Name: EnvDefaultModel, Value: spec.Sandbox.Model},
 		{Name: EnvDefaultResources, Value: resourcesJSON(spec.Sandbox.Resources)},
 		{Name: EnvModelGatewayURL, Value: spec.ModelGateway.URL},
 		{Name: EnvServerDescription, Value: spec.Description},
-		{Name: EnvCredentialBindings, Value: "[]"},
+		{Name: EnvCredentialBindings, Value: credentialBindingsJSON(records)},
 	}
+}
+
+// credentialBinding is one entry of KAPE_CREDENTIAL_BINDINGS in the shape the
+// controller parses (handoff H1): the provider name and the egress host
+// patterns the credential is valid for.
+type credentialBinding struct {
+	Provider string   `json:"provider"`
+	Hosts    []string `json:"hosts"`
+}
+
+// credentialBindingsJSON renders the binding table: provider names and hosts
+// only, in credential order, with no secret material in it.
+func credentialBindingsJSON(records []OpenShellRecord) string {
+	bindings := make([]credentialBinding, 0, len(records))
+	for _, rec := range records {
+		bindings = append(bindings, credentialBinding{
+			Provider: rec.Name,
+			Hosts:    append([]string(nil), rec.HostPatterns...),
+		})
+	}
+	b, err := json.Marshal(bindings)
+	if err != nil {
+		// Unreachable: strings and string slices always marshal. Returning ""
+		// would hand the controller an unparsable table, so panic loudly.
+		panic(fmt.Sprintf("marshal credential bindings: %v", err))
+	}
+	return string(b)
 }
 
 // resourcesJSON is the KAPE_DEFAULT_RESOURCES wire shape the controller parses:
@@ -234,11 +281,42 @@ func openShellRecords(server *v1alpha1.KapeAgentServer, resolved ResolvedSecrets
 			continue
 		}
 		records = append(records, OpenShellRecord{
+			Credential:   cred.Name,
 			Name:         ProviderName(server.Namespace, server.Name, cred.Name),
 			ProviderType: cred.ProviderType,
 			HostPatterns: append([]string(nil), cred.HostPatterns...),
-			Values:       values,
+			Values:       copyValues(values),
 		})
 	}
 	return records
+}
+
+// providerProfiles collects the profile documents the records need, one per
+// provider type, in order of first appearance. A provider type with no shipped
+// document is skipped here and reported by the writer.
+func providerProfiles(records []OpenShellRecord) []ProviderProfile {
+	var profiles []ProviderProfile
+	seen := map[string]bool{}
+	for _, rec := range records {
+		if seen[rec.ProviderType] {
+			continue
+		}
+		profile, ok := Profile(rec.ProviderType)
+		if !ok {
+			continue
+		}
+		seen[rec.ProviderType] = true
+		profiles = append(profiles, profile)
+	}
+	return profiles
+}
+
+// copyValues copies resolved secret material so the rendered state never aliases
+// the resolver's map.
+func copyValues(values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	return out
 }
