@@ -193,7 +193,7 @@ same structured JSON as REST.
 
 ## Setup
 
-Prereqs: microk8s cluster with the OpenShell gateway deployed (v0.0.116),
+Prereqs: microk8s cluster with the OpenShell gateway deployed (v0.1.0),
 mTLS creds at `~/.config/openshell/gateways/k8s/mtls/`, `kubectl` working,
 and the pi sandbox image `ghcr.io/dzungtr/pi-openshell:openrouter` pullable
 via the `ghcr-kape` secret in namespace `openshell`.
@@ -211,20 +211,48 @@ export PATH=$GOPATH/bin:$PATH
 /usr/bin/go install github.com/bufbuild/buf/cmd/buf@v1.50.0
 /usr/bin/go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 /usr/bin/go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-buf generate   # regenerates gen/ from proto/ (protos pinned to gateway v0.0.116)
+buf generate   # regenerates gen/ from proto/ (protos pinned to gateway v0.1.0)
 /usr/bin/go build -o /tmp/gopath/bin/controller .
 ```
 
-The protos under `proto/` are copied from `github.com/NVIDIA/OpenShell` at
-tag `v0.0.116` (main-branch protos drifted: `WorkspaceSelector` oneofs and
-`ExecSandboxRequest.sandbox` do **not** match the deployed server).
+The protos under `proto/` are copied **verbatim** from
+`github.com/NVIDIA/OpenShell` at tag `v0.1.0` — never hand-edited, never
+patched (issue #262 / M9 invariant). Upstream carries no `go_package`
+option, so the Go mapping lives in `buf.gen.yaml` as per-file `M` options
+(`Mopenshell.proto=github.com/dzungtr/kape/controller/gen;v1`, one per
+vendored file); a re-pin copies `proto/` and reruns `buf generate`.
+
+### Workspace scope (v0.1.0)
+
+Every sandbox RPC carries `workspace_scope`
+(`openshell.datamodel.v1.WorkspaceSelector`); the v0.1.0 gateway rejects a
+request without one (`ListSandboxes: rpc error: code = InvalidArgument
+desc = workspace_scope is required`). The default workspace is the explicit
+name `default`, never an omitted selector — `workspaceSelector` in
+`gateway.go` supplies it, `Gateway.WithWorkspace` overrides it. `workspace`
+is not a CLI/env knob yet (kape runs in the default workspace).
+
+### Exec addressing (v0.1.0)
+
+`ExecSandboxRequest.sandbox` (field 1) is the **canonical sandbox name** in
+v0.1.0; the v0.0.116 pin sent the gateway UUID in that same slot. The
+controller now passes `agent.Sandbox` (the CR name) and keeps the UUID only
+in the create response / `SandboxInfo`.
 
 ## Provider
 
 One provider record must exist before creating agents (the controller
-attaches it by name, default `openrouter-spike`):
+attaches it by name, default `openrouter-spike`).
+
+> **OpenShell v0.1.0 retires generic provider creation** (profile-authoritative
+> providers, #2962): `openshell provider create --type generic ...` below is the
+> legacy v0.0.116 form and fails on v0.1.0. Existing legacy records
+> (`openrouter`, `openrouter-spike`) survive the upgrade and still serve the
+> model path; new providers must come from a provider profile
+> (`ImportProviderProfiles`). Do not script `--type generic` against v0.1.0.
 
 ```sh
+# legacy form — v0.0.116 only; retired in v0.1.0
 openshell provider create --name openrouter-spike --type generic \
   --credential OPENROUTER_API_KEY=dummy
 ```
@@ -266,9 +294,11 @@ cd controller && ./smoke.sh   # MODEL/LISTEN/BASE env overrides available
 
 ## Spike findings feeding this design (gotchas)
 
-- **Proto drift**: pin protos to the gateway version (v0.0.116 ≠ main).
-- **exec takes the sandbox UUID, not the name** — the spike hit this; the
-  controller resolves `SandboxId` from the create response.
+- **Proto drift**: pin protos to the gateway version — the vendored set is
+  tag `v0.1.0`; main-branch protos drift from any deployed server.
+- **exec addresses the sandbox by canonical name** in v0.1.0
+  (`ExecSandboxRequest.sandbox`, field 1); the v0.0.116 pin put the gateway
+  UUID there.
 - **Egress policy**: sandboxes route all HTTP through an OPA policy proxy
   (`10.200.0.1:3128`); even allowed hosts need an explicit
   `network_policies` rule whose `binaries` include the calling executable.

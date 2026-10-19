@@ -71,8 +71,7 @@ type Agent struct {
 	mu     sync.Mutex
 	status AgentStatus
 
-	sandboxID string // gateway sandbox UUID (used by exec RPCs)
-	piSeq     int    // last pi RPC prompt id issued
+	piSeq int // last pi RPC prompt id issued
 
 	// replayedOnly marks an agent rebuilt from the durable log at startup
 	// (issue #197): registry + hub are hydrated, but no exec stream exists
@@ -297,11 +296,9 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		// CR-derived views, and post-restart cascade termination.
 		labels[LabelParentAgentID] = parent.ID
 	}
-	_, sbID, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, labels, PiSessionID(id))
-	if err != nil {
+	if _, _, err := m.gw.CreateSandbox(ctx, name, resolved.Image, resolved.Provider, resolved.Resources, labels, PiSessionID(id)); err != nil {
 		return nil, err
 	}
-	agent.sandboxID = sbID
 	if err := m.waitReady(ctx, agent); err != nil {
 		_ = m.gw.DeleteSandbox(context.Background(), name)
 		return nil, err
@@ -879,7 +876,9 @@ func errNotReady(id string, s AgentStatus) error {
 func (m *AgentManager) startPi(agent *Agent, model string) error {
 	// Agent lifetime == exec stream lifetime: one context per agent.
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := m.gw.StartPi(ctx, agent.sandboxID, model)
+	// v0.1.0 exec addresses the sandbox by canonical name (agent.Sandbox);
+	// the v0.0.116 pin sent the gateway UUID in the same wire slot.
+	stream, err := m.gw.StartPi(ctx, agent.Sandbox, model)
 	if err != nil {
 		cancel()
 		return err

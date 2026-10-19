@@ -30,7 +30,8 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 		},
 	}
 	req := &v1.UpdateConfigRequest{
-		Name: sandboxName,
+		WorkspaceScope: g.scope(),
+		Sandbox:        sandboxName,
 		MergeOperations: []*v1.PolicyMergeOperation{{
 			Operation: &v1.PolicyMergeOperation_AddRule{
 				AddRule: &v1.AddNetworkRule{RuleName: "m1_model_gateway", Rule: rule},
@@ -56,7 +57,8 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 // broad allow rules; the default-deny OPA posture stays the real boundary.
 func (g *Gateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, host string, port int) error {
 	req := &v1.UpdateConfigRequest{
-		Name: sandboxName,
+		WorkspaceScope: g.scope(),
+		Sandbox:        sandboxName,
 		MergeOperations: []*v1.PolicyMergeOperation{{
 			Operation: &v1.PolicyMergeOperation_AddRule{
 				AddRule: &v1.AddNetworkRule{
@@ -77,8 +79,15 @@ func (g *Gateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, ho
 		}, {
 			Operation: &v1.PolicyMergeOperation_AddDenyRules{
 				AddDenyRules: &v1.AddDenyRules{
-					Host: host,
-					Port: uint32(port),
+					// v0.1.0 types the deny target explicitly: the same rule,
+					// host, port set and binary scope the allow endpoint above
+					// declared (an empty rule binary list means any binary).
+					Target: &v1.L7RuleTarget{
+						RuleName:  "m1_controller",
+						Host:      host,
+						Ports:     []uint32{uint32(port)},
+						AnyBinary: true,
+					},
 					DenyRules: []*v1.L7DenyRule{{
 						Method: "*",
 						Path:   "**",

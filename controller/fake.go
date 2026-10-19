@@ -184,7 +184,7 @@ func (f *FakeGateway) SetStream(s *FakeStream) {
 	f.stream = s
 }
 
-func (f *FakeGateway) StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error) {
+func (f *FakeGateway) StartPi(ctx context.Context, sandboxName, model string) (ExecStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.piModels = append(f.piModels, model)
