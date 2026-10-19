@@ -41,10 +41,10 @@ type GatewayClient interface {
 	ListSandboxes(ctx context.Context, labelSelector string) ([]SandboxInfo, error)
 	// DeleteSandbox deletes the sandbox.
 	DeleteSandbox(ctx context.Context, name string) error
-	// StartPi opens the interactive exec stream running the pi RPC wrapper.
-	// model ("" = leave the image's default model) is patched into
-	// models.json and exported as PI_MODEL.
-	StartPi(ctx context.Context, sandboxID, model string) (ExecStream, error)
+	// StartPi opens the interactive exec stream running the pi RPC wrapper for
+	// the canonical sandbox name. model ("" = leave the image's default model)
+	// is patched into models.json and exported as PI_MODEL.
+	StartPi(ctx context.Context, sandboxName, model string) (ExecStream, error)
 	// ApplyModelGatewayPolicy merges the model-gateway egress rule for the sandbox.
 	ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error
 	// ApplyControllerEgressDeny merges the structural sandbox→controller
@@ -66,17 +66,45 @@ type SandboxInfo struct {
 	Labels map[string]string
 }
 
+// defaultWorkspace is the workspace every sandbox RPC is scoped to. OpenShell
+// v0.1.0 requires a workspace_scope on every sandbox RPC (v0.0.116 implied it)
+// and names the gateway's default workspace explicitly as "default" — an
+// omitted selector is invalid, never a fallback.
+const defaultWorkspace = "default"
+
+// workspaceSelector builds the WorkspaceSelector a sandbox RPC must carry.
+// Empty workspace selects the gateway's default workspace.
+func workspaceSelector(workspace string) *v1.WorkspaceSelector {
+	if workspace == "" {
+		workspace = defaultWorkspace
+	}
+	return &v1.WorkspaceSelector{
+		Selection: &v1.WorkspaceSelector_Workspace{Workspace: workspace},
+	}
+}
+
 // Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
 type Gateway struct {
 	client          v1.OpenShellClient
-	modelGatewayURL string // base URL patched into the pi wrapper's models.json
+	modelGatewayURL string   // base URL patched into the pi wrapper's models.json
+	workspace       string   // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
 	daemonToken     string   // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
 	daemonCommand   []string // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
 }
 
 func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
-	return &Gateway{client: v1.NewOpenShellClient(conn), modelGatewayURL: modelGatewayURL}
+	return &Gateway{client: v1.NewOpenShellClient(conn), modelGatewayURL: modelGatewayURL, workspace: defaultWorkspace}
 }
+
+// WithWorkspace scopes every sandbox RPC to the named workspace (v0.1.0
+// workspace_scope). Empty keeps the gateway's default workspace.
+func (g *Gateway) WithWorkspace(workspace string) *Gateway {
+	g.workspace = workspace
+	return g
+}
+
+// scope is the workspace_scope every sandbox RPC carries.
+func (g *Gateway) scope() *v1.WorkspaceSelector { return workspaceSelector(g.workspace) }
 
 // WithDaemonToken sets the D5 placeholder credential the daemon inside every
 // newly created sandbox receives as KAPE_DAEMON_TOKEN template environment
@@ -106,7 +134,7 @@ func (g *Gateway) WithDaemonCommand(argv []string) *Gateway {
 // the daemon environment so the sandbox's pi resumes the session's tree.
 // Returns name and id.
 func (g *Gateway) CreateSandbox(ctx context.Context, name, image, provider string, resources Resources, labels map[string]string, piSessionID string) (string, string, error) {
-	req := createSandboxRequest(name, image, provider, resources, labels, g.daemonEnv(labels, piSessionID), g.daemonCommand)
+	req := g.createSandboxRequest(name, image, provider, resources, labels, g.daemonEnv(labels, piSessionID), g.daemonCommand)
 	resp, err := g.client.CreateSandbox(ctx, req)
 	if err != nil {
 		return "", "", fmt.Errorf("CreateSandbox: %w", err)
@@ -137,10 +165,11 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 // createSandboxRequest builds the CreateSandboxRequest payload; split out of
 // CreateSandbox so the E2 wire contract (command threading, field 12) is
 // unit-testable without a gRPC server.
-func createSandboxRequest(name, image, provider string, resources Resources, labels map[string]string, env map[string]string, command []string) *v1.CreateSandboxRequest {
+func (g *Gateway) createSandboxRequest(name, image, provider string, resources Resources, labels map[string]string, env map[string]string, command []string) *v1.CreateSandboxRequest {
 	req := &v1.CreateSandboxRequest{
-		Name:   name,
-		Labels: labels,
+		WorkspaceScope: g.scope(),
+		Name:           name,
+		Labels:         labels,
 		Spec: &v1.SandboxSpec{
 			Providers: []string{provider},
 			Template: &v1.SandboxTemplate{
@@ -186,7 +215,7 @@ func sandboxEnv(token, agentID, piSessionID string) map[string]string {
 }
 
 func (g *Gateway) ListProviders(ctx context.Context) ([]string, error) {
-	resp, err := g.client.ListProviders(ctx, &v1.ListProvidersRequest{})
+	resp, err := g.client.ListProviders(ctx, &v1.ListProvidersRequest{WorkspaceScope: g.scope()})
 	if err != nil {
 		return nil, fmt.Errorf("ListProviders: %w", err)
 	}
@@ -199,7 +228,7 @@ func (g *Gateway) ListProviders(ctx context.Context) ([]string, error) {
 
 // GetSandboxPhase polls the sandbox phase.
 func (g *Gateway) GetSandboxPhase(ctx context.Context, name string) (v1.SandboxPhase, error) {
-	resp, err := g.client.GetSandbox(ctx, &v1.GetSandboxRequest{Name: name})
+	resp, err := g.client.GetSandbox(ctx, &v1.GetSandboxRequest{WorkspaceScope: g.scope(), Name: name})
 	if err != nil {
 		return v1.SandboxPhase_SANDBOX_PHASE_UNSPECIFIED, err
 	}
@@ -207,16 +236,18 @@ func (g *Gateway) GetSandboxPhase(ctx context.Context, name string) (v1.SandboxP
 }
 
 // ListSandboxes pages the gateway ListSandboxes API with the given label
-// selector and flattens it into SandboxInfo values.
+// selector and flattens it into SandboxInfo values. v0.1.0 pages by opaque
+// token (page_size/page_token, next_page_token) instead of limit/offset.
 func (g *Gateway) ListSandboxes(ctx context.Context, labelSelector string) ([]SandboxInfo, error) {
 	var out []SandboxInfo
-	offset := uint32(0)
-	const pageSize = uint32(100)
+	const pageSize = int32(100)
+	pageToken := ""
 	for {
 		resp, err := g.client.ListSandboxes(ctx, &v1.ListSandboxesRequest{
-			LabelSelector: labelSelector,
-			Limit:         pageSize,
-			Offset:        offset,
+			WorkspaceScope: g.scope(),
+			PageSize:       pageSize,
+			PageToken:      pageToken,
+			LabelSelector:  labelSelector,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("ListSandboxes: %w", err)
@@ -229,10 +260,10 @@ func (g *Gateway) ListSandboxes(ctx context.Context, labelSelector string) ([]Sa
 			}
 			out = append(out, SandboxInfo{Name: md.GetName(), ID: md.GetId(), Phase: sb.GetStatus().GetPhase(), Labels: labels})
 		}
-		if uint32(len(resp.GetSandboxes())) < pageSize {
+		pageToken = resp.GetNextPageToken()
+		if pageToken == "" {
 			return out, nil
 		}
-		offset += pageSize
 	}
 }
 
@@ -259,7 +290,7 @@ func (g *Gateway) WaitReady(ctx context.Context, name string, timeout time.Durat
 
 // DeleteSandbox deletes the sandbox.
 func (g *Gateway) DeleteSandbox(ctx context.Context, name string) error {
-	_, err := g.client.DeleteSandbox(ctx, &v1.DeleteSandboxRequest{Name: name})
+	_, err := g.client.DeleteSandbox(ctx, &v1.DeleteSandboxRequest{WorkspaceScope: g.scope(), Name: name})
 	if err != nil {
 		return fmt.Errorf("DeleteSandbox(%s): %w", name, err)
 	}
@@ -269,12 +300,12 @@ func (g *Gateway) DeleteSandbox(ctx context.Context, name string) error {
 // ProbeModelGateway runs a one-shot exec inside the sandbox to probe the
 // in-cluster model gateway and logs the result. Used to validate /v1/models
 // reachability and auth before pi starts.
-func (g *Gateway) ProbeModelGateway(ctx context.Context, id string) {
+func (g *Gateway) ProbeModelGateway(ctx context.Context, sandbox string) {
 	cmd := []string{"bash", "-lc",
 		"curl -s -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' http://model-gateway-http.aperture.svc.cluster.local/v1/models " +
 			"&& echo '--- body ---' " +
 			"&& curl -s -m 8 http://model-gateway-http.aperture.svc.cluster.local/v1/models | head -c 2000 || echo 'curl missing/failed'"}
-	req := &v1.ExecSandboxRequest{SandboxId: id, Command: cmd}
+	req := &v1.ExecSandboxRequest{WorkspaceScope: g.scope(), Sandbox: sandbox, Command: cmd}
 	stream, err := g.client.ExecSandbox(ctx, req)
 	if err != nil {
 		log.Printf("[probe] exec failed: %v", err)
@@ -299,17 +330,8 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, id string) {
 
 // StartPi opens an interactive exec stream running the pi RPC wrapper and
 // returns the stream for later stdin writes.
-func (g *Gateway) StartPi(ctx context.Context, id, model string) (ExecStream, error) {
-	// NOTE: provider-injected env is withheld by the gateway for unbound static
-	// credentials (spike finding); the model gateway is unauthenticated, so we
-	// inject the key via the exec environment directly.
-	env := map[string]string{"OPENROUTER_API_KEY": "dummy"}
-	if model != "" {
-		env["PI_MODEL"] = model
-		env["PI_PROVIDER"] = "openrouter"
-	}
-	req := &v1.ExecSandboxRequest{SandboxId: id, Command: piWrapperCommand(g.modelGatewayURL, model), Workdir: "/sandbox",
-		Environment: env}
+func (g *Gateway) StartPi(ctx context.Context, sandboxName, model string) (ExecStream, error) {
+	req := g.interactiveExecRequest(sandboxName, model)
 	stream, err := g.client.ExecSandboxInteractive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ExecSandboxInteractive open: %w", err)
@@ -318,6 +340,28 @@ func (g *Gateway) StartPi(ctx context.Context, id, model string) (ExecStream, er
 		return nil, fmt.Errorf("ExecSandboxInteractive start send: %w", err)
 	}
 	return stream, nil
+}
+
+// interactiveExecRequest builds the first frame of the interactive exec
+// stream. v0.1.0 addresses the target by canonical sandbox name (field 1
+// `sandbox`) and requires workspace_scope; the v0.0.116 pin sent a sandbox
+// UUID in that slot, which the v0.1.0 gateway resolves as a name (not found).
+func (g *Gateway) interactiveExecRequest(sandboxName, model string) *v1.ExecSandboxRequest {
+	// NOTE: provider-injected env is withheld by the gateway for unbound static
+	// credentials (spike finding); the model gateway is unauthenticated, so we
+	// inject the key via the exec environment directly.
+	env := map[string]string{"OPENROUTER_API_KEY": "dummy"}
+	if model != "" {
+		env["PI_MODEL"] = model
+		env["PI_PROVIDER"] = "openrouter"
+	}
+	return &v1.ExecSandboxRequest{
+		WorkspaceScope: g.scope(),
+		Sandbox:        sandboxName,
+		Command:        piWrapperCommand(g.modelGatewayURL, model),
+		Workdir:        "/sandbox",
+		Environment:    env,
+	}
 }
 
 // piWrapperCommand patches the pi models.json: baseUrl to the configured

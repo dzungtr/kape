@@ -3,7 +3,8 @@
 # the controller threads command=[kape-daemon] in CreateSandboxRequest and
 # the OpenShell k8s driver launches the daemon as the sandbox's main process
 # (no shell, no profile hook). Verified against the live microk8s gateway
-# (v0.0.116) with the in-cluster smoke controller.
+# (v0.0.116; the controller now targets v0.1.0 — see README "Workspace
+# scope" / "Exec addressing") with the in-cluster smoke controller.
 #
 # Legs:
 #   1. create: SandboxSpec.command threaded; supervisor env carries

@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	"io"
 	"testing"
+
+	"google.golang.org/grpc"
+
+	v1 "github.com/dzungtr/kape/controller/gen"
 )
 
 // createSandboxRequest builds the CreateSandboxRequest the gateway create
@@ -9,7 +15,7 @@ import (
 // the sandbox's canonical main process — no shell wrapping, no profile hook.
 
 func TestCreateSandboxRequest_ThreadsDaemonCommand(t *testing.T) {
-	req := createSandboxRequest("sbx-test", "img:1", "prov",
+	req := (&Gateway{}).createSandboxRequest("sbx-test", "img:1", "prov",
 		Resources{CPU: "1", Memory: "2Gi"},
 		map[string]string{"managed-by": "kape-controller"},
 		map[string]string{"KAPE_DAEMON_TOKEN": "t"},
@@ -56,7 +62,7 @@ func TestDaemonEnv_SpoolPathOnlyWhenCommandThreaded(t *testing.T) {
 func TestCreateSandboxRequest_EmptyCommandOmitted(t *testing.T) {
 	// Fallback posture: empty configured command leaves the request without
 	// Spec.Command so the gateway's own default main process applies.
-	req := createSandboxRequest("sbx-test", "img:1", "prov", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	req := (&Gateway{}).createSandboxRequest("sbx-test", "img:1", "prov", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
 	if len(req.Spec.Command) != 0 {
 		t.Fatalf("Spec.Command = %v, want omitted", req.Spec.Command)
 	}
@@ -65,7 +71,7 @@ func TestCreateSandboxRequest_EmptyCommandOmitted(t *testing.T) {
 func TestCreateSandboxRequest_ProtoFieldNumber(t *testing.T) {
 	// The vendored proto pins command to field 12 with the E2 wording; the
 	// wire contract must not drift silently.
-	req := createSandboxRequest("sbx-test", "img", "prov", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, []string{"kape-daemon"})
+	req := (&Gateway{}).createSandboxRequest("sbx-test", "img", "prov", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, []string{"kape-daemon"})
 	md := req.Spec.ProtoReflect().Descriptor().Fields().ByJSONName("command")
 	if md == nil {
 		t.Fatal("SandboxSpec.command field missing from vendored proto")
@@ -89,5 +95,240 @@ func TestDaemonEnv_MergedSessionIDAndSpoolPath(t *testing.T) {
 	}
 	if env["KAPE_DAEMON_TOKEN"] != "t" || env["KAPE_AGENT_ID"] != "agent-1" {
 		t.Fatalf("token/agent env missing: %v", env)
+	}
+}
+
+// v0.1.0 mandates workspace_scope on every sandbox RPC ("workspace_scope is
+// required"); the default workspace is the explicit name "default".
+
+func TestWorkspaceSelector_DefaultsToExplicitDefaultName(t *testing.T) {
+	// The default workspace is a name, never an omitted selector.
+	if got := workspaceSelector("").GetWorkspace(); got != "default" {
+		t.Fatalf("empty workspace selector = %q, want %q", got, "default")
+	}
+	if got := workspaceSelector("team-a").GetWorkspace(); got != "team-a" {
+		t.Fatalf("named workspace selector = %q, want team-a", got)
+	}
+}
+
+func TestCreateSandboxRequest_CarriesWorkspaceScope(t *testing.T) {
+	req := (&Gateway{}).createSandboxRequest("sbx-test", "img", "prov",
+		Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	if got := req.GetWorkspaceScope().GetWorkspace(); got != defaultWorkspace {
+		t.Fatalf("CreateSandbox workspace_scope = %q, want %q", got, defaultWorkspace)
+	}
+	if got := req.ProtoReflect().Descriptor().Fields().ByNumber(7); got == nil || got.Name() != "workspace_scope" {
+		t.Fatalf("CreateSandboxRequest.workspace_scope field 7 missing from vendored proto: %v", got)
+	}
+}
+
+func TestInteractiveExecRequest_AddressesSandboxByName(t *testing.T) {
+	// v0.1.0 field 1 `sandbox` is the canonical sandbox name; the v0.0.116 pin
+	// sent a sandbox UUID in the same slot.
+	gw := (&Gateway{modelGatewayURL: "http://gw/v1"})
+	req := gw.interactiveExecRequest("sbx-agent-1", "z-ai/glm-5.2")
+	if req.GetSandbox() != "sbx-agent-1" {
+		t.Fatalf("exec sandbox = %q, want the canonical name", req.GetSandbox())
+	}
+	if got := req.GetWorkspaceScope().GetWorkspace(); got != defaultWorkspace {
+		t.Fatalf("exec workspace_scope = %q, want %q", got, defaultWorkspace)
+	}
+	if req.GetEnvironment()["PI_MODEL"] != "z-ai/glm-5.2" || req.GetWorkdir() != "/sandbox" {
+		t.Fatalf("exec env/workdir lost: %v / %q", req.GetEnvironment(), req.GetWorkdir())
+	}
+}
+
+// recordingClient records the request every Gateway RPC sends. The embedded
+// OpenShellClient is nil, so an RPC the Gateway is not expected to call
+// panics instead of silently passing.
+type recordingClient struct {
+	v1.OpenShellClient
+
+	createSandbox *v1.CreateSandboxRequest
+	getSandbox    *v1.GetSandboxRequest
+	deleteSandbox *v1.DeleteSandboxRequest
+	listProviders *v1.ListProvidersRequest
+	listPages     []*v1.ListSandboxesRequest
+	updateConfig  []*v1.UpdateConfigRequest
+	execStarted   *v1.ExecSandboxRequest
+}
+
+func (c *recordingClient) CreateSandbox(ctx context.Context, in *v1.CreateSandboxRequest, _ ...grpc.CallOption) (*v1.SandboxResponse, error) {
+	c.createSandbox = in
+	return &v1.SandboxResponse{Sandbox: &v1.Sandbox{Metadata: &v1.ObjectMeta{Name: "sbx-1", Id: "uuid-1"}}}, nil
+}
+
+func (c *recordingClient) GetSandbox(ctx context.Context, in *v1.GetSandboxRequest, _ ...grpc.CallOption) (*v1.SandboxResponse, error) {
+	c.getSandbox = in
+	return &v1.SandboxResponse{Sandbox: &v1.Sandbox{Status: &v1.SandboxStatus{Phase: v1.SandboxPhase_SANDBOX_PHASE_READY}}}, nil
+}
+
+func (c *recordingClient) DeleteSandbox(ctx context.Context, in *v1.DeleteSandboxRequest, _ ...grpc.CallOption) (*v1.DeleteSandboxResponse, error) {
+	c.deleteSandbox = in
+	return &v1.DeleteSandboxResponse{}, nil
+}
+
+func (c *recordingClient) ListProviders(ctx context.Context, in *v1.ListProvidersRequest, _ ...grpc.CallOption) (*v1.ListProvidersResponse, error) {
+	c.listProviders = in
+	return &v1.ListProvidersResponse{Providers: []*v1.Provider{{Metadata: &v1.ObjectMeta{Name: "openrouter"}}}}, nil
+}
+
+func (c *recordingClient) ListSandboxes(ctx context.Context, in *v1.ListSandboxesRequest, _ ...grpc.CallOption) (*v1.ListSandboxesResponse, error) {
+	c.listPages = append(c.listPages, in)
+	if in.GetPageToken() == "" {
+		return &v1.ListSandboxesResponse{
+			Sandboxes:     []*v1.Sandbox{{Metadata: &v1.ObjectMeta{Name: "sbx-1"}}},
+			NextPageToken: "page-2",
+		}, nil
+	}
+	return &v1.ListSandboxesResponse{Sandboxes: []*v1.Sandbox{{Metadata: &v1.ObjectMeta{Name: "sbx-2"}}}}, nil
+}
+
+func (c *recordingClient) UpdateConfig(ctx context.Context, in *v1.UpdateConfigRequest, _ ...grpc.CallOption) (*v1.UpdateConfigResponse, error) {
+	c.updateConfig = append(c.updateConfig, in)
+	return &v1.UpdateConfigResponse{}, nil
+}
+
+type recordingExecStream struct {
+	grpc.ClientStream
+	started *v1.ExecSandboxRequest
+}
+
+func (s *recordingExecStream) Send(in *v1.ExecSandboxInput) error {
+	s.started = in.GetStart()
+	return nil
+}
+
+func (s *recordingExecStream) Recv() (*v1.ExecSandboxEvent, error) { return nil, io.EOF }
+
+func (c *recordingClient) ExecSandboxInteractive(ctx context.Context, _ ...grpc.CallOption) (grpc.BidiStreamingClient[v1.ExecSandboxInput, v1.ExecSandboxEvent], error) {
+	return &recordingExecStream{}, nil
+}
+
+func TestGateway_SandboxRPCsCarryWorkspaceScope(t *testing.T) {
+	cases := []struct {
+		name      string
+		workspace string
+		want      string
+	}{
+		{"default", "", "default"},
+		{"explicit default", "default", "default"},
+		{"named override", "team-a", "team-a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingClient{}
+			gw := NewGateway(nil, "http://gw/v1").WithWorkspace(tc.workspace)
+			gw.client = rec
+			ctx := context.Background()
+
+			if _, _, err := gw.CreateSandbox(ctx, "sbx-1", "img", "prov", Resources{CPU: "1", Memory: "1Gi"}, nil, ""); err != nil {
+				t.Fatalf("CreateSandbox: %v", err)
+			}
+			if _, err := gw.GetSandboxPhase(ctx, "sbx-1"); err != nil {
+				t.Fatalf("GetSandboxPhase: %v", err)
+			}
+			if _, err := gw.ListSandboxes(ctx, "managed-by=kape-controller"); err != nil {
+				t.Fatalf("ListSandboxes: %v", err)
+			}
+			if err := gw.DeleteSandbox(ctx, "sbx-1"); err != nil {
+				t.Fatalf("DeleteSandbox: %v", err)
+			}
+			if _, err := gw.ListProviders(ctx); err != nil {
+				t.Fatalf("ListProviders: %v", err)
+			}
+			if err := gw.ApplyModelGatewayPolicy(ctx, "sbx-1"); err != nil {
+				t.Fatalf("ApplyModelGatewayPolicy: %v", err)
+			}
+			if err := gw.ApplyControllerEgressDeny(ctx, "sbx-1", "controller.openshell.svc", 8081); err != nil {
+				t.Fatalf("ApplyControllerEgressDeny: %v", err)
+			}
+			if _, err := gw.StartPi(ctx, "sbx-1", ""); err != nil {
+				t.Fatalf("StartPi: %v", err)
+			}
+
+			for _, scope := range []string{
+				rec.createSandbox.GetWorkspaceScope().GetWorkspace(),
+				rec.getSandbox.GetWorkspaceScope().GetWorkspace(),
+				rec.deleteSandbox.GetWorkspaceScope().GetWorkspace(),
+				rec.listProviders.GetWorkspaceScope().GetWorkspace(),
+			} {
+				if scope != tc.want {
+					t.Fatalf("workspace_scope = %q, want %q", scope, tc.want)
+				}
+			}
+			for _, page := range rec.listPages {
+				if got := page.GetWorkspaceScope().GetWorkspace(); got != tc.want {
+					t.Fatalf("ListSandboxes workspace_scope = %q, want %q", got, tc.want)
+				}
+			}
+			if len(rec.updateConfig) != 2 {
+				t.Fatalf("UpdateConfig calls = %d, want 2 (model-gateway + controller deny)", len(rec.updateConfig))
+			}
+			for _, req := range rec.updateConfig {
+				if got := req.GetWorkspaceScope().GetWorkspace(); got != tc.want {
+					t.Fatalf("UpdateConfig workspace_scope = %q, want %q", got, tc.want)
+				}
+				if req.GetSandbox() != "sbx-1" {
+					t.Fatalf("UpdateConfig sandbox = %q, want sbx-1", req.GetSandbox())
+				}
+			}
+		})
+	}
+}
+
+func TestGateway_ListSandboxesPagesByToken(t *testing.T) {
+	// v0.1.0 replaced limit/offset with page_size/page_token; the registry
+	// must follow next_page_token to the end.
+	rec := &recordingClient{}
+	gw := NewGateway(nil, "http://gw/v1")
+	gw.client = rec
+	got, err := gw.ListSandboxes(context.Background(), "managed-by=kape-controller")
+	if err != nil {
+		t.Fatalf("ListSandboxes: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "sbx-1" || got[1].Name != "sbx-2" {
+		t.Fatalf("paged sandboxes = %+v, want sbx-1 then sbx-2", got)
+	}
+	if len(rec.listPages) != 2 {
+		t.Fatalf("ListSandboxes calls = %d, want 2 pages", len(rec.listPages))
+	}
+	if rec.listPages[0].GetPageSize() != 100 || rec.listPages[0].GetPageToken() != "" {
+		t.Fatalf("first page = size %d token %q, want 100/empty", rec.listPages[0].GetPageSize(), rec.listPages[0].GetPageToken())
+	}
+	if rec.listPages[1].GetPageToken() != "page-2" {
+		t.Fatalf("second page token = %q, want page-2", rec.listPages[1].GetPageToken())
+	}
+	if rec.listPages[0].GetLabelSelector() != "managed-by=kape-controller" {
+		t.Fatalf("label selector lost: %q", rec.listPages[0].GetLabelSelector())
+	}
+}
+
+func TestGateway_ControllerEgressDenyTargetsAllowEndpoint(t *testing.T) {
+	// v0.1.0 types the deny target (rule, host, ports, binary scope) instead of
+	// bare host/port; an omitted or mismatched scope is rejected by the gateway.
+	rec := &recordingClient{}
+	gw := NewGateway(nil, "http://gw/v1")
+	gw.client = rec
+	if err := gw.ApplyControllerEgressDeny(context.Background(), "sbx-1", "controller.openshell.svc", 8081); err != nil {
+		t.Fatalf("ApplyControllerEgressDeny: %v", err)
+	}
+	ops := rec.updateConfig[0].GetMergeOperations()
+	deny := ops[1].GetAddDenyRules()
+	if deny == nil {
+		t.Fatalf("second merge op is not add_deny_rules: %v", ops[1])
+	}
+	target := deny.GetTarget()
+	if target.GetRuleName() != "m1_controller" || target.GetHost() != "controller.openshell.svc" {
+		t.Fatalf("deny target = %v", target)
+	}
+	if ports := target.GetPorts(); len(ports) != 1 || ports[0] != 8081 {
+		t.Fatalf("deny target ports = %v, want [8081]", ports)
+	}
+	if !target.GetAnyBinary() {
+		t.Fatal("deny target must declare any_binary to match the allow endpoint (no rule binaries)")
+	}
+	if len(target.GetBinaries()) != 0 {
+		t.Fatalf("deny target declared binaries alongside any_binary: %v", target.GetBinaries())
 	}
 }
