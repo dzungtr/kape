@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -27,6 +28,17 @@ func main() {
 	flag.Parse()
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
+	}
+
+	// Credential bindings (issue #264, ADR-0088): one log line names the
+	// providers every sandbox policy will carry — provider names only, never
+	// a host table's secrets.
+	if len(cfg.CredentialBindings) > 0 {
+		providers := make([]string, 0, len(cfg.CredentialBindings))
+		for _, b := range cfg.CredentialBindings {
+			providers = append(providers, b.Provider)
+		}
+		log.Printf("credential bindings: %d entries (%s)", len(cfg.CredentialBindings), strings.Join(providers, ", "))
 	}
 
 	// SLM monitor (issue #231): a missing or empty OpenRouter API key
@@ -48,7 +60,8 @@ func main() {
 		log.Fatalf("grpc dial %s: %v", cfg.GatewayAddr, err)
 	}
 	gw := NewGateway(conn, cfg.ModelGatewayURL).WithDaemonToken(cfg.DaemonToken).
-		WithDaemonCommand(cfg.DaemonCommandArgv())
+		WithDaemonCommand(cfg.DaemonCommandArgv()).
+		WithCredentialBindings(cfg.CredentialBindings)
 
 	// Durable event store (issue #195): one controller-local single-file log,
 	// opened before any agent can publish; closed when the process exits.

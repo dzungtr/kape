@@ -67,6 +67,31 @@ func TestConfigFromEnvRejectsGarbageControllerPort(t *testing.T) {
 	}
 }
 
+// Issue #264 (handoff H1): KAPE_CREDENTIAL_BINDINGS is the controller's
+// env-fed binding table. A malformed table fails startup — the controller must
+// not run with a table it cannot read.
+func TestConfigFromEnvReadsCredentialBindings(t *testing.T) {
+	t.Setenv("KAPE_CREDENTIAL_BINDINGS", `[{"provider":"kape-openshell-kape-github","hosts":["github.com:443","api.github.com:443"]}]`)
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if len(cfg.CredentialBindings) != 1 {
+		t.Fatalf("bindings = %+v, want one entry", cfg.CredentialBindings)
+	}
+	b := cfg.CredentialBindings[0]
+	if b.Provider != "kape-openshell-kape-github" || len(b.Hosts) != 2 || b.Hosts[0] != "github.com:443" {
+		t.Fatalf("bindings = %+v, want the env table verbatim", cfg.CredentialBindings)
+	}
+}
+
+func TestConfigFromEnvRejectsGarbageCredentialBindings(t *testing.T) {
+	t.Setenv("KAPE_CREDENTIAL_BINDINGS", `[{"provider":"p1","hosts":["github.com"]}]`)
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("ConfigFromEnv accepted a malformed KAPE_CREDENTIAL_BINDINGS, want error")
+	}
+}
+
 func TestFlagOverridesEnv(t *testing.T) {
 	t.Setenv("KAPE_DEFAULT_IMAGE", "env-image")
 	cfg, err := ConfigFromEnv()

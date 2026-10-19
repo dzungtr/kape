@@ -85,11 +85,12 @@ func workspaceSelector(workspace string) *v1.WorkspaceSelector {
 
 // Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
 type Gateway struct {
-	client          v1.OpenShellClient
-	modelGatewayURL string   // base URL patched into the pi wrapper's models.json
-	workspace       string   // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
-	daemonToken     string   // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
-	daemonCommand   []string // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
+	client             v1.OpenShellClient
+	modelGatewayURL    string    // base URL patched into the pi wrapper's models.json
+	workspace          string    // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
+	daemonToken        string    // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
+	daemonCommand      []string  // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
+	credentialBindings []Binding // env-fed credential binding table (KAPE_CREDENTIAL_BINDINGS, issue #264/H1); empty keeps the policy merge byte-identical
 }
 
 func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
@@ -113,6 +114,14 @@ func (g *Gateway) scope() *v1.WorkspaceSelector { return workspaceSelector(g.wor
 // Empty token (exec break-glass) leaves sandbox creation byte-identical.
 func (g *Gateway) WithDaemonToken(token string) *Gateway {
 	g.daemonToken = token
+	return g
+}
+
+// WithCredentialBindings installs the env-fed binding table (#264, ADR-0088)
+// the policy seam merges into every sandbox. Nil/empty keeps the merged policy
+// byte-identical to the model-gateway-only posture.
+func (g *Gateway) WithCredentialBindings(bindings []Binding) *Gateway {
+	g.credentialBindings = bindings
 	return g
 }
 

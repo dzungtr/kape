@@ -31,8 +31,12 @@ type FakeGateway struct {
 	requests         []CreateRequest
 	controllerDenies []ControllerDeny
 	// denyErr, when set, is returned by ApplyControllerEgressDeny.
-	denyErr  error
-	piModels []string
+	denyErr error
+	// policyErr, when set, is returned by ApplyModelGatewayPolicy — models a
+	// gateway-rejected credential-binding merge (#264).
+	policyErr     error
+	policyApplies []string
+	piModels      []string
 	// stream, if set, is returned by every StartPi call.
 	stream *FakeStream
 }
@@ -204,7 +208,25 @@ func (f *FakeGateway) PiModels() []string {
 }
 
 func (f *FakeGateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error {
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.policyApplies = append(f.policyApplies, sandboxName)
+	return f.policyErr
+}
+
+// FailModelGatewayPolicy makes ApplyModelGatewayPolicy return err after
+// recording the call — models a rejected credential-binding merge (#264).
+func (f *FakeGateway) FailModelGatewayPolicy(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.policyErr = err
+}
+
+// PolicyApplies returns the sandbox names the policy seam was applied to.
+func (f *FakeGateway) PolicyApplies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.policyApplies...)
 }
 
 // ApplyControllerEgressDeny records the deny rule request for assertions.
