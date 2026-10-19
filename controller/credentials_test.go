@@ -279,6 +279,12 @@ func TestMergePolicy_BoundEndpoints(t *testing.T) {
 				if ep.GetProtocol() != "rest" {
 					t.Fatalf("endpoint[%d].protocol = %q, want \"rest\" (L7 inspection for credential injection)", i, ep.GetProtocol())
 				}
+				// The gateway rejects a "rest" endpoint with no allowed
+				// traffic (verified live on v0.1.0), so every bound endpoint
+				// must carry the L7 allow rule.
+				if len(ep.GetRules()) != 1 || ep.GetRules()[0].GetAllow().GetMethod() != "*" || ep.GetRules()[0].GetAllow().GetPath() != "**" {
+					t.Fatalf("endpoint[%d].rules = %v, want one allow * /** (gateway requires allowed traffic)", i, ep.GetRules())
+				}
 				if got := ep.GetCredentialBinding().GetProvider(); got != w.provid {
 					t.Fatalf("endpoint[%d].credential_binding.provider = %q, want %q", i, got, w.provid)
 				}

@@ -141,9 +141,18 @@ func MergePolicy(policy *v1.NetworkPolicyRule, bindings []Binding) (*v1.NetworkP
 			}
 			seenEndpoint[key] = true
 			merged.Endpoints = append(merged.Endpoints, &v1.NetworkEndpoint{
-				Host:              host,
-				Port:              port,
-				Protocol:          "rest",
+				Host:     host,
+				Port:     port,
+				Protocol: "rest",
+				// The gateway rejects a "rest" endpoint without allowed
+				// traffic (verified live on v0.1.0: "protocol requires rules
+				// or access to define allowed traffic"). git and gh reach
+				// arbitrary paths on the bound host, so the L7 rule admits any
+				// method and path — the host pattern, not the path, is the
+				// credential boundary.
+				Rules: []*v1.L7Rule{{
+					Allow: &v1.L7Allow{Method: "*", Path: "**"},
+				}},
 				CredentialBinding: &v1.NetworkCredentialBinding{Provider: binding.Provider},
 			})
 		}
