@@ -218,6 +218,12 @@ type Config struct {
 	ControllerServiceHost string // controller in-cluster service FQDN (D2/D7 deny rule)
 	ControllerServicePort int    // controller in-cluster service port (D2/D7 deny rule)
 
+	// CredentialBindings is the env-fed binding table (KAPE_CREDENTIAL_BINDINGS,
+	// issue #264 / handoff H1): the operator renders it, the controller merges
+	// it into every sandbox policy. Env-only — this is the operator→controller
+	// contract (ADR-0087), not a dev flag.
+	CredentialBindings []Binding
+
 	// SLM monitor (issue #231, spec #230). Empty APIKey disables the monitor
 	// entirely (single log line, everything else unaffected).
 	Monitor MonitorConfig
@@ -330,6 +336,15 @@ func envConfig(def Config) (Config, error) {
 			return def, fmt.Errorf("KAPE_CONTROLLER_SERVICE_PORT %q is not an integer: %w", v, err)
 		}
 		def.ControllerServicePort = p
+	}
+	// A malformed binding table fails startup rather than degrading to an
+	// empty one: a controller that cannot read its table must not run (#264).
+	if v := os.Getenv("KAPE_CREDENTIAL_BINDINGS"); v != "" {
+		bindings, err := ParseBindings(v)
+		if err != nil {
+			return def, err
+		}
+		def.CredentialBindings = bindings
 	}
 	if v := os.Getenv("KAPE_DAEMON_TOKEN"); v != "" {
 		def.DaemonToken = v
