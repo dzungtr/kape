@@ -123,6 +123,14 @@ The single settle-path assessment: synchronous but hard-bounded (10s budget); fa
 The host-side blocking long-poll (`wait_agent`): one held connection returning a minimal coalesced snapshot on FSM state change, verdict transition, liveness failure, or timeout. The host's primary monitoring interface; raw records never cross it.
 _Avoid_: polling `read_events` as monitoring (demoted to a tail-pull mechanism).
 
+**KapeAgentServer**:
+The declarative serving-environment custom resource (ADR-0087): one CR declares a project's controller image, sandbox defaults, model gateway, credential registry, network, and self-description; the operator materialises a kape-controller Deployment (env-configured tool surface) plus OpenShell records from it. MCP clients distinguish multiple instances by CR name and route by the served `description`.
+_Avoid_: KapeController (collides with the kape-controller binary it materialises), KapeProfile (wayfinder working name, #157), profile alone.
+
+**Credential registry**:
+The `credentials[]` section of a KapeAgentServer (ADR-0088): generic named entries `{name, secretRef, providerType, hostPatterns[]}` the operator turns into OpenShell provider records via operator-transit from same-namespace, label-gated k8s Secrets. Injection happens at the egress proxy (`NetworkCredentialBinding`); secret material never enters the sandbox env or filesystem.
+_Avoid_: per-call credentials, env injection (rejected — contradicts the untrusted-sandbox posture).
+
 ## Relationships
 
 - A **KapeHandler** references zero or more **KapeTool** and **KapeSkill** resources; the **Operator** unions their tool refs into one **KapeProxy** config.
