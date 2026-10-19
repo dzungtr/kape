@@ -1,52 +1,81 @@
-# kape-controller (openshell controller, ADR-0083/0084) deploy wiring.
-# Core runtime env names/defaults match controller/config.go envConfig and
-# controller/README.md — override the gateway/creds values for your setup.
-controller:
-  image:
-    repository: ghcr.io/dzungtr/kape-controller
-    tag: "0.1.0"
-    pullPolicy: IfNotPresent
-  replicaCount: 1
-  serviceAccountName: kape-controller
-  # Core runtime env (KAPE_* names in controller/config.go).
-  # gatewayAddr: in-cluster OpenShell gateway Service — override to match
-  # your gateway (the compiled default 127.0.0.1:32353 only works in-process).
-  gatewayAddr: openshell-gateway.openshell.svc.cluster.local:32353
-  # credsDir: mount path for the controller's mTLS gateway credentials.
-  # Set creds.secretRef to a Secret whose keys are the credential files
-  # (ca.pem / client-cert / client-key) — it is volume-mounted read-only at
-  # credsDir. Empty secretRef → directory will not exist; provide creds
-  # out-of-band or the controller cannot authenticate to the gateway.
+# KapeAgentServer (ADR-0087, issue #263): the one declarative path. The
+# operator renders the kape-controller Deployment, its ServiceAccount +
+# RoleBinding, the Service and (optionally) the Ingress from this CR. The chart
+# no longer templates a controller Deployment — reconfigure the controller by
+# editing the CR, not the chart.
+agentServer:
+  name: default
+  # description is served to MCP clients as the server `instructions` of the
+  # initialize handshake (D6). When several KapeAgentServers share a cluster,
+  # callers route between them by CR name + description.
+  description: "kape default agent server: sandbox agents for this cluster"
+  controller:
+    image:
+      repository: ghcr.io/dzungtr/kape-controller
+      tag: "0.1.0"
+    # resources: optional requests/limits for the controller container.
+    resources: {}
+  sandbox:
+    # Default sandbox agent image (KAPE_DEFAULT_IMAGE) every create_agent
+    # inherits unless the caller overrides it.
+    image: ghcr.io/dzungtr/pi-openshell:openrouter
+    # model: default sandbox model id (KAPE_DEFAULT_MODEL). Empty keeps the
+    # sandbox image's own model selection.
+    model: ""
+    # Default sandbox cpu/memory (KAPE_DEFAULT_RESOURCES).
+    resources:
+      cpu: "1"
+      memory: "2Gi"
+  modelGateway:
+    # In-cluster model gateway base URL (KAPE_MODEL_GATEWAY_URL).
+    url: http://model-gateway-http.aperture.svc.cluster.local/v1
+  # credentials: generic credential registry (ADR-0088) —
+  # [{"name": "github", "secretRef": {"name": "github-token"},
+  #   "providerType": "git-https", "hostPatterns": ["github.com:443"]}].
+  # The schema ships now; the operator reconciles it in #265.
+  credentials: []
+  network:
+    ingress:
+      # Publish the controller's MCP + REST endpoint outside the cluster.
+      enabled: false
+      host: ""
+      # Same-namespace TLS Secret (kubernetes.io/tls). Empty serves plain HTTP.
+      tlsSecretName: ""
+    # Same-namespace NetworkPolicy names defining the controller pod's extra
+    # egress (schema only until the credential slices, #264/#265).
+    egressPolicyRefs: []
+
+# controllerWiring is cluster plumbing, NOT KapeAgentServer intent (D5: env is
+# the operator→controller contract). The operator copies these into every
+# controller Deployment it renders; an unset value is reported on the CR's
+# Ready condition (reason WiringIncomplete) instead of being defaulted.
+controllerWiring:
+  # In-cluster OpenShell gateway Service. Override to match your gateway.
+  gatewayAddr: openshell.openshell.svc.cluster.local:8080
+  # Mount path for the controller's mTLS gateway credentials.
   credsDir: /var/run/kape-controller/creds
-  creds:
-    secretRef: ""
-  # NOTE: there is no sandboxNamespace knob. The controller resolves Sandbox
-  # CRs in the compiled-default `openshell` namespace
-  # (controller/config.go:242). For a non-default sandbox namespace, inject
-  # KAPE_SANDBOX_NAMESPACE into the controller pod out-of-band (the chart
-  # does not wire it); the ClusterRole in controller/rbac.yaml is
-  # cluster-scoped, so no RBAC change is needed.
-  # defaultImage: sandbox agent image handed to the gateway.
-  defaultImage: ghcr.io/dzungtr/pi-openshell:openrouter
-  # modelGatewayUrl: in-cluster model gateway (config.go compiled default).
-  modelGatewayUrl: http://model-gateway-http.aperture.svc.cluster.local/v1
+  # Secret whose keys are the credential files (ca.pem / client-cert /
+  # client-key), mounted read-only at credsDir.
+  credsSecret: kape-controller-creds
+  # Provider attached to every sandbox this controller creates.
+  defaultProvider: openrouter
+  # Data plane: pull (default) or exec (break-glass).
   transport: pull
-  # eventStore: written under the mounted emptyDir (/var/lib/kape-controller),
-  # not the container filesystem.
+  # Durable event log path; its directory is backed by an emptyDir in the
+  # rendered controller pod.
   eventStore: /var/lib/kape-controller/controller-events.db
-  # networkPolicy: OPTIONAL default-deny egress policy for controller pods.
-  # Default OFF: when enabled, it permits ONLY DNS/53, the SLM monitor
-  # destination derived from monitor.baseUrl, and the Kubernetes API —
-  # ASSUMPTION: API server pods live in kube-system and accept 443
-  # (kubeadm/k3s/GKE shape; override the rule if your control plane
-  # differs). It does NOT open the OpenShell gateway, model-gateway, or
-  # other core paths — extend the template before enabling in a
-  # policy-enforcing cluster.
-  networkPolicy:
-    enabled: false
-  # SLM monitor (spec #230, issue #234). Env names map 1:1 to
-  # controller/config.go envConfig (KAPE_MONITOR_*). Empty
-  # openrouterApiKey.secretRef → no API key env → monitor disabled.
+  # extraEnv / extraEnvFrom are copied verbatim into the rendered controller
+  # container (after the CR contract env, which always wins on a name clash).
+  # The chart fills them from the optional feature values below.
+  extraEnv: []
+  extraEnvFrom: []
+
+# Optional controller feature wiring. The chart translates these into
+# controllerWiring.extraEnv/extraEnvFrom — the operator knows no feature names.
+# SLM monitor (spec #230, issue #234). Env names map 1:1 to
+# controller/config.go envConfig (KAPE_MONITOR_*). Empty
+# openrouterApiKey.secretRef → no API key env → monitor disabled.
+controller:
   monitor:
     intervalSeconds: 60
     summarizerModel: scaledown/summarize
@@ -56,9 +85,8 @@ controller:
     openrouterApiKey:
       secretRef: ""
       key: OPENROUTER_API_KEY
-  # Tier-2 revive (issue #251, spec #245 E5). Env names map 1:1 to
-  # controller/config.go envConfig (KAPE_REVIVE_*). max = revives per
-  # session lifetime; cooldownSeconds = minimum spacing between attempts.
+  # Tier-2 revive (issue #251, spec #245 E5). max = revives per session
+  # lifetime; cooldownSeconds = minimum spacing between attempts.
   revive:
     max: 3
     cooldownSeconds: 60

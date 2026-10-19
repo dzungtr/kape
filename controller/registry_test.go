@@ -213,7 +213,7 @@ func TestHTTPListAndPostRestartGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	h := NewRouter(NewAgentManager(gw, testConfig(), testStore(t))) // fresh memory
+	h := NewRouter(NewAgentManager(gw, testConfig(), testStore(t)), "") // fresh memory
 
 	// GET /agents returns a bare JSON array of registry views.
 	rec := rawJSON(t, h, "GET", "/agents")

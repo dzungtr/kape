@@ -467,5 +467,5 @@ func seqs(evs []Event) []uint64 {
 func newTestAgentHandler(t *testing.T) (http.Handler, *AgentManager, *FakeStream, *Agent) {
 	t.Helper()
 	mgr, _, stream, agent := newTestAgent(t)
-	return NewRouter(mgr), mgr, stream, agent
+	return NewRouter(mgr, ""), mgr, stream, agent
 }

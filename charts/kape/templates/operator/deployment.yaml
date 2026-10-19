@@ -21,6 +21,41 @@ spec:
           args:
             - --leader-elect={{ .Values.operator.leaderElect }}
           env:
+            {{- /* Cluster wiring copied into every rendered controller Deployment
+                 (D5). Unset values surface on KapeAgentServer Ready instead of
+                 being defaulted. */}}
+            - name: KAPE_OPERATOR_CONTROLLER_GATEWAY_ADDR
+              value: {{ .Values.controllerWiring.gatewayAddr | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_CREDS_DIR
+              value: {{ .Values.controllerWiring.credsDir | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_CREDS_SECRET
+              value: {{ .Values.controllerWiring.credsSecret | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_DEFAULT_PROVIDER
+              value: {{ .Values.controllerWiring.defaultProvider | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_TRANSPORT
+              value: {{ .Values.controllerWiring.transport | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_EVENT_STORE
+              value: {{ .Values.controllerWiring.eventStore | quote }}
+            {{- /* Optional feature wiring, chart-owned: monitor + revive values and
+                 the generic passthrough lists are all JSON env for the operator. */}}
+            {{- $extraEnv := list
+                  (dict "name" "KAPE_MONITOR_INTERVAL_SECONDS" "value" (.Values.controller.monitor.intervalSeconds | toString))
+                  (dict "name" "KAPE_MONITOR_SUMMARIZER_MODEL" "value" .Values.controller.monitor.summarizerModel)
+                  (dict "name" "KAPE_MONITOR_CLASSIFIER_MODEL" "value" .Values.controller.monitor.classifierModel)
+                  (dict "name" "KAPE_MONITOR_BASE_URL" "value" .Values.controller.monitor.baseUrl)
+                  (dict "name" "KAPE_MONITOR_TIMEOUT_SECONDS" "value" (.Values.controller.monitor.timeoutSeconds | toString))
+                  (dict "name" "KAPE_REVIVE_MAX" "value" (.Values.controller.revive.max | toString))
+                  (dict "name" "KAPE_REVIVE_COOLDOWN" "value" (.Values.controller.revive.cooldownSeconds | toString)) }}
+            {{- if .Values.controller.monitor.openrouterApiKey.secretRef }}
+            {{- $extraEnv = append $extraEnv (dict "name" "KAPE_MONITOR_OPENROUTER_API_KEY"
+                  "valueFrom" (dict "secretKeyRef" (dict "name" .Values.controller.monitor.openrouterApiKey.secretRef
+                                                          "key" .Values.controller.monitor.openrouterApiKey.key))) }}
+            {{- end }}
+            {{- $extraEnv = concat $extraEnv (.Values.controllerWiring.extraEnv | default list) }}
+            - name: KAPE_OPERATOR_CONTROLLER_EXTRA_ENV
+              value: {{ $extraEnv | toJson | quote }}
+            - name: KAPE_OPERATOR_CONTROLLER_EXTRA_ENV_FROM
+              value: {{ .Values.controllerWiring.extraEnvFrom | default list | toJson | quote }}
             - name: NATS_URL
               value: "nats://nats.{{ .Values.namespace }}.svc:4222"
             - name: KAPEPROXY_IMAGE

@@ -27,12 +27,12 @@ import (
 //	GET    /agents/{id}/events     -> SSE: buffered replay then live
 //	GET    /agents/{id}/wait?timeout= -> long-poll wake snapshot (issue #233)
 //	DELETE /agents/{id}            -> abort exec + delete sandbox
-func NewRouter(mgr *AgentManager) http.Handler {
+func NewRouter(mgr *AgentManager, serverDescription string) http.Handler {
 	mux := http.NewServeMux()
 	// MCP transport: Streamable HTTP on the same listener (issue #178).
 	// One AgentManager instance serves both transports — the handler core is
 	// shared, the MCP layer in mcpapi.go is a thin transport over it.
-	mcpSrv := NewMCPServer(mgr)
+	mcpSrv := NewMCPServer(mgr, serverDescription)
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil))
 	mux.HandleFunc("POST /agents", func(w http.ResponseWriter, r *http.Request) {
 		var profile CreateProfile

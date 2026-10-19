@@ -1,0 +1,50 @@
+{{- /* Default KapeAgentServer (ADR-0087, issue #263): the single declarative
+     path for the serving environment. The operator renders the kape-controller
+     Deployment + Service (+ Ingress) and the RoleBinding for its ServiceAccount
+     from this CR. There is no hand-wired controller Deployment and no legacy
+     toggle (D12) — editing this CR (kubectl edit kapeagentserver/<name>) is how
+     the controller is reconfigured. */ -}}
+apiVersion: kape.io/v1alpha1
+kind: KapeAgentServer
+metadata:
+  name: {{ .Values.agentServer.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: kape
+spec:
+  description: {{ .Values.agentServer.description | quote }}
+  controller:
+    image: "{{ .Values.agentServer.controller.image.repository }}:{{ .Values.agentServer.controller.image.tag }}"
+{{- with .Values.agentServer.controller.resources }}
+    resources:
+{{ toYaml . | indent 6 }}
+{{- end }}
+  sandbox:
+    image: {{ .Values.agentServer.sandbox.image | quote }}
+{{- if .Values.agentServer.sandbox.model }}
+    model: {{ .Values.agentServer.sandbox.model | quote }}
+{{- end }}
+    resources:
+      cpu: {{ .Values.agentServer.sandbox.resources.cpu | quote }}
+      memory: {{ .Values.agentServer.sandbox.resources.memory | quote }}
+  modelGateway:
+    url: {{ .Values.agentServer.modelGateway.url | quote }}
+{{- with .Values.agentServer.credentials }}
+  credentials:
+{{ toYaml . | indent 4 }}
+{{- end }}
+{{- if or .Values.agentServer.network.ingress.enabled .Values.agentServer.network.egressPolicyRefs }}
+  network:
+{{- if .Values.agentServer.network.ingress.enabled }}
+    ingress:
+      host: {{ required "agentServer.network.ingress.host is required when ingress is enabled" .Values.agentServer.network.ingress.host | quote }}
+{{- if .Values.agentServer.network.ingress.tlsSecretName }}
+      tlsSecretName: {{ .Values.agentServer.network.ingress.tlsSecretName | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.agentServer.network.egressPolicyRefs }}
+    egressPolicyRefs:
+{{ toYaml . | indent 6 }}
+{{- end }}
+{{- end }}
