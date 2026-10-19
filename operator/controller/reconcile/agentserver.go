@@ -198,7 +198,7 @@ func (r *AgentServerReconciler) pushCredentials(
 		for _, rec := range records {
 			outcomes = append(outcomes, agentserver.FailedOutcome(rec.Credential, rec.Name, agentserver.CredentialFailure{
 				Reason:  agentserver.ReasonGatewayNotConfigured,
-				Message: "operator has no OpenShell gateway configured (KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR); cannot push provider records",
+				Message: "operator has no OpenShell gateway configured (KAPE_OPERATOR_OPENSHELL_GATEWAY_ADDR); cannot push provider records",
 			}))
 		}
 		return outcomes, nil

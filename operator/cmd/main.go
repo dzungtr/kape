@@ -41,7 +41,7 @@ import (
 // every credential as GatewayNotConfigured instead of guessing.
 func newOpenShellWriter(cfg *config, log logr.Logger) (ports.OpenShellApplyPort, error) {
 	if cfg.OpenShellGatewayAddr == "" {
-		log.Info("OpenShell credential writer disabled: set KAPE_OPERATOR_OPENSHHELL_GATEWAY_ADDR to enable it")
+		log.Info("OpenShell credential writer disabled: set KAPE_OPERATOR_OPENSHELL_GATEWAY_ADDR to enable it")
 		return nil, nil
 	}
 	tlsCfg, err := loadMtlsConfig(cfg.OpenShellCredsDir)
@@ -151,12 +151,15 @@ type config struct {
 	OpenShellWorkspace   string
 }
 
-func main() {
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	log := ctrl.Log.WithName("main")
+// operatorEnvVarPrefix is the env-var namespace ff derives flag bindings from:
+// KAPE_OPERATOR_<FLAG_NAME with '-' replaced by '_', upper-cased>.
+const operatorEnvVarPrefix = "KAPE_OPERATOR"
 
+// newFlagSet registers the operator's flags. main and the chart/env binding
+// test share it so the env names the chart must set are derived from the flag
+// definitions rather than spelled out a second time.
+func newFlagSet(cfg *config) *flag.FlagSet {
 	fs := flag.NewFlagSet("kape-operator", flag.ExitOnError)
-	cfg := &config{}
 
 	fs.StringVar(&cfg.MetricsAddr, "metrics-bind-address", ":8080", "Address for the metrics endpoint")
 	fs.StringVar(&cfg.HealthProbeAddr, "health-probe-bind-address", ":8081", "Address for the health probe endpoint")
@@ -176,12 +179,27 @@ func main() {
 	fs.StringVar(&cfg.OpenShellCredsDir, "openshell-creds-dir", "", "mTLS creds dir (ca.crt/tls.crt/tls.key) for the operator's own gateway connection")
 	fs.StringVar(&cfg.OpenShellWorkspace, "openshell-workspace", "default", "OpenShell workspace provider records are created in")
 
-	if err := ff.Parse(fs, os.Args[1:],
-		ff.WithEnvVarPrefix("KAPE_OPERATOR"),
+	return fs
+}
+
+// parseConfig binds flags from the command line, KAPE_OPERATOR_* env vars and
+// an optional --config file, in that priority order.
+func parseConfig(fs *flag.FlagSet, args []string) error {
+	return ff.Parse(fs, args,
+		ff.WithEnvVarPrefix(operatorEnvVarPrefix),
 		ff.WithConfigFileFlag("config"),
 		ff.WithConfigFileParser(ffyaml.Parser),
 		ff.WithAllowMissingConfigFile(true),
-	); err != nil {
+	)
+}
+
+func main() {
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	log := ctrl.Log.WithName("main")
+
+	cfg := &config{}
+
+	if err := parseConfig(newFlagSet(cfg), os.Args[1:]); err != nil {
 		log.Error(err, "parsing config")
 		os.Exit(1)
 	}
