@@ -2,7 +2,9 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/peterbourgon/ff/v3"
@@ -18,13 +20,39 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	kapecontroller "github.com/kape-io/kape/operator/controller"
+	reconcilehandler "github.com/kape-io/kape/operator/controller/reconcile"
+	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
 	qdrantadapter "github.com/kape-io/kape/operator/infra/qdrant"
 	tomlrenderer "github.com/kape-io/kape/operator/infra/toml"
-	kapecontroller "github.com/kape-io/kape/operator/controller"
-	reconcilehandler "github.com/kape-io/kape/operator/controller/reconcile"
 )
+
+// controllerWiring assembles the operator-level cluster wiring: the settings
+// every rendered kape-controller Deployment receives from the operator's own
+// configuration rather than from the KapeAgentServer CR.
+func controllerWiring(cfg *config) (domainconfig.ControllerWiring, error) {
+	wiring := domainconfig.ControllerWiring{
+		GatewayAddr:     cfg.ControllerGatewayAddr,
+		CredsDir:        cfg.ControllerCredsDir,
+		CredsSecret:     cfg.ControllerCredsSecret,
+		DefaultProvider: cfg.ControllerDefaultProvider,
+		Transport:       cfg.ControllerTransport,
+		EventStore:      cfg.ControllerEventStore,
+	}
+	if cfg.ControllerExtraEnv != "" {
+		if err := json.Unmarshal([]byte(cfg.ControllerExtraEnv), &wiring.ExtraEnv); err != nil {
+			return domainconfig.ControllerWiring{}, fmt.Errorf("controller-extra-env: %w", err)
+		}
+	}
+	if cfg.ControllerExtraEnvFrom != "" {
+		if err := json.Unmarshal([]byte(cfg.ControllerExtraEnvFrom), &wiring.ExtraEnvFrom); err != nil {
+			return domainconfig.ControllerWiring{}, fmt.Errorf("controller-extra-env-from: %w", err)
+		}
+	}
+	return wiring, nil
+}
 
 var scheme = runtime.NewScheme()
 
@@ -42,6 +70,21 @@ type config struct {
 	MaxConcurrentReconciles int
 	KapeConfigNamespace     string
 	KapeConfigName          string
+	// Controller cluster wiring (spec #261 D5): the operator-level env written
+	// into every CR-rendered kape-controller Deployment. Unset values are never
+	// defaulted — the KapeAgentServer Ready condition reports them.
+	ControllerGatewayAddr     string
+	ControllerCredsDir        string
+	ControllerCredsSecret     string
+	ControllerDefaultProvider string
+	ControllerTransport       string
+	ControllerEventStore      string
+	// ControllerExtraEnv / ControllerExtraEnvFrom are JSON-encoded passthrough
+	// lists ([]corev1.EnvVar / []corev1.EnvFromSource). The chart translates
+	// optional feature wiring (monitor, revive, …) into them; the operator
+	// names no feature itself.
+	ControllerExtraEnv     string
+	ControllerExtraEnvFrom string
 }
 
 func main() {
@@ -57,6 +100,14 @@ func main() {
 	fs.IntVar(&cfg.MaxConcurrentReconciles, "max-concurrent-reconciles", 3, "Max parallel reconciles per controller")
 	fs.StringVar(&cfg.KapeConfigNamespace, "kape-config-namespace", "kape-system", "Namespace of the kape-config ConfigMap")
 	fs.StringVar(&cfg.KapeConfigName, "kape-config-name", "kape-config", "Name of the kape-config ConfigMap")
+	fs.StringVar(&cfg.ControllerGatewayAddr, "controller-gateway-addr", "", "in-cluster OpenShell gateway host:port written as KAPE_GATEWAY_ADDR into rendered controllers")
+	fs.StringVar(&cfg.ControllerCredsDir, "controller-creds-dir", "", "mTLS credentials mount path written as KAPE_CREDS_DIR into rendered controllers")
+	fs.StringVar(&cfg.ControllerDefaultProvider, "controller-default-provider", "", "sandbox provider written as KAPE_DEFAULT_PROVIDER into rendered controllers")
+	fs.StringVar(&cfg.ControllerCredsSecret, "controller-creds-secret", "", "Secret mounted read-only at the creds dir of rendered controllers")
+	fs.StringVar(&cfg.ControllerTransport, "controller-transport", "", "data-plane transport written as KAPE_TRANSPORT into rendered controllers (pull|exec)")
+	fs.StringVar(&cfg.ControllerEventStore, "controller-event-store", "", "durable event log path written as KAPE_EVENT_STORE into rendered controllers")
+	fs.StringVar(&cfg.ControllerExtraEnv, "controller-extra-env", "", "JSON []corev1.EnvVar copied into rendered controllers (contract keys are ignored)")
+	fs.StringVar(&cfg.ControllerExtraEnvFrom, "controller-extra-env-from", "", "JSON []corev1.EnvFromSource copied into rendered controllers")
 
 	if err := ff.Parse(fs, os.Args[1:],
 		ff.WithEnvVarPrefix("KAPE_OPERATOR"),
@@ -90,17 +141,17 @@ func main() {
 	}
 
 	// Adapters
-	handlerRepo          := k8sadapters.NewHandlerRepository(k8sClient)
-	schemaRepo           := k8sadapters.NewSchemaRepository(k8sClient)
-	toolRepo             := k8sadapters.NewToolRepository(k8sClient)
-	skillRepo            := k8sadapters.NewSkillRepository(k8sClient)
-	configMapAdapt       := k8sadapters.NewConfigMapAdapter(k8sClient)
+	handlerRepo := k8sadapters.NewHandlerRepository(k8sClient)
+	schemaRepo := k8sadapters.NewSchemaRepository(k8sClient)
+	toolRepo := k8sadapters.NewToolRepository(k8sClient)
+	skillRepo := k8sadapters.NewSkillRepository(k8sClient)
+	configMapAdapt := k8sadapters.NewConfigMapAdapter(k8sClient)
 	kapeproxyConfigAdapt := k8sadapters.NewKapeproxyConfigAdapter(k8sClient)
-	saAdapt              := k8sadapters.NewServiceAccountAdapter(k8sClient)
-	deployAdapt          := k8sadapters.NewDeploymentAdapter(k8sClient)
-	scaledObjAdapt       := k8sadapters.NewScaledObjectAdapter(k8sClient)
-	cfgLoader            := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
-	renderer             := tomlrenderer.NewRenderer()
+	saAdapt := k8sadapters.NewServiceAccountAdapter(k8sClient)
+	deployAdapt := k8sadapters.NewDeploymentAdapter(k8sClient)
+	scaledObjAdapt := k8sadapters.NewScaledObjectAdapter(k8sClient)
+	cfgLoader := k8sadapters.NewKapeConfigLoader(k8sClient, cfg.KapeConfigNamespace, cfg.KapeConfigName)
+	renderer := tomlrenderer.NewRenderer()
 
 	// QdrantCluster adapter — delegates provisioning to the upstream qdrant-operator CRD.
 	qdrantClusterAdapt := qdrantadapter.NewQdrantClusterAdapter(k8sClient, discoveryClient)
@@ -158,6 +209,22 @@ func main() {
 	proxyRec := reconcilehandler.NewKapeProxyReconciler(podReader, handlerRepo)
 	if err := kapecontroller.SetupKapeProxyReconciler(mgr, proxyRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeProxy controller")
+		os.Exit(1)
+	}
+
+	// KapeAgentServerReconciler
+	wiring, err := controllerWiring(cfg)
+	if err != nil {
+		log.Error(err, "parsing controller wiring")
+		os.Exit(1)
+	}
+	agentServerRec := reconcilehandler.NewAgentServerReconciler(
+		k8sadapters.NewAgentServerRepository(k8sClient),
+		k8sadapters.NewAgentServerAdapter(k8sClient),
+		wiring,
+	)
+	if err := kapecontroller.SetupAgentServerReconciler(mgr, agentServerRec, cfg.MaxConcurrentReconciles); err != nil {
+		log.Error(err, "setting up KapeAgentServer controller")
 		os.Exit(1)
 	}
 

@@ -254,3 +254,45 @@ func TestMonitorFlagsRegistered(t *testing.T) {
 		t.Fatalf("flag overrides not applied: %+v", cfg.Monitor)
 	}
 }
+
+// TestConfigFromEnvDefaultModelAndServerDescription covers the two env vars a
+// KapeAgentServer renders into the controller (spec #261 M2): sandbox.model →
+// KAPE_DEFAULT_MODEL and description → KAPE_SERVER_DESCRIPTION.
+func TestConfigFromEnvDefaultModelAndServerDescription(t *testing.T) {
+	t.Setenv("KAPE_DEFAULT_MODEL", "z-ai/glm-5.2")
+	t.Setenv("KAPE_SERVER_DESCRIPTION", "sre-triage: sandbox agents for the SRE pipeline")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.DefaultModel != "z-ai/glm-5.2" {
+		t.Fatalf("DefaultModel = %q", cfg.DefaultModel)
+	}
+	if cfg.ServerDescription != "sre-triage: sandbox agents for the SRE pipeline" {
+		t.Fatalf("ServerDescription = %q", cfg.ServerDescription)
+	}
+}
+
+// TestResolveProfileUsesDefaultModel: the deployment default model fills an
+// omitted model, and a caller override still wins.
+func TestResolveProfileUsesDefaultModel(t *testing.T) {
+	cfg := testConfig()
+	cfg.DefaultModel = "z-ai/glm-5.2"
+
+	r, err := cfg.ResolveProfile(nil)
+	if err != nil {
+		t.Fatalf("ResolveProfile(nil): %v", err)
+	}
+	if r.Model != "z-ai/glm-5.2" {
+		t.Fatalf("model default = %q, want the config default", r.Model)
+	}
+
+	r, err = cfg.ResolveProfile(&CreateProfile{Model: "other/model"})
+	if err != nil {
+		t.Fatalf("ResolveProfile(override): %v", err)
+	}
+	if r.Model != "other/model" {
+		t.Fatalf("model override = %q, want other/model", r.Model)
+	}
+}

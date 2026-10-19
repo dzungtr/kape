@@ -25,7 +25,7 @@ func newMCPClientSession(t *testing.T) (*mcp.ClientSession, *AgentManager, *Fake
 	gw.SetStream(stream)
 	mgr := NewAgentManager(gw, testConfig(), testStore(t))
 
-	server := NewMCPServer(mgr)
+	server := NewMCPServer(mgr, "")
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-host", Version: "v1"}, nil)
 	ct, st := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -434,5 +434,63 @@ func TestMCPListAgentsTool(t *testing.T) {
 	}
 	if list[0].Source != SourceLive {
 		t.Fatalf("list_agents[0].Source = %q, want %q", list[0].Source, SourceLive)
+	}
+}
+
+// newMCPInMemorySession connects a client session to a server built with the
+// given server description (the MCP `instructions` string).
+func newMCPInMemorySession(t *testing.T, serverDescription string) *mcp.ClientSession {
+	t.Helper()
+	gw := NewFakeGateway()
+	mgr := NewAgentManager(gw, testConfig(), testStore(t))
+	server := NewMCPServer(mgr, serverDescription)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-host", Version: "v1"}, nil)
+	ct, st := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+	return cs
+}
+
+// TestMCPInitializeServesServerDescription covers M7 (spec #261): the
+// KapeAgentServer description (env KAPE_SERVER_DESCRIPTION) is served verbatim
+// as the initialize handshake's server instructions, so MCP clients can route
+// between controllers exposing the same tool contract (D6).
+func TestMCPInitializeServesServerDescription(t *testing.T) {
+	const description = "sre-triage: sandbox agents for the SRE alert pipeline"
+	cs := newMCPInMemorySession(t, description)
+
+	if got := cs.InitializeResult().Instructions; got != description {
+		t.Fatalf("initialize instructions = %q, want %q", got, description)
+	}
+
+	// The tool contract is untouched by the description (D6: no per-deployment
+	// tool-name prefixes).
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(res.Tools) != len(RestVerbs()) {
+		t.Fatalf("tool count = %d, want %d", len(res.Tools), len(RestVerbs()))
+	}
+	for _, tool := range res.Tools {
+		if strings.Contains(tool.Name, "sre-triage") {
+			t.Fatalf("tool name %q carries the server description", tool.Name)
+		}
+	}
+}
+
+// TestMCPInitializeWithoutDescriptionServesNoInstructions pins the unchanged
+// handshake when no description is configured.
+func TestMCPInitializeWithoutDescriptionServesNoInstructions(t *testing.T) {
+	cs := newMCPInMemorySession(t, "")
+	if got := cs.InitializeResult().Instructions; got != "" {
+		t.Fatalf("initialize instructions = %q, want empty", got)
 	}
 }

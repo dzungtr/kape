@@ -81,7 +81,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           NewRouter(mgr),
+		Handler:           NewRouter(mgr, cfg.ServerDescription),
 		ReadHeaderTimeout: 30 * time.Second,
 		// No overall timeouts: SSE streams are long-lived.
 	}

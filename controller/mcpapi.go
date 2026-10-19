@@ -43,8 +43,16 @@ func RestVerbs() []string {
 // 1:1 onto the REST verbs in RestVerbs(); semantics are identical — same
 // handler core, same error meanings (validation, unknown agent, turn in
 // flight), surfaced as MCP tool errors instead of HTTP status codes.
-func NewMCPServer(mgr *AgentManager) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "kape-controller", Version: "v1"}, nil)
+//
+// serverDescription (Config.ServerDescription, env KAPE_SERVER_DESCRIPTION) is
+// served verbatim as the server `instructions` in the initialize handshake
+// (ADR-0087, D6): callers distinguish several kape-controllers exposing the
+// same unprefixed tool contract by it. The tool set itself is untouched.
+func NewMCPServer(mgr *AgentManager, serverDescription string) *mcp.Server {
+	srv := mcp.NewServer(
+		&mcp.Implementation{Name: "kape-controller", Version: "v1"},
+		&mcp.ServerOptions{Instructions: serverDescription},
+	)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_agent",
 		Description: "Create a sandbox agent running the pi coding agent. All profile fields optional; defaults from controller config, or from the parent's resolved profile when parent_id is set (spawning, issue #216). Inference provider is deployment-fixed — no provider field; use list_providers to see the configured set. Returns the agent view {id, sandbox, status, parent, children}.",

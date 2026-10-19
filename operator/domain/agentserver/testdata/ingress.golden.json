@@ -1,0 +1,127 @@
+{
+  "DeploymentEnv": [
+    {
+      "name": "KAPE_DEFAULT_IMAGE",
+      "value": "ghcr.io/dzungtr/pi-openshell:openrouter"
+    },
+    {
+      "name": "KAPE_DEFAULT_MODEL",
+      "value": "z-ai/glm-5.2"
+    },
+    {
+      "name": "KAPE_DEFAULT_RESOURCES",
+      "value": "{\"cpu\":\"1\",\"memory\":\"2Gi\"}"
+    },
+    {
+      "name": "KAPE_MODEL_GATEWAY_URL",
+      "value": "http://model-gateway-http.aperture.svc.cluster.local/v1"
+    },
+    {
+      "name": "KAPE_SERVER_DESCRIPTION",
+      "value": "sre-triage: sandbox agents for the SRE alert pipeline"
+    },
+    {
+      "name": "KAPE_CREDENTIAL_BINDINGS",
+      "value": "[]"
+    }
+  ],
+  "NetworkResources": {
+    "Service": {
+      "metadata": {
+        "name": "kape-controller-sre",
+        "namespace": "kape-system",
+        "creationTimestamp": null,
+        "labels": {
+          "app.kubernetes.io/managed-by": "kape-operator",
+          "app.kubernetes.io/name": "kape-controller-sre",
+          "kape.io/agentserver": "sre"
+        },
+        "ownerReferences": [
+          {
+            "apiVersion": "kape.io/v1alpha1",
+            "kind": "KapeAgentServer",
+            "name": "sre",
+            "uid": "11111111-2222-3333-4444-555555555555",
+            "controller": true,
+            "blockOwnerDeletion": true
+          }
+        ]
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "http",
+            "protocol": "TCP",
+            "port": 80,
+            "targetPort": "http"
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/name": "kape-controller-sre",
+          "kape.io/agentserver": "sre"
+        },
+        "type": "ClusterIP"
+      },
+      "status": {
+        "loadBalancer": {}
+      }
+    },
+    "Ingress": {
+      "metadata": {
+        "name": "kape-controller-sre",
+        "namespace": "kape-system",
+        "creationTimestamp": null,
+        "labels": {
+          "app.kubernetes.io/managed-by": "kape-operator",
+          "app.kubernetes.io/name": "kape-controller-sre",
+          "kape.io/agentserver": "sre"
+        },
+        "ownerReferences": [
+          {
+            "apiVersion": "kape.io/v1alpha1",
+            "kind": "KapeAgentServer",
+            "name": "sre",
+            "uid": "11111111-2222-3333-4444-555555555555",
+            "controller": true,
+            "blockOwnerDeletion": true
+          }
+        ]
+      },
+      "spec": {
+        "tls": [
+          {
+            "hosts": [
+              "sre.kape.example.com"
+            ],
+            "secretName": "sre-tls"
+          }
+        ],
+        "rules": [
+          {
+            "host": "sre.kape.example.com",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "kape-controller-sre",
+                      "port": {
+                        "number": 80
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "loadBalancer": {}
+      }
+    }
+  },
+  "OpenShellRecords": null
+}

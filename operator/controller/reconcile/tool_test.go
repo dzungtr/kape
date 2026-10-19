@@ -15,7 +15,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	domainconfig "github.com/kape-io/kape/operator/domain/config"
 	v1alpha1 "github.com/kape-io/kape/operator/infra/api/v1alpha1"
 	k8sadapters "github.com/kape-io/kape/operator/infra/k8s"
 	"github.com/kape-io/kape/operator/controller/reconcile"
@@ -509,15 +508,6 @@ func TestToolReconciler_ExternalMemory_MalformedURL_ReportsError(t *testing.T) {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == condType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
-
 func drainToolEvents(rec *record.FakeRecorder) []string {
 	var events []string
 	for {
@@ -541,10 +531,4 @@ func stringContains(s, sub string) bool {
 		}
 	}
 	return false
-}
-
-type fakeConfigLoader struct{}
-
-func (f *fakeConfigLoader) Load(_ context.Context) (domainconfig.KapeConfig, error) {
-	return domainconfig.KapeConfig{}, nil
 }

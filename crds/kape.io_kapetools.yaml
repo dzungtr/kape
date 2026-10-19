@@ -297,7 +297,7 @@ spec:
               qdrantEndpoint:
                 description: |-
                   QdrantEndpoint is the Qdrant HTTP endpoint for memory-type tools.
-                  Written after the StatefulSet reaches ReadyReplicas >= 1.
+                  Written after the upstream QdrantCluster CRD reaches Ready=True.
                 type: string
             type: object
         type: object

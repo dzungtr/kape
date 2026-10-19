@@ -130,11 +130,20 @@ If you contribute one of these, place it in the directory above and read the *Ex
 
 ## Reconciliation flow
 
-The operator runs three reconcilers:
+The operator runs four reconcilers:
 
 - **`HandlerReconciler`** (`controller/reconcile/handler.go`) — 12-step KapeHandler reconcile: validates dependencies, renders settings.toml, ensures Deployment, ensures KEDA ScaledObject, syncs labels, updates status.
 - **`ToolReconciler`** (`controller/reconcile/tool.go`) — KapeTool reconcile: dispatches on `spec.type` (`memory` → delegates to upstream QdrantCluster CRD, polls readiness, surfaces `MemoryReady` condition; `mcp` → health probe; `event-publish` → type validation). Sets `Ready` and `MemoryReady` status.
 - **`SchemaReconciler`** (`controller/reconcile/schema.go`) — KapeSchema reconcile: validates JSON schema, manages a deletion-protection finalizer (`kape.io/schema-protection`), computes `schemaHash`, sets `Ready` status.
+- **`AgentServerReconciler`** (`controller/reconcile/agentserver.go`) — KapeAgentServer reconcile (ADR-0087): renders the CR (pure, `domain/agentserver`), merges the operator-level cluster wiring, converges the controller Deployment + ServiceAccount + RoleBinding + Service (+ Ingress) in the CR's namespace, prunes what the CR no longer declares, sets `Ready`.
+
+### KapeAgentServer: render vs apply
+
+The split is deliberate and load-bearing:
+
+- `domain/agentserver.Render(CR, resolvedSecrets)` is **pure** — it produces the env contract (`KAPE_DEFAULT_IMAGE`, `KAPE_DEFAULT_MODEL`, `KAPE_DEFAULT_RESOURCES`, `KAPE_MODEL_GATEWAY_URL`, `KAPE_SERVER_DESCRIPTION`, `KAPE_CREDENTIAL_BINDINGS`) plus the Service/Ingress, with no client calls. Golden-tested.
+- The **apply layer** (`infra/k8s/agentserver.go`) is the impure half: it builds the Deployment, merges the operator-level *cluster wiring* (`KAPE_GATEWAY_ADDR`, `KAPE_CREDS_DIR` + creds Secret mount, `KAPE_DEFAULT_PROVIDER`, `KAPE_TRANSPORT`, `KAPE_EVENT_STORE`) and any chart-owned passthrough env, and converges the objects. Wiring is deployment configuration shared by every controller in the cluster — it is **not** CR intent (D5), and an unset wiring value surfaces on the CR's `Ready` condition (`WiringIncomplete`) instead of being defaulted.
+- Contract env always wins: a wiring or passthrough entry named `KAPE_DEFAULT_*`, `KAPE_MODEL_GATEWAY_URL`, `KAPE_SERVER_DESCRIPTION`, or `KAPE_CREDENTIAL_BINDINGS` is dropped.
 
 Below is one full pass of the `HandlerReconciler`:
 

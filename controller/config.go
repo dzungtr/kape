@@ -160,6 +160,9 @@ func (c *Config) ResolveProfile(p *CreateProfile) (ResolvedProfile, error) {
 	if p.Resources != nil {
 		r.Resources = *p.Resources
 	}
+	if r.Model == "" {
+		r.Model = c.DefaultModel
+	}
 	// Re-validate the resolved values: bad config defaults surface with the
 	// same field-naming contract as bad request overrides.
 	resolved := &CreateProfile{Name: r.Name, Image: r.Image, Model: r.Model, Resources: &r.Resources}
@@ -188,14 +191,19 @@ type Config struct {
 	ListenAddr       string    // HTTP listen address
 	DefaultProvider  string    // provider attached to created sandboxes
 	DefaultImage     string    // sandbox OCI image
+	DefaultModel     string    // default model id for created sandboxes; "" keeps the image's own selection
 	DefaultResources Resources // cpu/memory defaults
 	ModelGatewayURL  string    // base URL patched into pi models.json
-	EventStorePath   string    // durable event log file (controller-local volume)
-	Transport        string    // data plane: pull (default) or exec (break-glass)
-	DaemonToken      string    // static bearer token placeholder (ADR-0083 D5)
-	DaemonCommand    string    // space-separated canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); empty disables
-	DaemonPort       string    // fixed in-sandbox daemon port (D7; default 9090)
-	SandboxNamespace string    // namespace the Sandbox CRs live in (D7 resolution)
+	// ServerDescription is the MCP server `instructions` string returned in the
+	// initialize handshake (ADR-0087, D6): MCP clients route between several
+	// kape-controllers by it. Empty omits the instructions field.
+	ServerDescription string
+	EventStorePath    string // durable event log file (controller-local volume)
+	Transport         string // data plane: pull (default) or exec (break-glass)
+	DaemonToken       string // static bearer token placeholder (ADR-0083 D5)
+	DaemonCommand     string // space-separated canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); empty disables
+	DaemonPort        string // fixed in-sandbox daemon port (D7; default 9090)
+	SandboxNamespace  string // namespace the Sandbox CRs live in (D7 resolution)
 
 	// Spawning (issue #216).
 	SpawnMaxDepth    int // max spawning depth: root=0, subagent=1, sub-subagent=2
@@ -241,6 +249,7 @@ func DefaultConfig() Config {
 		ListenAddr:            ":8081",
 		DefaultProvider:       "openrouter-spike",
 		DefaultImage:          "ghcr.io/dzungtr/pi-openshell:openrouter",
+		DefaultModel:          "", // empty: the sandbox image's own model selection wins
 		DefaultResources:      Resources{CPU: "1", Memory: "2Gi"},
 		ModelGatewayURL:       "http://model-gateway-http.aperture.svc.cluster.local/v1",
 		EventStorePath:        "controller-events.db",
@@ -290,6 +299,12 @@ func envConfig(def Config) (Config, error) {
 			panic(fmt.Sprintf("KAPE_DEFAULT_RESOURCES: %v (want {\"cpu\":...,\"memory\":...})", err))
 		}
 		def.DefaultResources = r
+	}
+	if v := os.Getenv("KAPE_DEFAULT_MODEL"); v != "" {
+		def.DefaultModel = v
+	}
+	if v := os.Getenv("KAPE_SERVER_DESCRIPTION"); v != "" {
+		def.ServerDescription = v
 	}
 	if v := os.Getenv("KAPE_MODEL_GATEWAY_URL"); v != "" {
 		def.ModelGatewayURL = v
@@ -400,6 +415,8 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ListenAddr, "listen", c.ListenAddr, "HTTP listen address (env KAPE_LISTEN_ADDR)")
 	fs.StringVar(&c.DefaultProvider, "provider", c.DefaultProvider, "default OpenShell provider (env KAPE_DEFAULT_PROVIDER)")
 	fs.StringVar(&c.DefaultImage, "image", c.DefaultImage, "default sandbox OCI image (env KAPE_DEFAULT_IMAGE)")
+	fs.StringVar(&c.DefaultModel, "model", c.DefaultModel, "default model id for created sandboxes; empty keeps the image's selection (env KAPE_DEFAULT_MODEL)")
+	fs.StringVar(&c.ServerDescription, "server-description", c.ServerDescription, "MCP server instructions served in the initialize handshake (env KAPE_SERVER_DESCRIPTION)")
 	fs.StringVar(&c.ModelGatewayURL, "model-gateway-url", c.ModelGatewayURL, "model-gateway base URL patched into pi models.json (env KAPE_MODEL_GATEWAY_URL)")
 	fs.StringVar(&c.EventStorePath, "event-store", c.EventStorePath, "durable event log file (env KAPE_EVENT_STORE)")
 	fs.StringVar(&c.Transport, "transport", c.Transport, "data plane: pull (default) or exec break-glass (env KAPE_TRANSPORT)")

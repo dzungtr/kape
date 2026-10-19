@@ -32,9 +32,13 @@ func (r *KapeProxyController) Reconcile(ctx context.Context, req ctrl.Request) (
 
 // SetupKapeProxyReconciler registers the KapeProxy controller with the manager.
 // It watches Pods with label kape.io/handler=* and enqueues them directly.
+// Named() supplies the controller's name without declaring a For() primary
+// resource: the Pod watch below is label-filtered, so unlabelled Pods must not
+// be enqueued as they would be by For(&corev1.Pod{}).
 func SetupKapeProxyReconciler(mgr manager.Manager, inner *reconcilehandler.KapeProxyReconciler, maxConcurrent int) error {
 	r := NewKapeProxyController(inner)
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("kapeproxy").
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(mapHandlerPods)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrent}).
 		Complete(r)

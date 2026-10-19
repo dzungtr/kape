@@ -17,7 +17,7 @@ func newTestHandler(t *testing.T) (http.Handler, *AgentManager, *FakeGateway, *F
 	stream := NewFakeStream()
 	gw.SetStream(stream)
 	mgr := NewAgentManager(gw, testConfig(), testStore(t))
-	return NewRouter(mgr), mgr, gw, stream
+	return NewRouter(mgr, ""), mgr, gw, stream
 }
 
 // doJSON issues a request directly against the router handler via

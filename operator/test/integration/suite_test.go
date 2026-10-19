@@ -84,8 +84,8 @@ var _ = BeforeSuite(func() {
 
 	toolReconciler := reconcilehandler.NewToolReconciler(
 		k8sadapters.NewToolRepository(k8sClient),
-		k8sadapters.NewStatefulSetAdapter(k8sClient),
-		cfgLoader,
+		&noopQdrantClusterPort{},
+		mgr.GetEventRecorderFor("kapetool"),
 	)
 	Expect(kapecontroller.SetupToolReconciler(mgr, toolReconciler, 1)).To(Succeed())
 

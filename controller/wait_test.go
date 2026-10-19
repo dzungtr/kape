@@ -38,7 +38,7 @@ func waitRequest(t *testing.T, mgr *AgentManager, id, timeout string) (*httptest
 	}
 	req := httptest.NewRequest("GET", "/agents/"+id+"/wait"+q, nil)
 	rec := httptest.NewRecorder()
-	NewRouter(mgr).ServeHTTP(rec, req)
+	NewRouter(mgr, "").ServeHTTP(rec, req)
 	var res WaitResult
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
@@ -55,7 +55,7 @@ func waitAsync(mgr *AgentManager, id, timeout string) func() (bool, WaitResult) 
 	go func() {
 		req := httptest.NewRequest("GET", "/agents/"+id+"/wait?timeout="+timeout, nil)
 		rec := httptest.NewRecorder()
-		NewRouter(mgr).ServeHTTP(rec, req)
+		NewRouter(mgr, "").ServeHTTP(rec, req)
 		var res WaitResult
 		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		done <- res
