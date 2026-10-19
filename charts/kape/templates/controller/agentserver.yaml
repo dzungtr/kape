@@ -30,10 +30,8 @@ spec:
       memory: {{ .Values.agentServer.sandbox.resources.memory | quote }}
   modelGateway:
     url: {{ .Values.agentServer.modelGateway.url | quote }}
-{{- with .Values.agentServer.credentials }}
   credentials:
-{{ toYaml . | indent 4 }}
-{{- end }}
+{{ toYaml (.Values.agentServer.credentials | default list) | indent 4 }}
 {{- if or .Values.agentServer.network.ingress.enabled .Values.agentServer.network.egressPolicyRefs }}
   network:
 {{- if .Values.agentServer.network.ingress.enabled }}

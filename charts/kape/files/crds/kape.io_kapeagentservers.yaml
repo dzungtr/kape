@@ -259,8 +259,9 @@ spec:
                   model:
                     description: |-
                       Model is the default model id handed to the sandbox agent
-                      (KAPE_DEFAULT_MODEL). Empty keeps the sandbox image's own selection.
-                    pattern: ^[A-Za-z0-9._:/-]+$
+                      (KAPE_DEFAULT_MODEL). Empty keeps the sandbox image's own selection, so
+                      the pattern admits the empty string alongside model ids.
+                    pattern: ^([A-Za-z0-9._:/-]+)?$
                     type: string
                   resources:
                     description: |-
@@ -291,8 +292,8 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: credentials[].name must be unique within a KapeAgentServer
-              rule: self.credentials.all(c1, self.credentials.exists_one(c2, c2.name
-                == c1.name))
+              rule: '!has(self.credentials) || self.credentials.all(c1, self.credentials.exists_one(c2,
+                c2.name == c1.name))'
           status:
             description: KapeAgentServerStatus defines the observed state of a KapeAgentServer.
             properties:

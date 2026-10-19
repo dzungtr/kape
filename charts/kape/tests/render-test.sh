@@ -30,6 +30,15 @@ assert_not "$TMP/default.yaml" '^  name: kape-controller$' "default: legacy cont
 assert_not "$TMP/default.yaml" 'name: kape-controller-egress' "default: legacy controller NetworkPolicy must be gone"
 assert_has "$TMP/default.yaml" 'kape.io_kapeagentservers.yaml' "default: KapeAgentServer CRD in the install hook ConfigMap"
 
+# The default CR must be admissible as rendered: an explicit empty credentials
+# list (the CRD's unique-name CEL rule tolerates an omitted list, and the
+# explicit [] keeps the rendered contract readable) and no empty model key.
+cr_block "$TMP/default.yaml" > "$TMP/default.cr.yaml"
+assert_has "$TMP/default.cr.yaml" '^  credentials:$' "default: credentials rendered explicitly"
+awk '/^  credentials:$/{getline; print; exit}' "$TMP/default.cr.yaml" | grep -q '^    \[\]$' \
+  || fail "default: credentials must render an explicit empty list"
+assert_not "$TMP/default.cr.yaml" '^    model:' "default: no model key when the value is empty"
+
 # The sandbox-reader ClusterRole stays chart-owned (cluster-scoped grant), its
 # binding is per-CR now — the operator renders it.
 assert_has "$TMP/default.yaml" 'name: kape-controller-sandbox-reader' "default: sandbox-reader ClusterRole"

@@ -38,9 +38,10 @@ type AgentServerSandboxSpec struct {
 	Image string `json:"image"`
 
 	// Model is the default model id handed to the sandbox agent
-	// (KAPE_DEFAULT_MODEL). Empty keeps the sandbox image's own selection.
+	// (KAPE_DEFAULT_MODEL). Empty keeps the sandbox image's own selection, so
+	// the pattern admits the empty string alongside model ids.
 	// +optional
-	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._:/-]+$`
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9._:/-]+)?$`
 	Model string `json:"model,omitempty"`
 
 	// Resources is the default sandbox cpu/memory profile
@@ -136,7 +137,7 @@ type AgentServerNetworkSpec struct {
 // controller image, sandbox defaults, model gateway, credential registry,
 // network surface, and free-text self-description.
 //
-// +kubebuilder:validation:XValidation:rule="self.credentials.all(c1, self.credentials.exists_one(c2, c2.name == c1.name))",message="credentials[].name must be unique within a KapeAgentServer"
+// +kubebuilder:validation:XValidation:rule="!has(self.credentials) || self.credentials.all(c1, self.credentials.exists_one(c2, c2.name == c1.name))",message="credentials[].name must be unique within a KapeAgentServer"
 type KapeAgentServerSpec struct {
 	// Description is the serving environment's self-description, served to MCP
 	// clients as the server `instructions` of the initialize handshake

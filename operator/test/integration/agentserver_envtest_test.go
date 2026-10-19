@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -184,6 +186,137 @@ func TestKapeAgentServerCELRejections(t *testing.T) {
 			require.Error(t, err, "case %d: expected admission rejection", i)
 			assert.True(t, apierrors.IsInvalid(err), "want Invalid, got %v", err)
 			assert.Contains(t, err.Error(), tc.message)
+		})
+	}
+}
+
+// agentServerUnstructuredSpec is the minimal admissible spec in raw JSON form,
+// so cases can tell an omitted key from an explicit empty value; the typed
+// client's `omitempty` cannot express `model: ""`.
+func agentServerUnstructuredSpec() map[string]interface{} {
+	return map[string]interface{}{
+		"controller": map[string]interface{}{"image": "ghcr.io/kape-io/kape-controller:0.1.0"},
+		"sandbox": map[string]interface{}{
+			"image":     "ghcr.io/dzungtr/pi-openshell:openrouter",
+			"resources": map[string]interface{}{"cpu": "1", "memory": "2Gi"},
+		},
+		"modelGateway": map[string]interface{}{"url": "http://model-gateway-http.aperture.svc.cluster.local/v1"},
+	}
+}
+
+// credentialEntry is one credentials[] entry as raw JSON, with its secretRef
+// namespace omitted unless namespaced is true.
+func credentialEntry(name, hostPattern, secretNamespace string) map[string]interface{} {
+	secretRef := map[string]interface{}{"name": "cred-secret"}
+	if secretNamespace != "" {
+		secretRef["namespace"] = secretNamespace
+	}
+	return map[string]interface{}{
+		"name":         name,
+		"providerType": "git-https",
+		"secretRef":    secretRef,
+		"hostPatterns": []interface{}{hostPattern},
+	}
+}
+
+// TestKapeAgentServerOptionalFields pins the tolerance the chart's default CR
+// depends on: an omitted or empty `credentials` list is admissible — the
+// unique-name CEL rule must not index into a list that is not there — and
+// sandbox.model admits the empty string, which controller/config.go and the
+// field's own comment both read as "keep the sandbox image's own selection".
+// The three CEL rejections must survive that guard.
+//
+// CI-only: envtest needs loopback, which the authoring sandbox denies, so these
+// cases are authored, never executed there (CI has no runners either).
+func TestKapeAgentServerOptionalFields(t *testing.T) {
+	_, c := startAgentServerEnv(t)
+	ctx := context.Background()
+
+	withSandbox := func(spec map[string]interface{}, key string, value interface{}) {
+		spec["sandbox"].(map[string]interface{})[key] = value
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(spec map[string]interface{})
+		message string // empty: the CR must be admitted
+	}{
+		{
+			name:   "credentials omitted",
+			mutate: func(spec map[string]interface{}) {},
+		},
+		{
+			name: "credentials empty list",
+			mutate: func(spec map[string]interface{}) {
+				spec["credentials"] = []interface{}{}
+			},
+		},
+		{
+			name:   "model omitted",
+			mutate: func(spec map[string]interface{}) {},
+		},
+		{
+			name: "model empty string",
+			mutate: func(spec map[string]interface{}) {
+				withSandbox(spec, "model", "")
+			},
+		},
+		{
+			name: "model set",
+			mutate: func(spec map[string]interface{}) {
+				withSandbox(spec, "model", "z-ai/glm-5.2")
+			},
+		},
+		{
+			name: "model invalid",
+			mutate: func(spec map[string]interface{}) {
+				withSandbox(spec, "model", "bad model!")
+			},
+			message: "sandbox.model",
+		},
+		{
+			name: "bad host pattern",
+			mutate: func(spec map[string]interface{}) {
+				spec["credentials"] = []interface{}{credentialEntry("github", "https://github.com/pulls", "")}
+			},
+			message: "hostPatterns entries must be host[:port] globs",
+		},
+		{
+			name: "duplicate credential names",
+			mutate: func(spec map[string]interface{}) {
+				spec["credentials"] = []interface{}{
+					credentialEntry("github", "github.com:443", ""),
+					credentialEntry("github", "api.github.com:443", ""),
+				}
+			},
+			message: "credentials[].name must be unique",
+		},
+		{
+			name: "cross-namespace secretRef",
+			mutate: func(spec map[string]interface{}) {
+				spec["credentials"] = []interface{}{credentialEntry("github", "github.com:443", "openshell")}
+			},
+			message: "secretRef must be same-namespace",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := agentServerUnstructuredSpec()
+			tc.mutate(spec)
+			server := &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "kape.io/v1alpha1",
+				"kind":       "KapeAgentServer",
+				"metadata":   map[string]interface{}{"name": fmt.Sprintf("optional-%d", i), "namespace": "default"},
+				"spec":       spec,
+			}}
+			err := c.Create(ctx, server)
+			if tc.message == "" {
+				require.NoError(t, err, "case %d: expected the CR to be admitted", i)
+				return
+			}
+			require.Error(t, err, "case %d: expected admission rejection", i)
+			assert.True(t, apierrors.IsInvalid(err), "case %d: want Invalid, got %v", i, err)
+			assert.Contains(t, err.Error(), tc.message, "case %d", i)
 		})
 	}
 }
