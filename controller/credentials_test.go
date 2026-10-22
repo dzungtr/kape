@@ -405,6 +405,22 @@ type stubPolicyClient struct {
 	v1.OpenShellClient
 	requests []*v1.UpdateConfigRequest
 	err      error
+	// policy is what GetSandboxConfig reports as the sandbox's current policy
+	// (nil = an empty policy: no rule declares any endpoint).
+	policy *v1.SandboxPolicy
+	// configErr makes GetSandboxConfig fail (fail-closed coverage).
+	configErr error
+}
+
+func (s *stubPolicyClient) GetSandboxConfig(ctx context.Context, req *v1.GetSandboxConfigRequest, opts ...grpc.CallOption) (*v1.GetSandboxConfigResponse, error) {
+	if s.configErr != nil {
+		return nil, s.configErr
+	}
+	policy := s.policy
+	if policy == nil {
+		policy = &v1.SandboxPolicy{}
+	}
+	return &v1.GetSandboxConfigResponse{Policy: policy}, nil
 }
 
 func (s *stubPolicyClient) UpdateConfig(ctx context.Context, req *v1.UpdateConfigRequest, opts ...grpc.CallOption) (*v1.UpdateConfigResponse, error) {
@@ -458,6 +474,51 @@ func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 		if ep.GetCredentialBinding().GetProvider() != "kape-openshell-kape-github" {
 			t.Fatalf("endpoint %s:%d lost its credential binding: %v", ep.GetHost(), ep.GetPort(), ep)
 		}
+	}
+}
+
+// TestApplyModelGatewayPolicy_StampsImageDeclaredEndpoints is the kape#274
+// regression: when the sandbox policy already declares the bound hosts (every
+// pi-openshell sandbox does), the seam stamps those rules and must NOT append a
+// second declaration of the same host:port, which the gateway rejects as
+// ambiguous credential metadata.
+func TestApplyModelGatewayPolicy_StampsImageDeclaredEndpoints(t *testing.T) {
+	client := &stubPolicyClient{policy: imagePolicyDeclaringBoundHosts()}
+	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
+
+	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("UpdateConfig calls = %d, want 1", len(client.requests))
+	}
+	ops := client.requests[0].GetMergeOperations()
+	if got, want := len(ops), 4; got != want { // model gateway + 3 declaring rules
+		names := []string{}
+		for _, op := range ops {
+			names = append(names, op.GetAddRule().GetRuleName())
+		}
+		t.Fatalf("merge operations = %d %v, want %d", got, names, want)
+	}
+	for _, op := range ops[1:] {
+		if op.GetAddRule().GetRuleName() == CredentialBindingRuleName {
+			t.Fatal("additive credential-binding rule emitted despite the policy already declaring every bound host")
+		}
+	}
+}
+
+// TestApplyModelGatewayPolicy_FailClosedOnUnreadablePolicy: a policy that
+// cannot be read aborts before any merge is sent.
+func TestApplyModelGatewayPolicy_FailClosedOnUnreadablePolicy(t *testing.T) {
+	client := &stubPolicyClient{configErr: fmt.Errorf("permission denied")}
+	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
+
+	err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1")
+	if err == nil {
+		t.Fatal("ApplyModelGatewayPolicy succeeded with an unreadable policy, want failure")
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("UpdateConfig called %d times, want 0 (fail closed before any merge)", len(client.requests))
 	}
 }
 
@@ -540,4 +601,205 @@ func TestCreateRollsBackSandboxWhenBindingPolicyRejected(t *testing.T) {
 	if len(gw.ControllerDenies()) != 0 {
 		t.Fatal("egress deny applied after the policy apply failed, want an aborted Create")
 	}
+}
+
+// --- Issue #274: stamping into an image policy that already declares the
+// bound endpoints ---------------------------------------------------------
+//
+// pi-openshell declares github.com:443 and api.github.com:443. Appending the
+// additive m1_credential_bindings rule next to them made the gateway reject the
+// whole merge as ambiguous credential metadata, which rolled the sandbox back
+// after it reached READY. These fixtures reproduce that policy shape.
+
+func imagePolicyDeclaringBoundHosts() *v1.SandboxPolicy {
+	return &v1.SandboxPolicy{
+		NetworkPolicies: map[string]*v1.NetworkPolicyRule{
+			"github_rest_api": {
+				Name: "github-rest-api",
+				Endpoints: []*v1.NetworkEndpoint{{
+					Host:     "api.github.com",
+					Port:     443,
+					Protocol: "rest",
+					Access:   v1.NetworkAccessPreset_NETWORK_ACCESS_PRESET_READ_ONLY,
+				}},
+				Binaries: []*v1.NetworkBinary{{Path: "/usr/bin/gh"}},
+			},
+			"github_ssh_over_https": {
+				Name: "github-ssh-over-https",
+				Endpoints: []*v1.NetworkEndpoint{{
+					Host:     "github.com",
+					Port:     443,
+					Protocol: "rest",
+					Rules: []*v1.L7Rule{
+						{Allow: &v1.L7Allow{Method: "GET", Path: "/**/info/refs*"}},
+						{Allow: &v1.L7Allow{Method: "POST", Path: "/**/git-upload-pack"}},
+					},
+				}},
+				Binaries: []*v1.NetworkBinary{{Path: "/usr/bin/git"}},
+			},
+			// Same host:port as github_ssh_over_https, bare. Left unstamped it
+			// would recreate the ambiguity against the stamped rule.
+			"pi": {
+				Name:      "pi",
+				Endpoints: []*v1.NetworkEndpoint{{Host: "github.com", Port: 443}},
+				Binaries:  []*v1.NetworkBinary{{Path: "/usr/local/bin/pi"}},
+			},
+			"pypi": {
+				Name:      "pypi",
+				Endpoints: []*v1.NetworkEndpoint{{Host: "pypi.org", Port: 443}},
+				Binaries:  []*v1.NetworkBinary{{Path: "/sandbox/.venv/bin/pip"}},
+			},
+		},
+	}
+}
+
+func testGithubBindings() []Binding {
+	return []Binding{{Provider: "kape-kape-system-default-github", Hosts: []string{"github.com:443", "api.github.com:443"}}}
+}
+
+// TestCredentialPolicyOps_StampsEveryDeclaringRule: no additive rule is emitted
+// for hosts the policy already declares; each declaring rule is re-sent with
+// the binding stamped and everything else preserved.
+func TestCredentialPolicyOps_StampsEveryDeclaringRule(t *testing.T) {
+	policy := imagePolicyDeclaringBoundHosts()
+	ops, err := CredentialPolicyOps(policy, testGithubBindings())
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps: %v", err)
+	}
+	byName := map[string]*v1.NetworkPolicyRule{}
+	for _, op := range ops {
+		add := op.GetAddRule()
+		if add == nil {
+			t.Fatalf("unexpected operation %T, want add_rule", op.GetOperation())
+		}
+		byName[add.GetRuleName()] = add.GetRule()
+	}
+	// Ops address rules by POLICY KEY: that is what the gateway upserts on.
+	for _, want := range []string{"github_rest_api", "github_ssh_over_https", "pi"} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("rule %q not stamped; ops = %v", want, keysOf(byName))
+		}
+	}
+	if _, ok := byName[CredentialBindingRuleName]; ok {
+		t.Fatal("additive m1_credential_bindings emitted for hosts the policy already declares")
+	}
+	if _, ok := byName["pypi"]; ok {
+		t.Fatal("unbound rule pypi rewritten, want untouched")
+	}
+
+	// The read-only github constraints survive the stamp.
+	ssh := byName["github_ssh_over_https"]
+	if got := ssh.GetName(); got != "github-ssh-over-https" {
+		t.Fatalf("rule body name = %q, want the policy's own name preserved", got)
+	}
+	if got := len(ssh.GetEndpoints()); got != 1 {
+		t.Fatalf("github-ssh-over-https endpoints = %d, want 1", got)
+	}
+	ep := ssh.GetEndpoints()[0]
+	if got := ep.GetCredentialBinding().GetProvider(); got != "kape-kape-system-default-github" {
+		t.Fatalf("credential_binding.provider = %q", got)
+	}
+	if got := len(ep.GetRules()); got != 2 {
+		t.Fatalf("L7 rules = %d, want 2 (read-only git smart-HTTP preserved)", got)
+	}
+	if got := ssh.GetBinaries(); len(got) != 1 || got[0].GetPath() != "/usr/bin/git" {
+		t.Fatalf("binaries = %v, want the rule's own /usr/bin/git", got)
+	}
+
+	// access preset preserved on the REST endpoint.
+	rest := byName["github_rest_api"].GetEndpoints()[0]
+	if rest.GetAccess() != v1.NetworkAccessPreset_NETWORK_ACCESS_PRESET_READ_ONLY {
+		t.Fatalf("access = %v, want read-only preserved", rest.GetAccess())
+	}
+
+	// Input policy is never mutated.
+	if imagePolicyDeclaringBoundHosts().GetNetworkPolicies()["github_ssh_over_https"].GetEndpoints()[0].GetCredentialBinding() != nil {
+		t.Fatal("CredentialPolicyOps mutated its input policy")
+	}
+}
+
+// TestCredentialPolicyOps_FallsBackToAdditiveRule: a bound host the policy does
+// not declare keeps the original additive behaviour.
+func TestCredentialPolicyOps_FallsBackToAdditiveRule(t *testing.T) {
+	ops, err := CredentialPolicyOps(&v1.SandboxPolicy{}, []Binding{
+		{Provider: "p-git", Hosts: []string{"git.example.com:443"}},
+	})
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("ops = %d, want 1 additive rule", len(ops))
+	}
+	add := ops[0].GetAddRule()
+	if add.GetRuleName() != CredentialBindingRuleName {
+		t.Fatalf("rule name = %q", add.GetRuleName())
+	}
+	ep := add.GetRule().GetEndpoints()[0]
+	if ep.GetHost() != "git.example.com" || ep.GetPort() != 443 {
+		t.Fatalf("endpoint = %s:%d", ep.GetHost(), ep.GetPort())
+	}
+	if got := ep.GetCredentialBinding().GetProvider(); got != "p-git" {
+		t.Fatalf("provider = %q", got)
+	}
+}
+
+// TestCredentialPolicyOps_Idempotent: re-applying an already stamped policy
+// emits nothing.
+func TestCredentialPolicyOps_Idempotent(t *testing.T) {
+	policy := imagePolicyDeclaringBoundHosts()
+	first, err := CredentialPolicyOps(policy, testGithubBindings())
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps: %v", err)
+	}
+	// Fold the emitted rules back into the policy under their ORIGINAL keys
+	// (the gateway upserts by rule name and keeps the policy's own key), then
+	// merge again.
+	// Ops are keyed, so folding them back is a plain keyed assignment — the
+	// same upsert the gateway performs.
+	for _, op := range first {
+		add := op.GetAddRule()
+		policy.NetworkPolicies[add.GetRuleName()] = add.GetRule()
+	}
+	second, err := CredentialPolicyOps(policy, testGithubBindings())
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps (second): %v", err)
+	}
+	if len(second) != 0 {
+		names := []string{}
+		for _, op := range second {
+			names = append(names, op.GetAddRule().GetRuleName())
+		}
+		t.Fatalf("second merge emitted %d ops (%v), want 0 (idempotent)", len(second), names)
+	}
+}
+
+// TestCredentialPolicyOps_FailClosed: nil policy and conflicting provider both
+// refuse instead of producing a partially-bound policy.
+func TestCredentialPolicyOps_FailClosed(t *testing.T) {
+	if _, err := CredentialPolicyOps(nil, testGithubBindings()); err == nil {
+		t.Fatal("nil policy: want error")
+	}
+	policy := &v1.SandboxPolicy{NetworkPolicies: map[string]*v1.NetworkPolicyRule{
+		"github_rest_api": {
+			Name: "github-rest-api",
+			Endpoints: []*v1.NetworkEndpoint{{
+				Host: "api.github.com", Port: 443,
+				CredentialBinding: &v1.NetworkCredentialBinding{Provider: "other"},
+			}},
+		},
+	}}
+	if _, err := CredentialPolicyOps(policy, testGithubBindings()); err == nil {
+		t.Fatal("conflicting provider: want error, not a silent override")
+	}
+	if ops, err := CredentialPolicyOps(&v1.SandboxPolicy{}, nil); err != nil || ops != nil {
+		t.Fatalf("no bindings = (%v, %v), want (nil, nil)", ops, err)
+	}
+}
+
+func keysOf(m map[string]*v1.NetworkPolicyRule) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

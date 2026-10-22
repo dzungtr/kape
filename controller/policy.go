@@ -79,6 +79,20 @@ func endpointHostPort(endpoint string) (string, uint32, error) {
 	return host, 80, nil
 }
 
+// GetSandboxPolicy reads the sandbox's current effective policy. It backs the
+// credential stamping path (kape#274): the controller must know which rules
+// already declare a bound endpoint before it merges credential metadata in.
+func (g *Gateway) GetSandboxPolicy(ctx context.Context, sandboxName string) (*v1.SandboxPolicy, error) {
+	resp, err := g.client.GetSandboxConfig(ctx, &v1.GetSandboxConfigRequest{
+		WorkspaceScope: g.scope(),
+		Name:           sandboxName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("GetSandboxConfig(%s): %w", sandboxName, err)
+	}
+	return resp.GetPolicy(), nil
+}
+
 // ApplyModelGatewayPolicy merges a network rule allowing the sandbox to reach
 // the in-cluster model gateway, plus — when the controller carries an env-fed
 // binding table (#264, ADR-0088) — the credential-binding rule. Both ride one
@@ -98,18 +112,24 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 		},
 	}}
 	if len(g.credentialBindings) > 0 {
-		bindingRule, err := MergePolicy(&v1.NetworkPolicyRule{Name: CredentialBindingRuleName}, g.credentialBindings)
+		// Bindings are applied against the sandbox's CURRENT policy: an endpoint
+		// the base policy already declares must be stamped in place, not
+		// appended as a second declaration of the same host:port (kape#274 —
+		// the gateway rejects that overlap as ambiguous credential metadata).
+		policy, err := g.GetSandboxPolicy(ctx, sandboxName)
+		if err != nil {
+			// Fail closed: a policy we cannot read is a policy we cannot bind
+			// safely, and the sandbox must not run with credentials it may owe.
+			return fmt.Errorf("credential binding policy (read sandbox policy): %w", err)
+		}
+		bindingOps, err := CredentialPolicyOps(policy, g.credentialBindings)
 		if err != nil {
 			// Fail closed before anything reaches the gateway: a binding that
 			// cannot be materialised must not yield a sandbox that egresses
 			// without the credentials it was promised.
 			return fmt.Errorf("credential binding policy: %w", err)
 		}
-		ops = append(ops, &v1.PolicyMergeOperation{
-			Operation: &v1.PolicyMergeOperation_AddRule{
-				AddRule: &v1.AddNetworkRule{RuleName: bindingRule.GetName(), Rule: bindingRule},
-			},
-		})
+		ops = append(ops, bindingOps...)
 	}
 	req := &v1.UpdateConfigRequest{
 		WorkspaceScope:  g.scope(),

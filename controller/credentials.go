@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 // CredentialBindingRuleName is the network policy rule the merged credential
@@ -171,4 +173,144 @@ func MergePolicy(policy *v1.NetworkPolicyRule, bindings []Binding) (*v1.NetworkP
 // matched case-insensitively by the gateway, so the key folds case.
 func endpointKey(host string, port uint32) string {
 	return strings.ToLower(host) + ":" + strconv.FormatUint(uint64(port), 10)
+}
+
+// CredentialPolicyOps returns the policy-merge operations that carry the
+// credential bindings into an EXISTING sandbox policy (issue #274).
+//
+// The additive-only merge above is right for hosts the base policy does not
+// declare, and wrong for the ones it does. The sandbox image already allows
+// the bound hosts — pi-openshell declares github.com:443 (github-ssh-over-https
+// and pi) and api.github.com:443 (github-rest-api) — so appending a second
+// declaration of the same endpoint carrying credential metadata trips the
+// gateway's endpoint-ambiguity check:
+//
+//	network policies 'm1_credential_bindings' endpoint[0] (github.com:443) and
+//	'github-ssh-over-https' endpoint[0] (github.com:443) overlap on port(s) 443
+//	with conflicting metadata: credential_binding.provider="..." vs ""
+//
+// That rejects the whole UpdateConfig, so the sandbox is rolled back. Bound
+// endpoints that already exist are therefore STAMPED IN PLACE: the declaring
+// rule keeps its own L7 restrictions (github stays read-only git smart-HTTP)
+// and only gains credential_binding.provider. Bound hosts absent from the
+// policy fall back to the additive m1_credential_bindings rule, unchanged.
+//
+// Every rule that declares a bound endpoint is stamped, not just the first:
+// the ambiguity check compares metadata across all rules, so leaving `pi`'s
+// github.com:443 bare while stamping github-ssh-over-https's would recreate
+// the same conflict.
+func CredentialPolicyOps(policy *v1.SandboxPolicy, bindings []Binding) ([]*v1.PolicyMergeOperation, error) {
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	if policy == nil {
+		return nil, fmt.Errorf("credential binding policy: nil sandbox policy")
+	}
+
+	// Binding lookup: host:port -> provider. First binding wins, matching
+	// MergePolicy's duplicate rule.
+	providers := map[string]string{}
+	var order []string
+	for _, binding := range bindings {
+		for _, spec := range binding.Hosts {
+			host, port, err := splitHostSpec(spec)
+			if err != nil {
+				return nil, fmt.Errorf("credential binding %q: %w", binding.Provider, err)
+			}
+			key := endpointKey(host, port)
+			if _, seen := providers[key]; seen {
+				continue
+			}
+			providers[key] = binding.Provider
+			order = append(order, key)
+		}
+	}
+
+	var ops []*v1.PolicyMergeOperation
+	stamped := map[string]bool{}
+	// Sorted keys keep the emitted operation order deterministic.
+	ruleKeys := make([]string, 0, len(policy.GetNetworkPolicies()))
+	for key := range policy.GetNetworkPolicies() {
+		ruleKeys = append(ruleKeys, key)
+	}
+	sort.Strings(ruleKeys)
+
+	for _, key := range ruleKeys {
+		rule := policy.GetNetworkPolicies()[key]
+		if rule == nil {
+			continue
+		}
+		changed := false
+		endpoints := make([]*v1.NetworkEndpoint, 0, len(rule.GetEndpoints()))
+		for _, ep := range rule.GetEndpoints() {
+			if ep == nil {
+				continue
+			}
+			key := endpointKey(ep.GetHost(), ep.GetPort())
+			provider, bound := providers[key]
+			if !bound {
+				endpoints = append(endpoints, ep)
+				continue
+			}
+			// Declared by the policy: the endpoint is accounted for even when
+			// it already carries the binding, so no additive rule is emitted.
+			stamped[key] = true
+			if cur := ep.GetCredentialBinding().GetProvider(); cur != "" {
+				if cur != provider {
+					// Two sources of truth for one endpoint: refuse rather than
+					// silently pick a winner (fail closed, ADR-0088).
+					return nil, fmt.Errorf("credential binding: %s already bound to provider %q, bindings ask for %q", endpointKey(ep.GetHost(), ep.GetPort()), cur, provider)
+				}
+				endpoints = append(endpoints, ep)
+				continue
+			}
+			clone := proto.Clone(ep).(*v1.NetworkEndpoint)
+			clone.CredentialBinding = &v1.NetworkCredentialBinding{Provider: provider}
+			endpoints = append(endpoints, clone)
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		// AddRule upserts by POLICY KEY, not by the rule's `name` field —
+		// verified live on v0.1.0: sending a rule whose `name` differed from
+		// its key created a second rule ("kept add-rule 'github-ssh-over-https'
+		// on its own rule instead of folding it into overlapping rule
+		// 'github_ssh_over_https'"). So the key addresses the existing entry and
+		// the body keeps the policy's own `name` and binary set.
+		ops = append(ops, &v1.PolicyMergeOperation{
+			Operation: &v1.PolicyMergeOperation_AddRule{
+				AddRule: &v1.AddNetworkRule{
+					RuleName: key,
+					Rule: &v1.NetworkPolicyRule{
+						Name:      rule.GetName(),
+						Endpoints: endpoints,
+						Binaries:  rule.GetBinaries(),
+					},
+				},
+			},
+		})
+	}
+
+	// Hosts no rule declares keep the original additive shape.
+	var missing []Binding
+	for _, key := range order {
+		if stamped[key] {
+			continue
+		}
+		host, port, _ := strings.Cut(key, ":")
+		missing = append(missing, Binding{Provider: providers[key], Hosts: []string{host + ":" + port}})
+	}
+	if len(missing) > 0 {
+		rule, err := MergePolicy(&v1.NetworkPolicyRule{Name: CredentialBindingRuleName}, missing)
+		if err != nil {
+			return nil, fmt.Errorf("credential binding policy: %w", err)
+		}
+		ops = append(ops, &v1.PolicyMergeOperation{
+			Operation: &v1.PolicyMergeOperation_AddRule{
+				AddRule: &v1.AddNetworkRule{RuleName: rule.GetName(), Rule: rule},
+			},
+		})
+	}
+	return ops, nil
 }
