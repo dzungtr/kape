@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "marketplaces": {
+    "claude-plugins-official": {
+      "source": "anthropics/claude-plugins-official",
+      "autoupdate": true
+    },
+    "dzungtr-harness6": {
+      "source": "dzungtr/harness6"
+    },
+    "brave-search": {
+      "source": "brave/brave-search-skills"
+    },
+    "dzungtr-kape": {
+      "source": "dzungtr/kape"
+    }
+  },
+  "plugins": {
+    "harness6@dzungtr-harness6": {},
+    "frontend-design@claude-plugins-official": {},
+    "kape@dzungtr-kape": {}
+  }
+}

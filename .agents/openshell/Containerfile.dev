@@ -2,6 +2,8 @@
 #
 # KAPE dev image — ghcr.io/dzungtr/pi-openshell + this repo's flake toolchain.
 #
+# Base image source of truth: openshell/agents/ in this repo (moved from the
+# pi host repo ~/.pi/docker/openshell; version tracked in openshell/agents/VERSION).
 # Based on the published pi-openshell image (itself the official OpenShell
 # community `base` sandbox + pi + nix store graft — see ~/.pi/docker/openshell).
 # That base already satisfies the OpenShell supervisor contract (FHS layout,
