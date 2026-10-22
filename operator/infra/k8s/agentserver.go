@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -161,12 +162,7 @@ func applySpec(patched, desired client.Object) error {
 	switch d := desired.(type) {
 	case *appsv1.Deployment:
 		live := patched.(*appsv1.Deployment)
-		inheritPodDefaults(&d.Spec.Template.Spec, &live.Spec.Template.Spec)
-		// Replicas/strategy keep the live values for the same reason: the
-		// renderer does not own them, so it must not zero them.
-		if d.Spec.Strategy.Type == "" {
-			d.Spec.Strategy = live.Spec.Strategy
-		}
+		inheritUnset(&d.Spec, &live.Spec)
 		live.Spec = d.Spec
 	case *corev1.Service:
 		live := patched.(*corev1.Service)
@@ -191,95 +187,80 @@ func applySpec(patched, desired client.Object) error {
 	return nil
 }
 
-// inheritPodDefaults copies the API server's own defaulting into the rendered pod
-// spec for every field the renderer does not set. Without it, `live.Spec =
-// d.Spec` resets defaults to their zero values, the merge patch diff is never
-// empty against a live object, and every reconcile bumps
-// metadata.generation — leaving the controller Deployment permanently
-// unavailable (observed as a hot loop, generation 1309 → 1511 in 20s).
-func inheritPodDefaults(desired, live *corev1.PodSpec) {
-	if desired.DNSPolicy == "" {
-		desired.DNSPolicy = live.DNSPolicy
-	}
-	if desired.RestartPolicy == "" {
-		desired.RestartPolicy = live.RestartPolicy
-	}
-	if desired.SchedulerName == "" {
-		desired.SchedulerName = live.SchedulerName
-	}
-	if desired.TerminationGracePeriodSeconds == nil {
-		desired.TerminationGracePeriodSeconds = live.TerminationGracePeriodSeconds
-	}
-	if desired.SecurityContext == nil {
-		desired.SecurityContext = live.SecurityContext
-	}
-	if desired.ServiceAccountName == "" {
-		desired.ServiceAccountName = live.ServiceAccountName
-	}
-	liveContainers := make(map[string]*corev1.Container, len(live.Containers))
-	for i := range live.Containers {
-		liveContainers[live.Containers[i].Name] = &live.Containers[i]
-	}
-	for i := range desired.Containers {
-		inheritContainerDefaults(&desired.Containers[i], liveContainers[desired.Containers[i].Name])
-	}
-	liveVolumes := make(map[string]*corev1.Volume, len(live.Volumes))
-	for i := range live.Volumes {
-		liveVolumes[live.Volumes[i].Name] = &live.Volumes[i]
-	}
-	for i := range desired.Volumes {
-		inheritVolumeDefaults(&desired.Volumes[i], liveVolumes[desired.Volumes[i].Name])
-	}
+// inheritUnset copies every field the desired value leaves unset (zero) from
+// the live value, recursively through structs and their pointers/slices.
+//
+// The rendered spec omits everything the API server defaults — dnsPolicy,
+// restartPolicy, probe successThreshold/timeoutSeconds, terminationMessage*,
+// volume defaultMode, revisionHistoryLimit, progressDeadlineSeconds, … — so
+// assigning it wholesale resets those to their zero values. The merge-patch
+// diff against a live object is then never empty, every reconcile patches the
+// Deployment, metadata.generation churns (observed: ~10/s) and the Deployment
+// never reports availability, so the KapeAgentServer never becomes Ready.
+//
+// Enumerating the defaulted fields by hand is a losing game (one missed field
+// reopens the loop), so the rule is structural instead: the operator owns the
+// fields the renderer sets; everything else keeps the live value. Lists and
+// maps the renderer does set are replaced wholesale; their elements inherit
+// unset fields from the live element at the same index (or, for maps, by key).
+func inheritUnset(desired, live any) {
+	inheritValue(reflect.ValueOf(desired).Elem(), reflect.ValueOf(live).Elem())
 }
 
-func inheritContainerDefaults(desired, live *corev1.Container) {
-	if live == nil {
-		return
-	}
-	if desired.TerminationMessagePath == "" {
-		desired.TerminationMessagePath = live.TerminationMessagePath
-	}
-	if desired.TerminationMessagePolicy == "" {
-		desired.TerminationMessagePolicy = live.TerminationMessagePolicy
-	}
-	if desired.SecurityContext == nil {
-		desired.SecurityContext = live.SecurityContext
-	}
-	inheritProbeDefaults(desired.ReadinessProbe, live.ReadinessProbe)
-	inheritProbeDefaults(desired.LivenessProbe, live.LivenessProbe)
-	inheritProbeDefaults(desired.StartupProbe, live.StartupProbe)
-}
+// envVarType is excluded from inheritance: an env var's Name and Value are
+// owned by the renderer, and an intentionally empty value (KAPE_DEFAULT_MODEL="")
+// must not be back-filled from the live object.
+var envVarType = reflect.TypeOf(corev1.EnvVar{})
 
-func inheritProbeDefaults(desired, live *corev1.Probe) {
-	if desired == nil || live == nil {
+func inheritValue(d, l reflect.Value) {
+	if !d.IsValid() || !l.IsValid() || d.Type() != l.Type() {
 		return
 	}
-	if desired.SuccessThreshold == 0 {
-		desired.SuccessThreshold = live.SuccessThreshold
-	}
-	if desired.FailureThreshold == 0 {
-		desired.FailureThreshold = live.FailureThreshold
-	}
-	if desired.TimeoutSeconds == 0 {
-		desired.TimeoutSeconds = live.TimeoutSeconds
-	}
-	if desired.TerminationGracePeriodSeconds == nil {
-		desired.TerminationGracePeriodSeconds = live.TerminationGracePeriodSeconds
-	}
-}
-
-func inheritVolumeDefaults(desired, live *corev1.Volume) {
-	if live == nil {
+	if d.Type() == envVarType {
 		return
 	}
-	if desired.Secret != nil && live.Secret != nil && desired.Secret.DefaultMode == nil {
-		desired.Secret.DefaultMode = live.Secret.DefaultMode
-	}
-	if desired.ConfigMap != nil && live.ConfigMap != nil && desired.ConfigMap.DefaultMode == nil {
-		desired.ConfigMap.DefaultMode = live.ConfigMap.DefaultMode
-	}
-	if desired.EmptyDir != nil && live.EmptyDir != nil && desired.EmptyDir.SizeLimit == nil {
-		desired.EmptyDir.SizeLimit = live.EmptyDir.SizeLimit
+	switch d.Kind() {
+	case reflect.Struct:
+		for i := 0; i < d.NumField(); i++ {
+			df, lf := d.Field(i), l.Field(i)
+			if !df.CanSet() {
+				continue
+			}
+			if df.IsZero() {
+				if lf.CanInterface() {
+					df.Set(lf)
+				}
+				continue
+			}
+			inheritValue(df, lf)
+		}
+	case reflect.Pointer:
+		if d.IsNil() || l.IsNil() {
+			return
+		}
+		inheritValue(d.Elem(), l.Elem())
+	case reflect.Slice:
+		if d.Len() != l.Len() {
+			return
+		}
+		for i := 0; i < d.Len(); i++ {
+			inheritValue(d.Index(i), l.Index(i))
+		}
+	case reflect.Map:
+		// Map values are not addressable, so only whole-value inheritance is
+		// possible: an entry the renderer leaves zero takes the live value.
+		if d.IsNil() || l.IsNil() {
+			return
+		}
+		for _, k := range d.MapKeys() {
+			dv := d.MapIndex(k)
+			if !dv.IsValid() || !dv.IsZero() {
+				continue
+			}
+			if lv := l.MapIndex(k); lv.IsValid() {
+				d.SetMapIndex(k, lv)
+			}
+		}
 	}
 }
 

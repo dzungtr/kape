@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -189,6 +190,16 @@ func TestAgentServerAdapterApplyIgnoresAPIDefaults(t *testing.T) {
 	live.Spec.Template.Spec.Containers[0].ReadinessProbe.SuccessThreshold = 1
 	live.Spec.Template.Spec.Containers[0].ReadinessProbe.TimeoutSeconds = 1
 	live.Spec.Template.Spec.Volumes[0].Secret.DefaultMode = func() *int32 { m := int32(420); return &m }()
+	// Deployment-level defaults the renderer never sets.
+	live.Spec.RevisionHistoryLimit = func() *int32 { r := int32(10); return &r }()
+	live.Spec.ProgressDeadlineSeconds = func() *int32 { p := int32(600); return &p }()
+	live.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
+			MaxSurge:       &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
+		},
+	}
 	require.NoError(t, c.Update(ctx, &live))
 
 	var defaulted appsv1.Deployment
