@@ -22,11 +22,31 @@ the version (issue #273).
 ## Versioning & release
 
 ```
-make bump-patch        # VERSION 0.1.1 -> 0.1.2
+make bump-patch        # VERSION 0.2.0 -> 0.2.1
 make push              # build + push ghcr.io/dzungtr/pi-openshell:<v>-<profile> and :<profile>
 ```
 
-## Provider contract (0.1.1, issue #273)
+## Profiles
+
+### `aperture` (default since 0.2.0) — in-cluster model gateway
+
+Points pi at the homelab's in-cluster model gateway
+(`http://model-gateway-http.aperture.svc.cluster.local/v1`, OpenAI-compatible,
+unauthenticated, served into the cluster via Tailscale). No API key in the
+image, none at runtime — and no external-DNS dependency (the gateway is
+cluster-internal, which sidesteps the broken CoreDNS external forward).
+
+```sh
+openshell sandbox create --name pi \
+  --from ghcr.io/dzungtr/pi-openshell:0.2.0-aperture \
+  --no-tty -- bash -lc 'pi -p "hi"'
+```
+
+`sandbox-policy.yaml` allows `model-gateway-http.aperture.svc.cluster.local:80`
+as an L7 (rest) endpoint in the `pi` rule — same shape as kape's
+`m1_model_gateway` rule (`controller/policy.go`).
+
+### `openrouter` — provider contract (0.1.1, issue #273)
 
 The image carries **no API key**. `profiles/openrouter/models.json` defines the
 provider without `apiKey`, pointing at `https://api.openrouter.ai/api/v1`. The
@@ -52,6 +72,7 @@ upstream re-sync:
 - pi network binaries += `/nix/var/nix/profiles/default/bin/**`
 - egress += `registry.npmjs.org` (pi extension manager)
 - egress += `api.openrouter.ai` (provider-contract credential injection)
+- egress += `model-gateway-http.aperture.svc.cluster.local:80` (aperture profile)
 
 **Schema note (issue #273):** `tls: terminate` and `enforcement: enforce` were
 removed from the openshell v0.1.0 policy schema (TLS termination is automatic).
