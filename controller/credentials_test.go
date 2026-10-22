@@ -16,6 +16,28 @@ import (
 // host:port patterns (DNS globs allowed) — these tests are the executable
 // statement of that contract.
 
+// testModelGatewayURL is the endpoint the policy tests derive the model-gateway
+// rule from. The rule carries no compiled-in endpoint: it is always derived
+// from the configured KAPE_MODEL_GATEWAY_URL.
+const testModelGatewayURL = "http://gw.kape-system.svc.cluster.local:80/v1"
+
+// mustModelGatewayRule builds the model-gateway rule for the test endpoint.
+func mustModelGatewayRule(t *testing.T) *v1.NetworkPolicyRule {
+	t.Helper()
+	rule, err := modelGatewayRule(testModelGatewayURL)
+	if err != nil {
+		t.Fatalf("modelGatewayRule(%q): %v", testModelGatewayURL, err)
+	}
+	return rule
+}
+
+// newPolicyTestGateway is a Gateway wired for the policy-merge tests: only the
+// stubbed UpdateConfig is reachable, and the configured gateway URL is the one
+// the rule is derived from.
+func newPolicyTestGateway(client v1.OpenShellClient) *Gateway {
+	return &Gateway{client: client, modelGatewayURL: testModelGatewayURL}
+}
+
 func TestParseBindings(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -171,7 +193,7 @@ func TestParseBindings_HostGlobPassthrough(t *testing.T) {
 // egress rule survives the merge byte-identical — same endpoints, same
 // binaries, same order — and the input is not mutated.
 func TestMergePolicy_AdditiveOnly(t *testing.T) {
-	gatewayRule := modelGatewayRule()
+	gatewayRule := mustModelGatewayRule(t)
 	original := proto.Clone(gatewayRule).(*v1.NetworkPolicyRule)
 
 	merged, err := MergePolicy(gatewayRule, []Binding{{
@@ -203,7 +225,7 @@ func TestMergePolicy_AdditiveOnly(t *testing.T) {
 	}
 	// The model-gateway endpoint keeps its L7 rules: no weakening.
 	for _, ep := range merged.Endpoints {
-		if ep.GetHost() == "model-gateway-http.aperture.svc.cluster.local" {
+		if ep.GetHost() == original.Endpoints[0].GetHost() {
 			if len(ep.GetRules()) != 1 || ep.GetRules()[0].GetAllow().GetPath() != "**" {
 				t.Fatalf("model-gateway endpoint lost its L7 allow: %v", ep)
 			}
@@ -299,7 +321,7 @@ func TestMergePolicy_BoundEndpoints(t *testing.T) {
 func TestMergePolicy_BinariesAllowlist(t *testing.T) {
 	// The model-gateway rule already allowlists /usr/bin/pi: the binding
 	// additions must not duplicate it.
-	merged, err := MergePolicy(modelGatewayRule(), []Binding{{Provider: "p-git", Hosts: []string{"github.com:443"}}})
+	merged, err := MergePolicy(mustModelGatewayRule(t), []Binding{{Provider: "p-git", Hosts: []string{"github.com:443"}}})
 	if err != nil {
 		t.Fatalf("MergePolicy: %v", err)
 	}
@@ -323,7 +345,7 @@ func TestMergePolicy_BinariesAllowlist(t *testing.T) {
 // TestMergePolicy_NoBindingsLeavesPolicyUnchanged: with no bindings the merge
 // is a no-op copy, so the pre-#264 policy stays byte-identical.
 func TestMergePolicy_NoBindingsLeavesPolicyUnchanged(t *testing.T) {
-	original := modelGatewayRule()
+	original := mustModelGatewayRule(t)
 	merged, err := MergePolicy(original, nil)
 	if err != nil {
 		t.Fatalf("MergePolicy: %v", err)
@@ -397,7 +419,7 @@ func (s *stubPolicyClient) UpdateConfig(ctx context.Context, req *v1.UpdateConfi
 // model-gateway rule plus one credential-binding rule, in a single update.
 func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 	client := &stubPolicyClient{}
-	gw := (&Gateway{client: client}).WithCredentialBindings([]Binding{{
+	gw := newPolicyTestGateway(client).WithCredentialBindings([]Binding{{
 		Provider: "kape-openshell-kape-github",
 		Hosts:    []string{"github.com:443", "api.github.com:443"},
 	}})
@@ -422,7 +444,7 @@ func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 	if gatewayAdd.GetRuleName() != "m1_model_gateway" {
 		t.Fatalf("op[0] rule = %q, want m1_model_gateway", gatewayAdd.GetRuleName())
 	}
-	if !proto.Equal(gatewayAdd.GetRule(), modelGatewayRule()) {
+	if !proto.Equal(gatewayAdd.GetRule(), mustModelGatewayRule(t)) {
 		t.Fatalf("op[0] rule = %v, want the model-gateway rule unchanged", gatewayAdd.GetRule())
 	}
 	bindingAdd := req.GetMergeOperations()[1].GetAddRule()
@@ -443,7 +465,7 @@ func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 // keeps the pre-#264 request shape exactly.
 func TestApplyModelGatewayPolicy_NoBindingsKeepsModelGatewayOnly(t *testing.T) {
 	client := &stubPolicyClient{}
-	gw := &Gateway{client: client}
+	gw := newPolicyTestGateway(client)
 	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
 		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
 	}
@@ -459,7 +481,7 @@ func TestApplyModelGatewayPolicy_NoBindingsKeepsModelGatewayOnly(t *testing.T) {
 // materialised aborts before the gateway is called — no half-applied policy.
 func TestApplyModelGatewayPolicy_FailClosedOnBadBinding(t *testing.T) {
 	client := &stubPolicyClient{}
-	gw := (&Gateway{client: client}).WithCredentialBindings([]Binding{{Provider: "p-git", Hosts: []string{"github.com"}}})
+	gw := newPolicyTestGateway(client).WithCredentialBindings([]Binding{{Provider: "p-git", Hosts: []string{"github.com"}}})
 
 	err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1")
 	if err == nil {
@@ -478,7 +500,7 @@ func TestApplyModelGatewayPolicy_FailClosedOnBadBinding(t *testing.T) {
 // carrying the gateway's diagnostics.
 func TestApplyModelGatewayPolicy_FailClosedOnGatewayRejection(t *testing.T) {
 	client := &stubPolicyClient{err: fmt.Errorf(`provider "kape-openshell-kape-missing" is not attached to sandbox`)}
-	gw := (&Gateway{client: client}).WithCredentialBindings([]Binding{{
+	gw := newPolicyTestGateway(client).WithCredentialBindings([]Binding{{
 		Provider: "kape-openshell-kape-missing",
 		Hosts:    []string{"github.com:443"},
 	}})

@@ -512,6 +512,7 @@ func TestHTTPDaemonClientAuthAndErrors(t *testing.T) {
 
 func TestPullTransportConfigValidation(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.ModelGatewayURL = testModelGatewayURL // required since the compiled-in default was removed
 	cfg.Transport = TransportPull
 	cfg.DaemonPort = "9090"
 	cfg.SandboxNamespace = "openshell"

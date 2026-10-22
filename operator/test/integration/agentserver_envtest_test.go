@@ -84,7 +84,7 @@ func validAgentServer(name string) *v1alpha1.KapeAgentServer {
 				Resources: v1alpha1.SandboxResources{CPU: "1", Memory: "2Gi"},
 			},
 			ModelGateway: v1alpha1.AgentServerModelGatewaySpec{
-				URL: "http://model-gateway-http.aperture.svc.cluster.local/v1",
+				URL: "http://model-gateway.kape-system.svc.cluster.local/v1",
 			},
 			Credentials: []v1alpha1.AgentServerCredentialSpec{{
 				Name:         "github",
@@ -202,7 +202,7 @@ func agentServerUnstructuredSpec() map[string]interface{} {
 			"image":     "ghcr.io/dzungtr/pi-openshell:openrouter",
 			"resources": map[string]interface{}{"cpu": "1", "memory": "2Gi"},
 		},
-		"modelGateway": map[string]interface{}{"url": "http://model-gateway-http.aperture.svc.cluster.local/v1"},
+		"modelGateway": map[string]interface{}{"url": "http://model-gateway.kape-system.svc.cluster.local/v1"},
 	}
 }
 

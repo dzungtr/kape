@@ -59,15 +59,16 @@ populated:
    ```
 
    The model gateway is unauthenticated; the dummy Bearer it receives is
-   ignored. Set `spec.modelGateway.url` to
-   `http://model-gateway-http.aperture.svc.cluster.local/v1` and every
+   ignored. Set `spec.modelGateway.url` to your in-cluster gateway base URL
+   (e.g. `http://model-gateway.<ns>.svc.cluster.local/v1`) and every
    controller-provisioned sandbox talks to the in-cluster gateway instead of
    `api.openrouter.ai`.
 
-`sandbox-policy.yaml` allows `openrouter.ai` + `api.openrouter.ai` and the
-in-cluster `model-gateway-http.aperture.svc.cluster.local:80` (L7, rest) on
-the pi binary-identity set — the same shape as kape's `m1_model_gateway` rule
-(`controller/policy.go`).
+`sandbox-policy.yaml` allows `openrouter.ai` + `api.openrouter.ai` on the pi
+binary-identity set. The in-cluster model-gateway endpoint is NOT pinned in
+the policy (no cluster-agnostic host exists): controller sandboxes get it
+from kape's `m1_model_gateway` rule (`controller/policy.go`), derived at
+runtime from the configured `KAPE_MODEL_GATEWAY_URL`.
 
 Note: the `aperture` profile existed in 0.2.0–0.2.2 releases and was dropped
 in 0.3.0 — the KapeAgentServer redirect above replaces it. `0.2.1-aperture`
@@ -82,7 +83,7 @@ upstream re-sync:
 - pi network binaries += `/nix/var/nix/profiles/default/bin/**`
 - egress += `registry.npmjs.org` (pi extension manager)
 - egress += `api.openrouter.ai` (provider-contract credential injection)
-- egress += `model-gateway-http.aperture.svc.cluster.local:80` (kape redirect target)
+- egress: the in-cluster model-gateway endpoint is NOT pinned here — it comes from kape's runtime `m1_model_gateway` rule
 
 **Schema note (issue #273):** `tls: terminate` and `enforcement: enforce` were
 removed from the openshell v0.1.0 policy schema (TLS termination is automatic).

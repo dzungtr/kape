@@ -4,20 +4,35 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
+	"strconv"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
 )
 
-// modelGatewayRule is the m1 model-gateway egress allowance: host:80, REST,
-// all methods, as binaries curl + pi/node. Without it the sandbox OPA policy
-// proxy denies egress. Built as its own value so the credential-binding merge
-// (#264) can prove it additive against precisely this rule.
-func modelGatewayRule() *v1.NetworkPolicyRule {
+// ModelGatewayRuleName is the stable name of the model-gateway egress rule. The
+// credential-binding merge (#264) proves its addition additive against exactly
+// this rule, so the name is part of the policy contract.
+const ModelGatewayRuleName = "m1_model_gateway"
+
+// modelGatewayRule is the m1 model-gateway egress allowance, derived from the
+// configured gateway URL (KAPE_MODEL_GATEWAY_URL): the sandbox may reach
+// exactly that endpoint, REST, all methods, as binaries curl + pi/node.
+// Without it the sandbox OPA policy proxy denies egress.
+//
+// The endpoint is never compiled in: patching models.json at one gateway while
+// the policy allowlists another would leave the sandbox fail-closed against its
+// own model traffic. A malformed URL is an error, not a silent fallback.
+func modelGatewayRule(endpoint string) (*v1.NetworkPolicyRule, error) {
+	host, port, err := endpointHostPort(endpoint)
+	if err != nil {
+		return nil, err
+	}
 	return &v1.NetworkPolicyRule{
-		Name: "m1_model_gateway",
+		Name: ModelGatewayRuleName,
 		Endpoints: []*v1.NetworkEndpoint{{
-			Host:     "model-gateway-http.aperture.svc.cluster.local",
-			Port:     80,
+			Host:     host,
+			Port:     port,
 			Protocol: "rest",
 			Rules: []*v1.L7Rule{{
 				Allow: &v1.L7Allow{Method: "*", Path: "**"},
@@ -28,7 +43,40 @@ func modelGatewayRule() *v1.NetworkPolicyRule {
 			{Path: "/usr/bin/curl"},
 			{Path: "/usr/bin/node"},
 		},
+	}, nil
+}
+
+// endpointHostPort splits an http(s) base URL into the policy endpoint's host
+// and port. An explicit port wins; otherwise the scheme default applies (443
+// for https, 80 for http).
+func endpointHostPort(endpoint string) (string, uint32, error) {
+	if endpoint == "" {
+		return "", 0, fmt.Errorf("model-gateway URL is empty")
 	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", 0, fmt.Errorf("parsing model-gateway URL %q: %w", endpoint, err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", 0, fmt.Errorf("model-gateway URL %q has no host", endpoint)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return "", 0, fmt.Errorf("model-gateway URL %q must be http or https", endpoint)
+	}
+	if raw := u.Port(); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 65535 {
+			return "", 0, fmt.Errorf("model-gateway URL %q has an invalid port %q", endpoint, raw)
+		}
+		return host, uint32(n), nil
+	}
+	if u.Scheme == "https" {
+		return host, 443, nil
+	}
+	return host, 80, nil
 }
 
 // ApplyModelGatewayPolicy merges a network rule allowing the sandbox to reach
@@ -38,7 +86,12 @@ func modelGatewayRule() *v1.NetworkPolicyRule {
 // the sandbox never runs with a policy that silently lost its model-gateway
 // egress or its promised credentials (fail closed).
 func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error {
-	rule := modelGatewayRule()
+	rule, err := modelGatewayRule(g.modelGatewayURL)
+	if err != nil {
+		// Fail closed before anything reaches the gateway: a policy that cannot
+		// be materialised must not leave a sandbox egressing without it.
+		return fmt.Errorf("model-gateway egress rule: %w", err)
+	}
 	ops := []*v1.PolicyMergeOperation{{
 		Operation: &v1.PolicyMergeOperation_AddRule{
 			AddRule: &v1.AddNetworkRule{RuleName: rule.GetName(), Rule: rule},
@@ -63,8 +116,7 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 		Sandbox:         sandboxName,
 		MergeOperations: ops,
 	}
-	_, err := g.client.UpdateConfig(ctx, req)
-	if err != nil {
+	if _, err := g.client.UpdateConfig(ctx, req); err != nil {
 		return fmt.Errorf("UpdateConfig(policy merge): %w", err)
 	}
 	log.Printf("[policy] model-gateway rule submitted for %s", sandboxName)

@@ -41,7 +41,7 @@ func testServer() *v1alpha1.KapeAgentServer {
 				Resources: v1alpha1.SandboxResources{CPU: "1", Memory: "2Gi"},
 			},
 			ModelGateway: v1alpha1.AgentServerModelGatewaySpec{
-				URL: "http://model-gateway-http.aperture.svc.cluster.local/v1",
+				URL: "http://model-gateway.kape-system.svc.cluster.local/v1",
 			},
 		},
 	}
@@ -101,7 +101,7 @@ func TestRenderDeploymentEnvContract(t *testing.T) {
 		"KAPE_DEFAULT_IMAGE":       "ghcr.io/dzungtr/pi-openshell:openrouter",
 		"KAPE_DEFAULT_MODEL":       "z-ai/glm-5.2",
 		"KAPE_DEFAULT_RESOURCES":   `{"cpu":"1","memory":"2Gi"}`,
-		"KAPE_MODEL_GATEWAY_URL":   "http://model-gateway-http.aperture.svc.cluster.local/v1",
+		"KAPE_MODEL_GATEWAY_URL":   "http://model-gateway.kape-system.svc.cluster.local/v1",
 		"KAPE_SERVER_DESCRIPTION":  "sre-triage: sandbox agents for the SRE alert pipeline",
 		"KAPE_CREDENTIAL_BINDINGS": "[]",
 	}, got)

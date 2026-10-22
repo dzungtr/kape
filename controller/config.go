@@ -257,7 +257,7 @@ func DefaultConfig() Config {
 		DefaultImage:          "ghcr.io/dzungtr/pi-openshell:openrouter",
 		DefaultModel:          "", // empty: the sandbox image's own model selection wins
 		DefaultResources:      Resources{CPU: "1", Memory: "2Gi"},
-		ModelGatewayURL:       "http://model-gateway-http.aperture.svc.cluster.local/v1",
+		ModelGatewayURL:       "", // no compiled-in default: the KapeAgentServer CR owns this (KAPE_MODEL_GATEWAY_URL)
 		EventStorePath:        "controller-events.db",
 		Transport:             TransportPull,
 		DaemonCommand:         "kape-daemon", // E2 default; empty = profile-hook fallback (#217)
@@ -492,7 +492,10 @@ func (c *Config) Validate() error {
 	if err := p.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	if c.ModelGatewayURL == "" || !strings.HasPrefix(c.ModelGatewayURL, "http") {
+	if c.ModelGatewayURL == "" {
+		return fieldErr("model-gateway-url", "is required: set KAPE_MODEL_GATEWAY_URL (rendered from KapeAgentServer spec.modelGateway.url)")
+	}
+	if !strings.HasPrefix(c.ModelGatewayURL, "http") {
 		return fieldErr("model-gateway-url", "must be an http(s) base URL")
 	}
 	if c.GatewayAddr == "" || c.ListenAddr == "" {

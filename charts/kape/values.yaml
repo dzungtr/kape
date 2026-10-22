@@ -27,8 +27,12 @@ agentServer:
       cpu: "1"
       memory: "2Gi"
   modelGateway:
-    # In-cluster model gateway base URL (KAPE_MODEL_GATEWAY_URL).
-    url: http://model-gateway-http.aperture.svc.cluster.local/v1
+    # In-cluster model gateway base URL (KAPE_MODEL_GATEWAY_URL) — REQUIRED.
+    # The operator renders it into the controller env and the controller derives
+    # the sandbox's model-gateway egress rule from it. There is no chart or
+    # compiled-in default: point it at *your* gateway, and rendering fails
+    # loudly when it is empty.
+    url: ""
   # credentials: generic credential registry (ADR-0088) —
   # [{"name": "github", "secretRef": {"name": "github-token"},
   #   "providerType": "git-https", "hostPatterns": ["github.com:443"]}].
