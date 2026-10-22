@@ -1,0 +1,125 @@
+{
+  "providers": {
+    "openrouter": {
+      "name": "OpenRouter",
+      "baseUrl": "https://api.openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "apiKey": "$OPENROUTER_API_KEY",
+      "headers": {
+        "X-Title": "pi coding agent"
+      },
+      "models": [
+        {
+          "id": "z-ai/glm-5.2",
+          "name": "open-glm",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openrouter",
+            "supportsReasoningEffort": true
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 262144,
+          "cost": {
+            "input": 1.19,
+            "output": 3.74,
+            "cacheRead": 0.221,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "z-ai/glm-5.3",
+          "name": "GLM-5.3",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openrouter",
+            "supportsReasoningEffort": true
+          },
+          "contextWindow": 1310720,
+          "maxTokens": 131072,
+          "cost": {
+            "input": 1.4,
+            "output": 4.4,
+            "cacheRead": 0.26,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "name": "glm-5.3-flash",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "minimal",
+            "medium": "medium",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openrouter",
+            "supportsReasoningEffort": true
+          },
+          "contextWindow": 1310720,
+          "maxTokens": 131072,
+          "input": ["text", "image"],
+          "cost": {
+            "input": 0.075,
+            "output": 0.25,
+            "cacheRead": 0.015,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "minimax/minimax-m3",
+          "name": "minimax-m3",
+          "contextWindow": 1048576,
+          "maxTokens": 512000,
+          "input": ["text", "image"],
+          "cost": {
+            "input": 0.3,
+            "output": 1.2,
+            "cacheRead": 0.06,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "tencent/hy3",
+          "name": "hy3",
+          "contextWindow": 262144,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0.132,
+            "output": 0.528,
+            "cacheRead": 0.033,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "google/gemma-4-26b-a4b-it",
+          "name": "gemma-4-26b",
+          "contextWindow": 262144,
+          "maxTokens": 16384,
+          "input": ["text", "image"],
+          "cost": {
+            "input": 0.07,
+            "output": 0.34,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}

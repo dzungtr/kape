@@ -1,0 +1,12 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "dependencies": {
+    "@desek/pi-opentelemetry": "^0.1.1",
+    "@dzungtr/dual-models": "^0.0.2",
+    "@tigorhutasuhut/pi-rules": "^0.6.0",
+    "pi-claude-marketplace": "^0.20.1",
+    "pi-mcp-adapter": "^5.3.1",
+    "pi-subagents": "^0.78.0"
+  }
+}
