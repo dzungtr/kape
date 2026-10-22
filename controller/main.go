@@ -61,6 +61,7 @@ func main() {
 	}
 	gw := NewGateway(conn, cfg.ModelGatewayURL).WithDaemonToken(cfg.DaemonToken).
 		WithDaemonCommand(cfg.DaemonCommandArgv()).
+		WithDaemonPort(cfg.DaemonPort).
 		WithCredentialBindings(cfg.CredentialBindings)
 
 	// Durable event store (issue #195): one controller-local single-file log,

@@ -91,6 +91,7 @@ type Gateway struct {
 	workspace          string    // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
 	daemonToken        string    // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
 	daemonCommand      []string  // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
+	daemonPort         string    // in-sandbox daemon port the resolver dials (D7, default 9090); the daemon is told to bind it on all interfaces
 	credentialBindings []Binding // env-fed credential binding table (KAPE_CREDENTIAL_BINDINGS, issue #264/H1); empty keeps the policy merge byte-identical
 }
 
@@ -132,6 +133,15 @@ func (g *Gateway) WithCredentialBindings(bindings []Binding) *Gateway {
 // lifetime == sandbox lifetime. Nil/empty keeps the request without a
 // command (gateway default main process — the #217 profile-hook fallback
 // posture).
+// WithDaemonPort sets the fixed in-sandbox daemon port the controller dials
+// (KAPE_DAEMON_PORT, D7). It is threaded into the daemon environment as the
+// bind address, so the port the controller dials and the port the daemon
+// listens on can never drift apart.
+func (g *Gateway) WithDaemonPort(port string) *Gateway {
+	g.daemonPort = port
+	return g
+}
+
 func (g *Gateway) WithDaemonCommand(argv []string) *Gateway {
 	g.daemonCommand = argv
 	return g
@@ -168,6 +178,17 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 			env = map[string]string{}
 		}
 		env["KAPE_SPOOL_PATH"] = "/sandbox/kape-daemon-spool.jsonl"
+		// The daemon's compiled default is 127.0.0.1:<port>, but the controller
+		// dials the sandbox POD IP (:9090) through the CR resolver, so a
+		// loopback bind is unreachable and every prompt dies as
+		// "daemon rejected prompt: ... context deadline exceeded". Bind the
+		// configured port on all interfaces instead; the sandbox's egress
+		// policy still governs what the daemon can reach.
+		port := g.daemonPort
+		if port == "" {
+			port = "9090"
+		}
+		env["KAPE_DAEMON_ADDR"] = "0.0.0.0:" + port
 	}
 	return env
 }
