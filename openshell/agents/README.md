@@ -22,52 +22,56 @@ the version (issue #273).
 ## Versioning & release
 
 ```
-make bump-patch        # VERSION 0.2.0 -> 0.2.1
+make bump-patch        # VERSION 0.3.0 -> 0.3.1
 make push              # build + push ghcr.io/dzungtr/pi-openshell:<v>-<profile> and :<profile>
 ```
 
-## Profiles
+## The `openrouter` profile — provider contract + kape redirect
 
-### `aperture` (default since 0.2.0) — in-cluster model gateway
+The image carries **no literal API key**. `profiles/openrouter/models.json`
+defines the provider with `"apiKey": "$OPENROUTER_API_KEY"` — an env
+reference, resolved at runtime, never a baked secret. Two ways the env gets
+populated:
 
-Points pi at the homelab's in-cluster model gateway
-(`http://model-gateway-http.aperture.svc.cluster.local/v1`, OpenAI-compatible,
-unauthenticated, served into the cluster via Tailscale). No API key in the
-image, none at runtime — and no external-DNS dependency (the gateway is
-cluster-internal, which sidesteps the broken CoreDNS external forward).
+1. **Ad-hoc / CLI sandboxes — openshell provider contract (issue #273):**
+   attach the gateway's `openrouter` provider profile; it injects the
+   credential at the sandbox egress proxy, so the key never enters the
+   sandbox. pi's requests to `api.openrouter.ai` get the real `Authorization`
+   header added in-flight:
 
-```sh
-openshell sandbox create --name pi \
-  --from ghcr.io/dzungtr/pi-openshell:0.2.0-aperture \
-  --no-tty -- bash -lc 'pi -p "hi"'
-```
+   ```sh
+   openshell sandbox create --name pi \
+     --from ghcr.io/dzungtr/pi-openshell:0.3.0-openrouter \
+     --provider openrouter --no-tty -- bash -lc 'pi -p "hi"'
+   ```
 
-`sandbox-policy.yaml` allows `model-gateway-http.aperture.svc.cluster.local:80`
-as an L7 (rest) endpoint in the `pi` rule — same shape as kape's
-`m1_model_gateway` rule (`controller/policy.go`).
+2. **kape-controller sandboxes — KapeAgentServer CR redirect:** pi cannot
+   env-interpolate `baseUrl` (only `apiKey`/headers), so the redirect to the
+   in-cluster model gateway is NOT an env var — it is a models.json patch at
+   provision time, sourced from the CR:
 
-**`apiKey: "not-required"` is load-bearing:** pi's `openai-completions`
-provider path refuses to run without a resolved key ("No API key found for
-the selected model" — `authHeader: false` does not bypass it). The dummy
-value is sent as `Bearer not-required`; the gateway is unauthenticated and
-ignores it.
+   ```
+   KapeAgentServer spec.modelGateway.url            (CR field)
+     → KAPE_MODEL_GATEWAY_URL env on the controller   (operator render.go)
+     → ModelGatewayURL controller config               (config.go)
+     → piWrapperCommand patches providers.openrouter.baseUrl in models.json
+       + injects OPENROUTER_API_KEY=dummy, PI_PROVIDER=openrouter (gateway.go)
+   ```
 
-### `openrouter` — provider contract (0.1.1, issue #273)
+   The model gateway is unauthenticated; the dummy Bearer it receives is
+   ignored. Set `spec.modelGateway.url` to
+   `http://model-gateway-http.aperture.svc.cluster.local/v1` and every
+   controller-provisioned sandbox talks to the in-cluster gateway instead of
+   `api.openrouter.ai`.
 
-The image carries **no API key**. `profiles/openrouter/models.json` defines the
-provider without `apiKey`, pointing at `https://api.openrouter.ai/api/v1`. The
-credential is injected by the gateway's `openrouter` provider profile at the
-sandbox egress proxy (Bearer `Authorization` header), so the key never enters
-the sandbox:
+`sandbox-policy.yaml` allows `openrouter.ai` + `api.openrouter.ai` and the
+in-cluster `model-gateway-http.aperture.svc.cluster.local:80` (L7, rest) on
+the pi binary-identity set — the same shape as kape's `m1_model_gateway` rule
+(`controller/policy.go`).
 
-```sh
-openshell sandbox create --name pi \
-  --from ghcr.io/dzungtr/pi-openshell:0.1.1-openrouter \
-  --provider openrouter --no-tty -- bash -lc 'pi -p "hi"'
-```
-
-`sandbox-policy.yaml` allows both `openrouter.ai` and `api.openrouter.ai` on
-the pi binary-identity set.
+Note: the `aperture` profile existed in 0.2.0–0.2.2 releases and was dropped
+in 0.3.0 — the KapeAgentServer redirect above replaces it. `0.2.1-aperture`
+was briefly published without the load-bearing dummy key; ignore that tag.
 
 ## Policy deltas vs upstream
 
@@ -78,7 +82,7 @@ upstream re-sync:
 - pi network binaries += `/nix/var/nix/profiles/default/bin/**`
 - egress += `registry.npmjs.org` (pi extension manager)
 - egress += `api.openrouter.ai` (provider-contract credential injection)
-- egress += `model-gateway-http.aperture.svc.cluster.local:80` (aperture profile)
+- egress += `model-gateway-http.aperture.svc.cluster.local:80` (kape redirect target)
 
 **Schema note (issue #273):** `tls: terminate` and `enforcement: enforce` were
 removed from the openshell v0.1.0 policy schema (TLS termination is automatic).
