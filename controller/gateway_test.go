@@ -393,3 +393,40 @@ func TestProbeModelGateway_UsesConfiguredEndpoint(t *testing.T) {
 		t.Fatalf("probe command = %q, want it to GET %s", cmd, want)
 	}
 }
+
+// TestCreateSandboxRequest_AttachesCredentialProviders is the kape#274 AC2/AC3
+// guard: NetworkCredentialBinding.provider must be "attached to this sandbox"
+// or the egress proxy cannot resolve a credential, so the binding providers
+// ride the same CreateSandbox request as the model provider.
+func TestCreateSandboxRequest_AttachesCredentialProviders(t *testing.T) {
+	gw := (&Gateway{}).
+		WithCredentialBindings([]Binding{
+			{Provider: "kape-kape-system-default-github", Hosts: []string{"github.com:443"}},
+			{Provider: "another-cred", Hosts: []string{"git.example.com:443"}},
+		})
+	req := gw.createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	got := req.GetSpec().GetProviders()
+	want := []string{"openrouter", "kape-kape-system-default-github", "another-cred"}
+	if len(got) != len(want) {
+		t.Fatalf("providers = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("providers = %v, want %v", got, want)
+		}
+	}
+
+	// No bindings: byte-identical to the pre-#264 posture.
+	bare := (&Gateway{}).createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	if p := bare.GetSpec().GetProviders(); len(p) != 1 || p[0] != "openrouter" {
+		t.Fatalf("providers without bindings = %v, want [openrouter]", p)
+	}
+
+	// A binding naming the model provider must not duplicate it.
+	dup := (&Gateway{}).
+		WithCredentialBindings([]Binding{{Provider: "openrouter", Hosts: []string{"x:443"}}}).
+		createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	if p := dup.GetSpec().GetProviders(); len(p) != 1 {
+		t.Fatalf("providers = %v, want [openrouter] with no duplicate", p)
+	}
+}

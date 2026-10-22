@@ -193,6 +193,31 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 	return env
 }
 
+// sandboxProviders returns the provider list a created sandbox must carry: the
+// model provider plus every credential-binding provider (ADR-0088).
+//
+// NetworkCredentialBinding.provider names "a provider ATTACHED TO THIS
+// SANDBOX", so a binding whose provider is not attached can never resolve a
+// credential — the egress proxy would admit the endpoint with no Authorization
+// header and git/gh would fail as an anonymous 401. Attaching here keeps the
+// attachment and the policy merge in lockstep: both read the same binding
+// table.
+func (g *Gateway) sandboxProviders(modelProvider string) []string {
+	providers := []string{modelProvider}
+	seen := map[string]bool{}
+	if modelProvider != "" {
+		seen[modelProvider] = true
+	}
+	for _, binding := range g.credentialBindings {
+		if binding.Provider == "" || seen[binding.Provider] {
+			continue
+		}
+		seen[binding.Provider] = true
+		providers = append(providers, binding.Provider)
+	}
+	return providers
+}
+
 // createSandboxRequest builds the CreateSandboxRequest payload; split out of
 // CreateSandbox so the E2 wire contract (command threading, field 12) is
 // unit-testable without a gRPC server.
@@ -202,7 +227,7 @@ func (g *Gateway) createSandboxRequest(name, image, provider string, resources R
 		Name:           name,
 		Labels:         labels,
 		Spec: &v1.SandboxSpec{
-			Providers: []string{provider},
+			Providers: g.sandboxProviders(provider),
 			Template: &v1.SandboxTemplate{
 				Image: image,
 				Resources: &structpb.Struct{
