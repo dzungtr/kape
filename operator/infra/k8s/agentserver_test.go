@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -171,6 +172,38 @@ func TestAgentServerAdapterApplyIsConvergent(t *testing.T) {
 // patching on it bumped metadata.generation on every reconcile — the rendered
 // controller Deployment never reported availability. An existing object that
 // already satisfies every rendered field must not be patched.
+// TestAgentServerAdapterApplyKeepsForeignMetadata pins the fix for the write
+// fight: the renderer owns only its own labels/annotations, so a re-apply must
+// leave foreign metadata alone. On the live cluster the previous wholesale
+// assignment nulled `deployment.kubernetes.io/revision` on every reconcile, the
+// Deployment controller re-added it, and the object was rewritten in a loop
+// (generation 4166 -> 4172 in 20s) so Ready never became True.
+func TestAgentServerAdapterApplyKeepsForeignMetadata(t *testing.T) {
+	server := agentServer()
+	a, c := newAgentServerAdapter()
+	ctx := context.Background()
+	desired := agentserver.Render(server, nil)
+
+	require.NoError(t, a.Apply(ctx, server, desired, testWiring()))
+
+	var live appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &live))
+	live.Annotations = map[string]string{"deployment.kubernetes.io/revision": "139"}
+	live.Labels["platform.example.com/owner"] = "platform-team"
+	require.NoError(t, c.Update(ctx, &live))
+
+	var tagged appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &tagged))
+
+	require.NoError(t, a.Apply(ctx, server, desired, testWiring()))
+	var after appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &after))
+
+	assert.Equal(t, "139", after.Annotations["deployment.kubernetes.io/revision"], "foreign annotations must survive")
+	assert.Equal(t, "platform-team", after.Labels["platform.example.com/owner"], "foreign labels must survive")
+	assert.Equal(t, tagged.ResourceVersion, after.ResourceVersion, "a re-apply with only foreign metadata must not patch")
+}
+
 func TestAgentServerAdapterApplyIgnoresAPIDefaults(t *testing.T) {
 	server := agentServer()
 	a, c := newAgentServerAdapter()
@@ -189,6 +222,16 @@ func TestAgentServerAdapterApplyIgnoresAPIDefaults(t *testing.T) {
 	live.Spec.Template.Spec.Containers[0].ReadinessProbe.SuccessThreshold = 1
 	live.Spec.Template.Spec.Containers[0].ReadinessProbe.TimeoutSeconds = 1
 	live.Spec.Template.Spec.Volumes[0].Secret.DefaultMode = func() *int32 { m := int32(420); return &m }()
+	// Deployment-level defaults the renderer never sets.
+	live.Spec.RevisionHistoryLimit = func() *int32 { r := int32(10); return &r }()
+	live.Spec.ProgressDeadlineSeconds = func() *int32 { p := int32(600); return &p }()
+	live.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
+			MaxSurge:       &intstr.IntOrString{Type: intstr.String, StrVal: "25%"},
+		},
+	}
 	require.NoError(t, c.Update(ctx, &live))
 
 	var defaulted appsv1.Deployment
