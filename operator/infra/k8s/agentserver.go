@@ -112,8 +112,15 @@ func (a *AgentServerAdapter) ensure(ctx context.Context, server *v1alpha1.KapeAg
 	}
 
 	patched := existing.DeepCopyObject().(client.Object)
-	patched.SetLabels(desired.GetLabels())
-	patched.SetAnnotations(desired.GetAnnotations())
+	// Merge, never replace: the renderer owns only its own keys. Assigning the
+	// desired maps wholesale makes the merge patch null out every other key —
+	// including annotations the platform maintains. On the live cluster that
+	// deleted `deployment.kubernetes.io/revision` on every reconcile; the
+	// Deployment controller re-added it immediately, so the object was written
+	// in a loop, metadata.generation ran ahead of status.observedGeneration and
+	// the KapeAgentServer could never report Ready.
+	patched.SetLabels(mergeMaps(existing.GetLabels(), desired.GetLabels()))
+	patched.SetAnnotations(mergeMaps(existing.GetAnnotations(), desired.GetAnnotations()))
 	patched.SetOwnerReferences(desired.GetOwnerReferences())
 	if err := applySpec(patched, desired); err != nil {
 		return err
@@ -262,6 +269,22 @@ func inheritValue(d, l reflect.Value) {
 			}
 		}
 	}
+}
+
+// mergeMaps returns base with overlaid keys winning. A nil overlay returns base
+// untouched (so an object with no rendered metadata keeps whatever it has).
+func mergeMaps(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	merged := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range overlay {
+		merged[k] = v
+	}
+	return merged
 }
 
 func ownedBy(obj client.Object, serverName string) bool {
