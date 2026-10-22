@@ -46,6 +46,12 @@ openshell sandbox create --name pi \
 as an L7 (rest) endpoint in the `pi` rule — same shape as kape's
 `m1_model_gateway` rule (`controller/policy.go`).
 
+**`apiKey: "not-required"` is load-bearing:** pi's `openai-completions`
+provider path refuses to run without a resolved key ("No API key found for
+the selected model" — `authHeader: false` does not bypass it). The dummy
+value is sent as `Bearer not-required`; the gateway is unauthenticated and
+ignores it.
+
 ### `openrouter` — provider contract (0.1.1, issue #273)
 
 The image carries **no API key**. `profiles/openrouter/models.json` defines the

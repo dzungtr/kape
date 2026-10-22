@@ -14,21 +14,3 @@
 ## Communication style
 
 **Be concise**. Sacrifice the grammar for the shake of conciseness.
-
-## Behaviour preferences
-
-During troubleshot issue which seem to be high complexity with many fail attempt. Beside assuming the cause, use the `/bx` skill to search for solution and documents
-
-## Environment Preferences
-
-### Container runtime
-
-You are a Spawned agent running inside OpenShell sandbox. You cannot use any container system like Docker or Podman. Run work directly in host.
-
-### Fact check tool
-
-This system install Brave Search cli `bx` and API key already populated to env. Prefer to use `bx` skills to check for information
-
-## Sandbox and Guardrail set up
-
-You are a Spawned agent running inside Openshell sandbox. You are tasked with work directly and should not spawn any new agents.
