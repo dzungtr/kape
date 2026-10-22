@@ -55,7 +55,7 @@ func newAgentServer() *v1alpha1.KapeAgentServer {
 				Resources: v1alpha1.SandboxResources{CPU: "1", Memory: "2Gi"},
 			},
 			ModelGateway: v1alpha1.AgentServerModelGatewaySpec{
-				URL: "http://gw.aperture.svc.cluster.local/v1",
+				URL: "http://gw.kape-system.svc.cluster.local/v1",
 			},
 		},
 	}

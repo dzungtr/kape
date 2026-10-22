@@ -103,19 +103,12 @@ network_policies:
       - { host: api.enterprise.githubcopilot.com, port: 443 }
       - { host: copilot-proxy.githubusercontent.com, port: 443 }
       - { host: default.exp-tas.com, port: 443 }
-      # pi-openshell 0.3.0: in-cluster model gateway — L7 (rest) endpoint, same
-      # shape as kape's m1_model_gateway rule (controller/policy.go). The
-      # controller redirects providers.openrouter.baseUrl here at provision
-      # time (KapeAgentServer spec.modelGateway.url → KAPE_MODEL_GATEWAY_URL →
-      # models.json patch); ad-hoc sandboxes may patch models.json the same
-      # way. Port 80, unauthenticated, OpenAI-compatible.
-      - host: model-gateway-http.aperture.svc.cluster.local
-        port: 80
-        protocol: rest
-        rules:
-          - allow:
-              method: "*"
-              path: "**"
+      # pi-openshell 0.3.0: the in-cluster model-gateway endpoint is NOT
+      # pinned here — there is no cluster-agnostic host to hardcode. Controller
+      # sandboxes get their gateway egress from kape's m1_model_gateway rule
+      # (controller/policy.go), derived at runtime from the configured
+      # KAPE_MODEL_GATEWAY_URL (KapeAgentServer spec.modelGateway.url). Ad-hoc
+      # sandboxes must carry their own gateway endpoint in their policy.
     binaries:
       - { path: /usr/bin/pi }
       - { path: /usr/local/bin/pi }

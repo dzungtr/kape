@@ -149,7 +149,7 @@ Resolution: compiled default → `KAPE_*` env → flag (flag wins).
 | default provider | `KAPE_DEFAULT_PROVIDER` | `-provider` | `openrouter-spike` |
 | default image | `KAPE_DEFAULT_IMAGE` | `-image` | `ghcr.io/dzungtr/pi-openshell:openrouter` |
 | default resources | `KAPE_DEFAULT_RESOURCES` (JSON) | `-resources` | `{"cpu":"1","memory":"2Gi"}` |
-| model-gateway URL | `KAPE_MODEL_GATEWAY_URL` | `-model-gateway-url` | `http://model-gateway-http.aperture.svc.cluster.local/v1` |
+| model-gateway URL | `KAPE_MODEL_GATEWAY_URL` | `-model-gateway-url` | none — required (set via `KapeAgentServer` `spec.modelGateway.url`) |
 | event store file | `KAPE_EVENT_STORE` | `-event-store` | `controller-events.db` |
 | daemon port (fixed) | `KAPE_DAEMON_PORT` | `-daemon-port` | `9090` |
 | sandbox namespace | `KAPE_SANDBOX_NAMESPACE` | `-sandbox-namespace` | `openshell` |

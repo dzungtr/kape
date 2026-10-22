@@ -14,7 +14,7 @@
     },
     {
       "name": "KAPE_MODEL_GATEWAY_URL",
-      "value": "http://model-gateway-http.aperture.svc.cluster.local/v1"
+      "value": "http://model-gateway.kape-system.svc.cluster.local/v1"
     },
     {
       "name": "KAPE_SERVER_DESCRIPTION",

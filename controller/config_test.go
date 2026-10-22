@@ -15,6 +15,9 @@ func testConfig() Config {
 	cfg := DefaultConfig()
 	cfg.DefaultImage = "pi-image"
 	cfg.DefaultProvider = "openrouter-spike"
+	// The model-gateway URL has no compiled-in default (the KapeAgentServer CR
+	// owns it), so a valid test config supplies one.
+	cfg.ModelGatewayURL = testModelGatewayURL
 	// The exec-pump tests exercise the demoted break-glass transport path
 	// (issue #212); pull-transport tests use pullTestConfig in puller_test.
 	cfg.Transport = TransportExec

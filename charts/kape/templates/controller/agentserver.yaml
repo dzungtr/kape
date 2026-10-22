@@ -29,7 +29,7 @@ spec:
       cpu: {{ .Values.agentServer.sandbox.resources.cpu | quote }}
       memory: {{ .Values.agentServer.sandbox.resources.memory | quote }}
   modelGateway:
-    url: {{ .Values.agentServer.modelGateway.url | quote }}
+    url: {{ required "agentServer.modelGateway.url is required: the in-cluster model gateway base URL (KAPE_MODEL_GATEWAY_URL) has no default" .Values.agentServer.modelGateway.url | quote }}
   credentials:
 {{ toYaml (.Values.agentServer.credentials | default list) | indent 4 }}
 {{- if or .Values.agentServer.network.ingress.enabled .Values.agentServer.network.egressPolicyRefs }}

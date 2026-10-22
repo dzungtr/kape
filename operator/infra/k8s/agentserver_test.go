@@ -45,7 +45,7 @@ func agentServer() *v1alpha1.KapeAgentServer {
 				Model:     "z-ai/glm-5.2",
 				Resources: v1alpha1.SandboxResources{CPU: "1", Memory: "2Gi"},
 			},
-			ModelGateway: v1alpha1.AgentServerModelGatewaySpec{URL: "http://gw.aperture.svc.cluster.local/v1"},
+			ModelGateway: v1alpha1.AgentServerModelGatewaySpec{URL: "http://gw.kape-system.svc.cluster.local/v1"},
 		},
 	}
 }
@@ -94,7 +94,7 @@ func TestAgentServerAdapterApplyCreatesRenderedObjects(t *testing.T) {
 	assert.Equal(t, "pi-image", env["KAPE_DEFAULT_IMAGE"])
 	assert.Equal(t, "z-ai/glm-5.2", env["KAPE_DEFAULT_MODEL"])
 	assert.Equal(t, `{"cpu":"1","memory":"2Gi"}`, env["KAPE_DEFAULT_RESOURCES"])
-	assert.Equal(t, "http://gw.aperture.svc.cluster.local/v1", env["KAPE_MODEL_GATEWAY_URL"])
+	assert.Equal(t, "http://gw.kape-system.svc.cluster.local/v1", env["KAPE_MODEL_GATEWAY_URL"])
 	assert.Equal(t, "sre-triage", env["KAPE_SERVER_DESCRIPTION"])
 	assert.Equal(t, "[]", env["KAPE_CREDENTIAL_BINDINGS"])
 	assert.Equal(t, "openshell.openshell.svc.cluster.local:8080", env["KAPE_GATEWAY_ADDR"])
@@ -377,7 +377,7 @@ func TestControllerEnvContractIsNeverShadowed(t *testing.T) {
 	assert.Equal(t, "pi-image", env["KAPE_DEFAULT_IMAGE"])
 	assert.Equal(t, "z-ai/glm-5.2", env["KAPE_DEFAULT_MODEL"])
 	assert.Equal(t, `{"cpu":"1","memory":"2Gi"}`, env["KAPE_DEFAULT_RESOURCES"])
-	assert.Equal(t, "http://gw.aperture.svc.cluster.local/v1", env["KAPE_MODEL_GATEWAY_URL"])
+	assert.Equal(t, "http://gw.kape-system.svc.cluster.local/v1", env["KAPE_MODEL_GATEWAY_URL"])
 	assert.Equal(t, "sre-triage", env["KAPE_SERVER_DESCRIPTION"])
 	assert.Equal(t, "[]", env["KAPE_CREDENTIAL_BINDINGS"])
 	assert.Equal(t, "5", env["KAPE_REVIVE_MAX"], "non-contract passthrough entries still ride along")

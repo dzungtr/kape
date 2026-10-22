@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -151,6 +152,7 @@ type recordingClient struct {
 	listPages     []*v1.ListSandboxesRequest
 	updateConfig  []*v1.UpdateConfigRequest
 	execStarted   *v1.ExecSandboxRequest
+	execOneShot   []*v1.ExecSandboxRequest
 }
 
 func (c *recordingClient) CreateSandbox(ctx context.Context, in *v1.CreateSandboxRequest, _ ...grpc.CallOption) (*v1.SandboxResponse, error) {
@@ -187,6 +189,28 @@ func (c *recordingClient) ListSandboxes(ctx context.Context, in *v1.ListSandboxe
 func (c *recordingClient) UpdateConfig(ctx context.Context, in *v1.UpdateConfigRequest, _ ...grpc.CallOption) (*v1.UpdateConfigResponse, error) {
 	c.updateConfig = append(c.updateConfig, in)
 	return &v1.UpdateConfigResponse{}, nil
+}
+
+// ExecSandbox: one-shot exec (ProbeModelGateway). The probe returns the
+// command's stdout as a single stream event so the caller drains cleanly.
+type oneShotExecStream struct {
+	grpc.ClientStream
+	sent bool
+}
+
+func (s *oneShotExecStream) Recv() (*v1.ExecSandboxEvent, error) {
+	if s.sent {
+		return nil, io.EOF
+	}
+	s.sent = true
+	return &v1.ExecSandboxEvent{
+		Payload: &v1.ExecSandboxEvent_Stdout{Stdout: &v1.ExecSandboxStdout{Data: []byte("HTTP 200")}},
+	}, nil
+}
+
+func (c *recordingClient) ExecSandbox(ctx context.Context, in *v1.ExecSandboxRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[v1.ExecSandboxEvent], error) {
+	c.execOneShot = append(c.execOneShot, in)
+	return &oneShotExecStream{}, nil
 }
 
 type recordingExecStream struct {
@@ -330,5 +354,27 @@ func TestGateway_ControllerEgressDenyTargetsAllowEndpoint(t *testing.T) {
 	}
 	if len(target.GetBinaries()) != 0 {
 		t.Fatalf("deny target declared binaries alongside any_binary: %v", target.GetBinaries())
+	}
+}
+
+// TestProbeModelGateway_UsesConfiguredEndpoint: the startup probe targets the
+// same gateway the pi wrapper patches models.json to. A compiled-in probe host
+// would report on an endpoint the sandbox is not configured to reach.
+func TestProbeModelGateway_UsesConfiguredEndpoint(t *testing.T) {
+	rec := &recordingClient{}
+	gw := NewGateway(nil, "https://gateway.example.com:8443/openai/v1")
+	gw.client = rec
+
+	gw.ProbeModelGateway(context.Background(), "sbx-1")
+
+	if len(rec.execOneShot) != 1 {
+		t.Fatalf("ExecSandbox calls = %d, want exactly 1 probe", len(rec.execOneShot))
+	}
+	if got := rec.execOneShot[0].GetSandbox(); got != "sbx-1" {
+		t.Fatalf("probe sandbox = %q, want sbx-1", got)
+	}
+	cmd := strings.Join(rec.execOneShot[0].GetCommand(), " ")
+	if want := "https://gateway.example.com:8443/openai/v1/models"; !strings.Contains(cmd, want) {
+		t.Fatalf("probe command = %q, want it to GET %s", cmd, want)
 	}
 }

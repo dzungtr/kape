@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -307,13 +308,17 @@ func (g *Gateway) DeleteSandbox(ctx context.Context, name string) error {
 }
 
 // ProbeModelGateway runs a one-shot exec inside the sandbox to probe the
-// in-cluster model gateway and logs the result. Used to validate /v1/models
-// reachability and auth before pi starts.
+// configured model gateway and logs the result. Used to validate /models
+// reachability and auth before pi starts. The probe targets the same endpoint
+// the pi wrapper is about to use — a probe of any other host would report on
+// something the sandbox is not configured to reach.
 func (g *Gateway) ProbeModelGateway(ctx context.Context, sandbox string) {
+	modelsURL := strings.TrimSuffix(g.modelGatewayURL, "/") + "/models"
+	quoted := fmt.Sprintf("%q", modelsURL)
 	cmd := []string{"bash", "-lc",
-		"curl -s -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' http://model-gateway-http.aperture.svc.cluster.local/v1/models " +
-			"&& echo '--- body ---' " +
-			"&& curl -s -m 8 http://model-gateway-http.aperture.svc.cluster.local/v1/models | head -c 2000 || echo 'curl missing/failed'"}
+		"curl -s -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' " + quoted +
+			" && echo '--- body ---' " +
+			"&& curl -s -m 8 " + quoted + " | head -c 2000 || echo 'curl missing/failed'"}
 	req := &v1.ExecSandboxRequest{WorkspaceScope: g.scope(), Sandbox: sandbox, Command: cmd}
 	stream, err := g.client.ExecSandbox(ctx, req)
 	if err != nil {
@@ -334,7 +339,7 @@ func (g *Gateway) ProbeModelGateway(ctx context.Context, sandbox string) {
 			out += string(p.Stderr.Data)
 		}
 	}
-	log.Printf("[probe] model-gateway GET /v1/models -> %s", out)
+	log.Printf("[probe] model-gateway GET %s -> %s", modelsURL, out)
 }
 
 // StartPi opens an interactive exec stream running the pi RPC wrapper and
