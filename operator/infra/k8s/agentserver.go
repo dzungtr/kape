@@ -160,14 +160,25 @@ func (a *AgentServerAdapter) prune(ctx context.Context, server *v1alpha1.KapeAge
 func applySpec(patched, desired client.Object) error {
 	switch d := desired.(type) {
 	case *appsv1.Deployment:
-		patched.(*appsv1.Deployment).Spec = d.Spec
+		live := patched.(*appsv1.Deployment)
+		inheritPodDefaults(&d.Spec.Template.Spec, &live.Spec.Template.Spec)
+		// Replicas/strategy keep the live values for the same reason: the
+		// renderer does not own them, so it must not zero them.
+		if d.Spec.Strategy.Type == "" {
+			d.Spec.Strategy = live.Spec.Strategy
+		}
+		live.Spec = d.Spec
 	case *corev1.Service:
 		live := patched.(*corev1.Service)
 		live.Spec.Type = d.Spec.Type
 		live.Spec.Selector = d.Spec.Selector
 		live.Spec.Ports = d.Spec.Ports
 	case *networkingv1.Ingress:
-		patched.(*networkingv1.Ingress).Spec = d.Spec
+		live := patched.(*networkingv1.Ingress)
+		if d.Spec.IngressClassName == nil {
+			d.Spec.IngressClassName = live.Spec.IngressClassName
+		}
+		live.Spec = d.Spec
 	case *corev1.ServiceAccount:
 		// Ownership metadata is the whole desired state of a ServiceAccount.
 	case *rbacv1.RoleBinding:
@@ -178,6 +189,98 @@ func applySpec(patched, desired client.Object) error {
 		return fmt.Errorf("unsupported object type %T", desired)
 	}
 	return nil
+}
+
+// inheritPodDefaults copies the API server's own defaulting into the rendered pod
+// spec for every field the renderer does not set. Without it, `live.Spec =
+// d.Spec` resets defaults to their zero values, the merge patch diff is never
+// empty against a live object, and every reconcile bumps
+// metadata.generation — leaving the controller Deployment permanently
+// unavailable (observed as a hot loop, generation 1309 → 1511 in 20s).
+func inheritPodDefaults(desired, live *corev1.PodSpec) {
+	if desired.DNSPolicy == "" {
+		desired.DNSPolicy = live.DNSPolicy
+	}
+	if desired.RestartPolicy == "" {
+		desired.RestartPolicy = live.RestartPolicy
+	}
+	if desired.SchedulerName == "" {
+		desired.SchedulerName = live.SchedulerName
+	}
+	if desired.TerminationGracePeriodSeconds == nil {
+		desired.TerminationGracePeriodSeconds = live.TerminationGracePeriodSeconds
+	}
+	if desired.SecurityContext == nil {
+		desired.SecurityContext = live.SecurityContext
+	}
+	if desired.ServiceAccountName == "" {
+		desired.ServiceAccountName = live.ServiceAccountName
+	}
+	liveContainers := make(map[string]*corev1.Container, len(live.Containers))
+	for i := range live.Containers {
+		liveContainers[live.Containers[i].Name] = &live.Containers[i]
+	}
+	for i := range desired.Containers {
+		inheritContainerDefaults(&desired.Containers[i], liveContainers[desired.Containers[i].Name])
+	}
+	liveVolumes := make(map[string]*corev1.Volume, len(live.Volumes))
+	for i := range live.Volumes {
+		liveVolumes[live.Volumes[i].Name] = &live.Volumes[i]
+	}
+	for i := range desired.Volumes {
+		inheritVolumeDefaults(&desired.Volumes[i], liveVolumes[desired.Volumes[i].Name])
+	}
+}
+
+func inheritContainerDefaults(desired, live *corev1.Container) {
+	if live == nil {
+		return
+	}
+	if desired.TerminationMessagePath == "" {
+		desired.TerminationMessagePath = live.TerminationMessagePath
+	}
+	if desired.TerminationMessagePolicy == "" {
+		desired.TerminationMessagePolicy = live.TerminationMessagePolicy
+	}
+	if desired.SecurityContext == nil {
+		desired.SecurityContext = live.SecurityContext
+	}
+	inheritProbeDefaults(desired.ReadinessProbe, live.ReadinessProbe)
+	inheritProbeDefaults(desired.LivenessProbe, live.LivenessProbe)
+	inheritProbeDefaults(desired.StartupProbe, live.StartupProbe)
+}
+
+func inheritProbeDefaults(desired, live *corev1.Probe) {
+	if desired == nil || live == nil {
+		return
+	}
+	if desired.SuccessThreshold == 0 {
+		desired.SuccessThreshold = live.SuccessThreshold
+	}
+	if desired.FailureThreshold == 0 {
+		desired.FailureThreshold = live.FailureThreshold
+	}
+	if desired.TimeoutSeconds == 0 {
+		desired.TimeoutSeconds = live.TimeoutSeconds
+	}
+	if desired.TerminationGracePeriodSeconds == nil {
+		desired.TerminationGracePeriodSeconds = live.TerminationGracePeriodSeconds
+	}
+}
+
+func inheritVolumeDefaults(desired, live *corev1.Volume) {
+	if live == nil {
+		return
+	}
+	if desired.Secret != nil && live.Secret != nil && desired.Secret.DefaultMode == nil {
+		desired.Secret.DefaultMode = live.Secret.DefaultMode
+	}
+	if desired.ConfigMap != nil && live.ConfigMap != nil && desired.ConfigMap.DefaultMode == nil {
+		desired.ConfigMap.DefaultMode = live.ConfigMap.DefaultMode
+	}
+	if desired.EmptyDir != nil && live.EmptyDir != nil && desired.EmptyDir.SizeLimit == nil {
+		desired.EmptyDir.SizeLimit = live.EmptyDir.SizeLimit
+	}
 }
 
 func ownedBy(obj client.Object, serverName string) bool {

@@ -164,6 +164,47 @@ func TestAgentServerAdapterApplyIsConvergent(t *testing.T) {
 
 // TestAgentServerAdapterApplyUpdatesSpecOnChange: editing the CR converges the
 // Deployment env in place.
+// TestAgentServerAdapterApplyIgnoresAPIDefaults pins the fix for the reconcile
+// hot loop: the API server fills defaulted fields the renderer never sets
+// (terminationMessagePath, dnsPolicy, probe thresholds, volume defaultMode, …).
+// A raw merge-patch diff is therefore never empty against a live object, and
+// patching on it bumped metadata.generation on every reconcile — the rendered
+// controller Deployment never reported availability. An existing object that
+// already satisfies every rendered field must not be patched.
+func TestAgentServerAdapterApplyIgnoresAPIDefaults(t *testing.T) {
+	server := agentServer()
+	a, c := newAgentServerAdapter()
+	ctx := context.Background()
+	desired := agentserver.Render(server, nil)
+
+	require.NoError(t, a.Apply(ctx, server, desired, testWiring()))
+
+	// Simulate the API server's defaulting + status write on the live object.
+	var live appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &live))
+	live.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirst
+	live.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyAlways
+	live.Spec.Template.Spec.Containers[0].TerminationMessagePath = "/dev/termination-log"
+	live.Spec.Template.Spec.Containers[0].TerminationMessagePolicy = corev1.TerminationMessageReadFile
+	live.Spec.Template.Spec.Containers[0].ReadinessProbe.SuccessThreshold = 1
+	live.Spec.Template.Spec.Containers[0].ReadinessProbe.TimeoutSeconds = 1
+	live.Spec.Template.Spec.Volumes[0].Secret.DefaultMode = func() *int32 { m := int32(420); return &m }()
+	require.NoError(t, c.Update(ctx, &live))
+
+	var defaulted appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &defaulted))
+
+	require.NoError(t, a.Apply(ctx, server, desired, testWiring()))
+	var after appsv1.Deployment
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "kape-system", Name: "kape-controller-sre"}, &after))
+
+	// The patch must not fire: a patched Deployment bumps metadata.generation,
+	// which resets the observedGeneration/availableReplicas bookkeeping the
+	// Ready condition reads, and the Deployment never reports available.
+	assert.Equal(t, defaulted.ResourceVersion, after.ResourceVersion, "API defaults alone must not trigger a patch")
+	assert.Equal(t, defaulted.Generation, after.Generation, "a no-op reconcile must not bump generation")
+}
+
 func TestAgentServerAdapterApplyUpdatesSpecOnChange(t *testing.T) {
 	server := agentServer()
 	a, c := newAgentServerAdapter()
