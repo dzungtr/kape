@@ -28,6 +28,10 @@ const (
 	EnvModelGatewayURL    = "KAPE_MODEL_GATEWAY_URL"
 	EnvServerDescription  = "KAPE_SERVER_DESCRIPTION"
 	EnvCredentialBindings = "KAPE_CREDENTIAL_BINDINGS"
+	// EnvDaemonToken is the controller→daemon bearer token (ADR-0083 D5). The
+	// operator generates it; the Deployment reads it from a SecretKeyRef so the
+	// value never lands in the Deployment spec, the CR, or the CR status.
+	EnvDaemonToken = "KAPE_DAEMON_TOKEN"
 )
 
 // Ownership labels stamped on every object rendered from a KapeAgentServer. The
@@ -109,9 +113,17 @@ type DesiredState struct {
 // with the pushed subset is what keeps KAPE_CREDENTIAL_BINDINGS honest: it
 // carries exactly the providers the controller may bind (D9).
 func Render(server *v1alpha1.KapeAgentServer, resolvedSecrets ResolvedSecrets) DesiredState {
+	return RenderWithDaemonToken(server, resolvedSecrets, "")
+}
+
+// RenderWithDaemonToken is Render plus the operator-owned Secret holding the
+// daemon bearer token (ADR-0083 D5). An empty secretName keeps the output
+// byte-identical to Render — the token env is only added when the operator
+// actually provisioned one.
+func RenderWithDaemonToken(server *v1alpha1.KapeAgentServer, resolvedSecrets ResolvedSecrets, daemonTokenSecret string) DesiredState {
 	records := openShellRecords(server, resolvedSecrets)
 	return DesiredState{
-		DeploymentEnv:    deploymentEnv(server.Spec, records),
+		DeploymentEnv:    deploymentEnv(server.Spec, records, daemonTokenSecret),
 		NetworkResources: networkResources(server),
 		ProviderProfiles: providerProfiles(records),
 		OpenShellRecords: records,
@@ -120,8 +132,8 @@ func Render(server *v1alpha1.KapeAgentServer, resolvedSecrets ResolvedSecrets) D
 
 // deploymentEnv renders the env contract in a fixed order so the golden output
 // is stable across reconciles.
-func deploymentEnv(spec v1alpha1.KapeAgentServerSpec, records []OpenShellRecord) []corev1.EnvVar {
-	return []corev1.EnvVar{
+func deploymentEnv(spec v1alpha1.KapeAgentServerSpec, records []OpenShellRecord, daemonTokenSecret string) []corev1.EnvVar {
+	env := []corev1.EnvVar{
 		{Name: EnvDefaultImage, Value: spec.Sandbox.Image},
 		{Name: EnvDefaultModel, Value: spec.Sandbox.Model},
 		{Name: EnvDefaultResources, Value: resourcesJSON(spec.Sandbox.Resources)},
@@ -129,6 +141,18 @@ func deploymentEnv(spec v1alpha1.KapeAgentServerSpec, records []OpenShellRecord)
 		{Name: EnvServerDescription, Value: spec.Description},
 		{Name: EnvCredentialBindings, Value: credentialBindingsJSON(records)},
 	}
+	if daemonTokenSecret != "" {
+		env = append(env, corev1.EnvVar{
+			Name: EnvDaemonToken,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: daemonTokenSecret},
+					Key:                  "token",
+				},
+			},
+		})
+	}
+	return env
 }
 
 // credentialBinding is one entry of KAPE_CREDENTIAL_BINDINGS in the shape the

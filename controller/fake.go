@@ -14,8 +14,10 @@ import (
 // transitions directly (SetPhase) and push exec events into the FakeStream
 // returned by StartPi.
 type FakeGateway struct {
-	mu    sync.Mutex
-	phase map[string]v1.SandboxPhase
+	exposed   map[string]bool
+	withdrawn []string
+	mu        sync.Mutex
+	phase     map[string]v1.SandboxPhase
 	// labels holds the labels stamped on each sandbox, keyed by name. Real
 	// gateways persist the CreateSandbox labels; the fake records them so
 	// registry tests can assert the ownership tags landed.
@@ -269,6 +271,45 @@ func (f *FakeGateway) ListProviders(ctx context.Context) ([]string, error) {
 // SetProviders overrides the provider list the fake returns.
 func (f *FakeGateway) SetProviders(names []string) {
 	fakeProviders = append([]string(nil), names...)
+}
+
+// ExposeDaemon records the exposure and returns a deterministic authority so
+// the pull transport can be exercised without a gateway.
+func (f *FakeGateway) ExposeDaemon(ctx context.Context, sandboxName string) (string, error) {
+	f.mu.Lock()
+	if f.exposed == nil {
+		f.exposed = map[string]bool{}
+	}
+	f.exposed[sandboxName] = true
+	f.mu.Unlock()
+	return sandboxName + ".openshell.localhost:32353", nil
+}
+
+// WithdrawDaemon records the exposure removal; a missing endpoint is no error.
+func (f *FakeGateway) WithdrawDaemon(ctx context.Context, sandboxName string) error {
+	f.mu.Lock()
+	delete(f.exposed, sandboxName)
+	f.withdrawn = append(f.withdrawn, sandboxName)
+	f.mu.Unlock()
+	return nil
+}
+
+// Exposed returns the sandboxes with a live exposure.
+func (f *FakeGateway) Exposed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.exposed))
+	for name := range f.exposed {
+		out = append(out, name)
+	}
+	return out
+}
+
+// Withdrawn returns the exposure names removed.
+func (f *FakeGateway) Withdrawn() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.withdrawn...)
 }
 
 // DeletedSandboxes returns sandbox names passed to DeleteSandbox.

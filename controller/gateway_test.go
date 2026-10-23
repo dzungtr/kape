@@ -41,6 +41,27 @@ func TestDaemonEnv_MainProcessInjection(t *testing.T) {
 	if env["KAPE_SPOOL_PATH"] != "/sandbox/kape-daemon-spool.jsonl" {
 		t.Fatal("PVC spool path env missing (main process has no profile hook)")
 	}
+	// The daemon binds LOOPBACK: the gateway's exposed endpoint targets
+	// 127.0.0.1 inside the sandbox, and the workload NetworkPolicy admits no
+	// other peer anyway (kape#274).
+	if env["KAPE_DAEMON_ADDR"] != "127.0.0.1:9090" {
+		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 127.0.0.1:9090", env["KAPE_DAEMON_ADDR"])
+	}
+	// Empty KAPE_PI_COMMAND selects the daemon's BUILT-IN fake pi, so a real
+	// deployment must name pi or every turn answers from the scripted fake and
+	// can never run a tool (kape#274 AC2/AC3).
+	if env["KAPE_PI_COMMAND"] != "pi" {
+		t.Fatalf("KAPE_PI_COMMAND = %q, want pi", env["KAPE_PI_COMMAND"])
+	}
+}
+
+// TestDaemonEnv_HonoursConfiguredPort: the bind port tracks KAPE_DAEMON_PORT so
+// the dial address and the bind address cannot drift.
+func TestDaemonEnv_HonoursConfiguredPort(t *testing.T) {
+	gw := (&Gateway{}).WithDaemonCommand([]string{"kape-daemon"}).WithDaemonPort("9191")
+	if got := gw.daemonEnv(map[string]string{}, "")["KAPE_DAEMON_ADDR"]; got != "127.0.0.1:9191" {
+		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 127.0.0.1:9191", got)
+	}
 }
 
 func TestDaemonEnv_SpoolPathOnlyWhenCommandThreaded(t *testing.T) {
@@ -376,5 +397,132 @@ func TestProbeModelGateway_UsesConfiguredEndpoint(t *testing.T) {
 	cmd := strings.Join(rec.execOneShot[0].GetCommand(), " ")
 	if want := "https://gateway.example.com:8443/openai/v1/models"; !strings.Contains(cmd, want) {
 		t.Fatalf("probe command = %q, want it to GET %s", cmd, want)
+	}
+}
+
+// TestCreateSandboxRequest_AttachesCredentialProviders is the kape#274 AC2/AC3
+// guard: NetworkCredentialBinding.provider must be "attached to this sandbox"
+// or the egress proxy cannot resolve a credential, so the binding providers
+// ride the same CreateSandbox request as the model provider.
+func TestCreateSandboxRequest_AttachesCredentialProviders(t *testing.T) {
+	gw := (&Gateway{}).
+		WithCredentialBindings([]Binding{
+			{Provider: "kape-kape-system-default-github", Hosts: []string{"github.com:443"}},
+			{Provider: "another-cred", Hosts: []string{"git.example.com:443"}},
+		})
+	req := gw.createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	got := req.GetSpec().GetProviders()
+	want := []string{"openrouter", "kape-kape-system-default-github", "another-cred"}
+	if len(got) != len(want) {
+		t.Fatalf("providers = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("providers = %v, want %v", got, want)
+		}
+	}
+
+	// No bindings: byte-identical to the pre-#264 posture.
+	bare := (&Gateway{}).createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	if p := bare.GetSpec().GetProviders(); len(p) != 1 || p[0] != "openrouter" {
+		t.Fatalf("providers without bindings = %v, want [openrouter]", p)
+	}
+
+	// A binding naming the model provider must not duplicate it.
+	dup := (&Gateway{}).
+		WithCredentialBindings([]Binding{{Provider: "openrouter", Hosts: []string{"x:443"}}}).
+		createSandboxRequest("sbx-1", "img", "openrouter", Resources{CPU: "1", Memory: "1Gi"}, nil, nil, nil)
+	if p := dup.GetSpec().GetProviders(); len(p) != 1 {
+		t.Fatalf("providers = %v, want [openrouter] with no duplicate", p)
+	}
+}
+
+// kape#274: the daemon is reachable only through the gateway's exposed service
+// endpoint — the workload pod's NetworkPolicy admits the supervisor alone.
+func TestCreateExposesDaemonAndDeleteWithdraws(t *testing.T) {
+	gw := NewFakeGateway()
+	cfg := testConfig()
+	cfg.Transport = TransportPull // the exposure path is the pull transport
+	m := NewAgentManager(gw, cfg, testStore(t))
+	m = m.WithResolver(NewDaemonExposureResolver(gw))
+
+	agent, err := m.Create(context.Background(), &CreateProfile{Name: "expose-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := gw.Exposed(); len(got) != 1 || got[0] != agent.Sandbox {
+		t.Fatalf("exposed = %v, want [%s]", got, agent.Sandbox)
+	}
+
+	if err := m.Delete(context.Background(), agent.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := gw.Withdrawn(); len(got) != 1 || got[0] != agent.Sandbox {
+		t.Fatalf("withdrawn = %v, want [%s]", got, agent.Sandbox)
+	}
+}
+
+// stubExposeClient records ExposeService/DeleteService calls (kape#274).
+type stubExposeClient struct {
+	v1.OpenShellClient
+	exposeReqs []*v1.ExposeServiceRequest
+	deleteReqs []*v1.DeleteServiceRequest
+	url        string
+}
+
+func (s *stubExposeClient) ExposeService(ctx context.Context, req *v1.ExposeServiceRequest, _ ...grpc.CallOption) (*v1.ServiceEndpointResponse, error) {
+	s.exposeReqs = append(s.exposeReqs, req)
+	return &v1.ServiceEndpointResponse{Url: s.url}, nil
+}
+
+func (s *stubExposeClient) DeleteService(ctx context.Context, req *v1.DeleteServiceRequest, _ ...grpc.CallOption) (*v1.DeleteServiceResponse, error) {
+	s.deleteReqs = append(s.deleteReqs, req)
+	return &v1.DeleteServiceResponse{}, nil
+}
+
+// TestExposeDaemon_RequestsBearerPassthrough pins the wire contract that makes
+// the daemon reachable at all: the gateway strips Authorization by default, so
+// the exposure must opt into passthrough or every D5 daemon request is 401.
+func TestExposeDaemon_RequestsBearerPassthrough(t *testing.T) {
+	client := &stubExposeClient{url: "https://default--sbx-1.openshell.localhost:32353/"}
+	gw := newPolicyTestGateway(client).WithDaemonPort("9090")
+
+	authority, err := gw.ExposeDaemon(context.Background(), "sbx-1")
+	if err != nil {
+		t.Fatalf("ExposeDaemon: %v", err)
+	}
+	if authority != "default--sbx-1.openshell.localhost:32353" {
+		t.Fatalf("authority = %q", authority)
+	}
+	if len(client.exposeReqs) != 1 {
+		t.Fatalf("ExposeService calls = %d, want 1", len(client.exposeReqs))
+	}
+	req := client.exposeReqs[0]
+	if req.GetAuthorizationMode() != v1.ServiceAuthorizationMode_SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH {
+		t.Fatalf("authorization_mode = %v, want BEARER_PASSTHROUGH", req.GetAuthorizationMode())
+	}
+	if req.GetTargetPort() != 9090 || req.GetSandbox() != "sbx-1" {
+		t.Fatalf("exposure = %s:%d (want sbx-1:9090)", req.GetSandbox(), req.GetTargetPort())
+	}
+
+	// Cached: a second resolve must not re-expose.
+	if _, err := gw.ExposeDaemon(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("ExposeDaemon (cached): %v", err)
+	}
+	if len(client.exposeReqs) != 1 {
+		t.Fatalf("ExposeService called %d times, want 1 (cached)", len(client.exposeReqs))
+	}
+}
+
+// TestWithdrawDaemon_AllowsMissing: teardown runs whether or not the exposure
+// exists.
+func TestWithdrawDaemon_AllowsMissing(t *testing.T) {
+	client := &stubExposeClient{}
+	gw := newPolicyTestGateway(client)
+	if err := gw.WithdrawDaemon(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("WithdrawDaemon: %v", err)
+	}
+	if len(client.deleteReqs) != 1 || !client.deleteReqs[0].GetAllowMissing() {
+		t.Fatalf("DeleteService request = %v, want allow_missing", client.deleteReqs)
 	}
 }

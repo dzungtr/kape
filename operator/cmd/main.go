@@ -314,7 +314,7 @@ func main() {
 		k8sadapters.NewSecretResolver(k8sClient),
 		credentialWriter,
 		wiring,
-	)
+	).WithDaemonTokenStore(k8sadapters.NewDaemonTokenStore(k8sClient))
 	if err := kapecontroller.SetupAgentServerReconciler(mgr, agentServerRec, cfg.MaxConcurrentReconciles); err != nil {
 		log.Error(err, "setting up KapeAgentServer controller")
 		os.Exit(1)

@@ -68,6 +68,9 @@ type AgentServerReconciler struct {
 	resolver ports.SecretResolver
 	writer   ports.OpenShellApplyPort
 	wiring   domainconfig.ControllerWiring
+	// daemonTokens provisions the controller→daemon bearer token (ADR-0083 D5).
+	// Nil keeps the previous posture: no token env rendered.
+	daemonTokens ports.DaemonTokenStore
 }
 
 // NewAgentServerReconciler creates an AgentServerReconciler. writer is nil when
@@ -81,6 +84,14 @@ func NewAgentServerReconciler(
 	wiring domainconfig.ControllerWiring,
 ) *AgentServerReconciler {
 	return &AgentServerReconciler{servers: servers, applier: applier, resolver: resolver, writer: writer, wiring: wiring}
+}
+
+// WithDaemonTokenStore installs the daemon-token provisioner. Without it the
+// rendered Deployment carries no token env and every controller→daemon request
+// is rejected as unauthenticated (kape#274).
+func (r *AgentServerReconciler) WithDaemonTokenStore(store ports.DaemonTokenStore) *AgentServerReconciler {
+	r.daemonTokens = store
+	return r
 }
 
 // Reconcile renders the CR and converges its objects:
@@ -110,7 +121,18 @@ func (r *AgentServerReconciler) Reconcile(ctx context.Context, key types.Namespa
 	resolved, resolverFailures := r.resolveCredentials(ctx, server)
 	outcomes, gatewayErr := r.pushCredentials(ctx, agentserver.Render(server, resolved).OpenShellRecords)
 	credentialOutcomes := mergeOutcomes(server, resolverFailures, outcomes)
-	desired := agentserver.Render(server, pushedSecrets(resolved, outcomes))
+	daemonTokenSecret := ""
+	if r.daemonTokens != nil {
+		name, err := r.daemonTokens.Ensure(ctx, server)
+		if err != nil {
+			// Fail closed: a controller without its daemon credential can never
+			// reach a sandbox, so provisioning must not report Ready.
+			_, _ = r.setReady(ctx, server, credentialOutcomes, readyCondition(server, metav1.ConditionFalse, ReasonApplyFailed, err.Error()))
+			return ctrl.Result{}, fmt.Errorf("provisioning daemon token: %w", err)
+		}
+		daemonTokenSecret = name
+	}
+	desired := agentserver.RenderWithDaemonToken(server, pushedSecrets(resolved, outcomes), daemonTokenSecret)
 
 	if missing := r.wiring.Missing(); len(missing) > 0 {
 		return r.setReady(ctx, server, credentialOutcomes, readyCondition(server, metav1.ConditionFalse, ReasonWiringIncomplete,

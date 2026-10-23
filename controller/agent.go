@@ -300,10 +300,20 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		return nil, err
 	}
 	if err := m.waitReady(ctx, agent); err != nil {
-		_ = m.gw.DeleteSandbox(context.Background(), name)
+		m.rollbackSandbox(name, err)
 		return nil, err
 	}
 	log.Printf("[agent %s] sandbox %s READY", id, name)
+	// Publish the daemon through the gateway before anything tries to talk to
+	// it (kape#274): the workload pod's NetworkPolicy admits only the
+	// supervisor, so a pod-IP dial is dropped and this endpoint is the single
+	// reachable path to the daemon.
+	if m.cfg.Transport == TransportPull {
+		if _, err := m.gw.ExposeDaemon(ctx, name); err != nil {
+			m.rollbackSandbox(name, err)
+			return nil, fmt.Errorf("expose sandbox daemon: %w", err)
+		}
+	}
 	// created and sandbox land in the log so a restart rebuilds the view
 	// from replay alone (issue #197); the sandbox CR stays the address
 	// source — this payload only lets the replayed view echo it.
@@ -326,14 +336,14 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	agent.hub.PublishLifecycle("agent.provisioned", prov)
 
 	if err := m.gw.ApplyModelGatewayPolicy(ctx, name); err != nil {
-		_ = m.gw.DeleteSandbox(context.Background(), name)
+		m.rollbackSandbox(name, err)
 		return nil, fmt.Errorf("apply network policy: %w", err)
 	}
 	// Structural sandbox→controller egress deny (issue #214, ADR-0083 D2/D7):
 	// the daemon never dials the controller; the deny takes precedence over
 	// any future allow rule.
 	if err := m.gw.ApplyControllerEgressDeny(ctx, name, m.cfg.ControllerServiceHost, m.cfg.ControllerServicePort); err != nil {
-		_ = m.gw.DeleteSandbox(context.Background(), name)
+		m.rollbackSandbox(name, err)
 		return nil, fmt.Errorf("apply controller egress deny: %w", err)
 	}
 
@@ -354,7 +364,7 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		go m.phasePoll(agent, ctx)
 		go m.runPuller(agent, ctx)
 	} else if err := m.startPi(agent, resolved.Model); err != nil { // break-glass exec path
-		_ = m.gw.DeleteSandbox(context.Background(), name)
+		m.rollbackSandbox(name, err)
 		return nil, err
 	}
 
@@ -379,7 +389,7 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		m.mu.Lock()
 		delete(m.agents, id)
 		m.mu.Unlock()
-		_ = m.gw.DeleteSandbox(context.Background(), name)
+		m.rollbackSandbox(name, err)
 		return nil, fmt.Errorf("record session started for %s: %w", id, err)
 	}
 	// The session event is already appended by fsm.Transition; only flip the
@@ -388,6 +398,22 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 	agent.status = StatusReady
 	agent.mu.Unlock()
 	return agent, nil
+}
+
+// rollbackSandbox deletes a sandbox whose provisioning failed, and LOGS the
+// outcome. The delete error used to be dropped, which made every provisioning
+// failure invisible: the caller saw only its own error, and a sandbox the
+// gateway refuses to delete leaked silently (kape#274 — the real cause, a
+// rejected policy merge, surfaced nowhere).
+func (m *AgentManager) rollbackSandbox(name string, cause error) {
+	if err := m.gw.WithdrawDaemon(context.Background(), name); err != nil {
+		log.Printf("[sandbox %s] withdraw daemon exposure failed (provisioning cause: %v): %v", name, cause, err)
+	}
+	if err := m.gw.DeleteSandbox(context.Background(), name); err != nil {
+		log.Printf("[sandbox %s] rollback delete failed (provisioning cause: %v): %v", name, cause, err)
+		return
+	}
+	log.Printf("[sandbox %s] rolled back after: %v", name, cause)
 }
 
 // PiSessionID derives the session-pinned pi --session-id from the durable
@@ -600,6 +626,11 @@ func (m *AgentManager) deleteOne(ctx context.Context, id string) error {
 	// Termination disarms the monitor timer (issue #232).
 	m.monitor.Disarm(id)
 	agent.hub.Close()
+	// Withdraw the daemon endpoint before the sandbox goes away (kape#274): a
+	// leftover exposure would route to a dead port.
+	if err := m.gw.WithdrawDaemon(ctx, agent.Sandbox); err != nil {
+		log.Printf("[agent %s] withdraw daemon exposure failed: %v", id, err)
+	}
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
 	}

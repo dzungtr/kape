@@ -20,11 +20,23 @@
 # Build:  podman build -f .agents/openshell/Containerfile.dev -t ghcr.io/dzungtr/kape-dev:latest .
 # Push:   podman push ghcr.io/dzungtr/kape-dev:latest
 #
+# kape-daemon is bundled here because the controller launches it as the
+# sandbox main process (`KAPE_DAEMON_COMMAND=kape-daemon`, ADR-0086): the
+# pi-openshell base carries no kape binary, so the supervisor's spawn of
+# `kape-daemon` fails with `No such file or directory (os error 2)` and the
+# sandbox never reaches Running.
+#
 # Run (OpenShell):
 #   openshell sandbox create --name kape-dev \
 #     --from ghcr.io/dzungtr/kape-dev:latest
 
-ARG BASE=ghcr.io/dzungtr/pi-openshell:openrouter
+ARG BASE=ghcr.io/dzungtr/pi-openshell:0.3.0-openrouter
+
+# --- Stage 0: kape-daemon (standalone Go module, GOWORK=off) ----------------
+FROM docker.io/library/golang:1.25.10-alpine AS daemon
+WORKDIR /src
+COPY daemon/ ./
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/kape-daemon .
 
 FROM ${BASE}
 
@@ -51,6 +63,12 @@ RUN nix --extra-experimental-features "nix-command flakes" \
 
 # Base image PATH already includes /nix/var/nix/profiles/default/bin — the
 # merged profile puts go/bun/kubectl/... on it. No ENV changes needed.
+
+# kape-daemon on the base PATH (/usr/local/bin is in PATH and under the
+# policy's read_only /usr grant, so landlock lets the supervisor exec it).
+# Last layer on purpose: daemon changes must not invalidate the toolchain cache.
+COPY --from=daemon /out/kape-daemon /usr/local/bin/kape-daemon
+RUN chmod 0755 /usr/local/bin/kape-daemon
 
 USER sandbox
 WORKDIR /sandbox

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -56,6 +57,13 @@ type GatewayClient interface {
 	// callers discover valid providers instead of guessing, and the
 	// deployment's fixed provider comes from config, not the wire.
 	ListProviders(ctx context.Context) ([]string, error)
+	// ExposeDaemon publishes the sandbox's daemon port through the gateway and
+	// returns the endpoint authority (kape#274). The workload pod's
+	// NetworkPolicy admits only the supervisor, so this is the only reachable
+	// path to the daemon.
+	ExposeDaemon(ctx context.Context, sandboxName string) (string, error)
+	// WithdrawDaemon removes that endpoint; a missing endpoint is not an error.
+	WithdrawDaemon(ctx context.Context, sandboxName string) error
 }
 
 // SandboxInfo is the registry's view of one gateway sandbox: the fields
@@ -87,11 +95,15 @@ func workspaceSelector(workspace string) *v1.WorkspaceSelector {
 // Gateway is the real GatewayClient backed by the OpenShell gRPC surface.
 type Gateway struct {
 	client             v1.OpenShellClient
-	modelGatewayURL    string    // base URL patched into the pi wrapper's models.json
-	workspace          string    // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
-	daemonToken        string    // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
-	daemonCommand      []string  // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
-	credentialBindings []Binding // env-fed credential binding table (KAPE_CREDENTIAL_BINDINGS, issue #264/H1); empty keeps the policy merge byte-identical
+	modelGatewayURL    string            // base URL patched into the pi wrapper's models.json
+	workspace          string            // workspace_scope carried by every sandbox RPC (v0.1.0); empty means defaultWorkspace
+	daemonToken        string            // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
+	daemonCommand      []string          // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
+	daemonPort         string            // in-sandbox daemon port the resolver dials (D7, default 9090); the daemon is told to bind it on all interfaces
+	lookupIPs          hostLookup        // model-gateway host resolution (nil in tests = no allowlist)
+	exposureMu         sync.Mutex        // guards exposures
+	exposures          map[string]string // sandbox -> exposed endpoint authority (kape#274)
+	credentialBindings []Binding         // env-fed credential binding table (KAPE_CREDENTIAL_BINDINGS, issue #264/H1); empty keeps the policy merge byte-identical
 }
 
 func NewGateway(conn *grpc.ClientConn, modelGatewayURL string) *Gateway {
@@ -132,6 +144,23 @@ func (g *Gateway) WithCredentialBindings(bindings []Binding) *Gateway {
 // lifetime == sandbox lifetime. Nil/empty keeps the request without a
 // command (gateway default main process — the #217 profile-hook fallback
 // posture).
+// WithHostLookup installs the resolver used to build the model-gateway
+// endpoint allowlist (kape#274). Nil keeps the endpoint without allowed_ips —
+// the public-host posture and the test default.
+func (g *Gateway) WithHostLookup(lookup hostLookup) *Gateway {
+	g.lookupIPs = lookup
+	return g
+}
+
+// WithDaemonPort sets the fixed in-sandbox daemon port the controller dials
+// (KAPE_DAEMON_PORT, D7). It is threaded into the daemon environment as the
+// bind address, so the port the controller dials and the port the daemon
+// listens on can never drift apart.
+func (g *Gateway) WithDaemonPort(port string) *Gateway {
+	g.daemonPort = port
+	return g
+}
+
 func (g *Gateway) WithDaemonCommand(argv []string) *Gateway {
 	g.daemonCommand = argv
 	return g
@@ -168,8 +197,53 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 			env = map[string]string{}
 		}
 		env["KAPE_SPOOL_PATH"] = "/sandbox/kape-daemon-spool.jsonl"
+		// Loopback on purpose: the controller reaches the daemon through the
+		// gateway's exposed service endpoint, which targets 127.0.0.1 inside
+		// the sandbox (kape#274). Binding wider would expose the daemon to the
+		// pod network for no gain — the workload NetworkPolicy already denies
+		// every non-supervisor peer, and silence is better than a listener that
+		// can only be reached through the boundary anyway.
+		port := g.daemonPort
+		if port == "" {
+			port = "9090"
+		}
+		env["KAPE_DAEMON_ADDR"] = "127.0.0.1:" + port
+		// The daemon runs its BUILT-IN fake pi when KAPE_PI_COMMAND is empty
+		// (daemon/main.go: "empty = built-in fake pi"). That default is right
+		// for the smoke/fake-pi test posture and wrong for a real agent: every
+		// turn then answers from the scripted fake and can never run a tool.
+		// The deployed image ships pi on PATH, so name it here — the same way
+		// the spool path is injected for the main-process daemon.
+		if _, ok := env["KAPE_PI_COMMAND"]; !ok {
+			env["KAPE_PI_COMMAND"] = "pi"
+		}
 	}
 	return env
+}
+
+// sandboxProviders returns the provider list a created sandbox must carry: the
+// model provider plus every credential-binding provider (ADR-0088).
+//
+// NetworkCredentialBinding.provider names "a provider ATTACHED TO THIS
+// SANDBOX", so a binding whose provider is not attached can never resolve a
+// credential — the egress proxy would admit the endpoint with no Authorization
+// header and git/gh would fail as an anonymous 401. Attaching here keeps the
+// attachment and the policy merge in lockstep: both read the same binding
+// table.
+func (g *Gateway) sandboxProviders(modelProvider string) []string {
+	providers := []string{modelProvider}
+	seen := map[string]bool{}
+	if modelProvider != "" {
+		seen[modelProvider] = true
+	}
+	for _, binding := range g.credentialBindings {
+		if binding.Provider == "" || seen[binding.Provider] {
+			continue
+		}
+		seen[binding.Provider] = true
+		providers = append(providers, binding.Provider)
+	}
+	return providers
 }
 
 // createSandboxRequest builds the CreateSandboxRequest payload; split out of
@@ -181,7 +255,7 @@ func (g *Gateway) createSandboxRequest(name, image, provider string, resources R
 		Name:           name,
 		Labels:         labels,
 		Spec: &v1.SandboxSpec{
-			Providers: []string{provider},
+			Providers: g.sandboxProviders(provider),
 			Template: &v1.SandboxTemplate{
 				Image: image,
 				Resources: &structpb.Struct{
@@ -416,4 +490,99 @@ func newTlsConfig(caPEM, certPEM, keyPEM []byte) (*tls.Config, error) {
 		return nil, fmt.Errorf("parse client cert/key: %w", err)
 	}
 	return &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
+}
+
+// errDaemonExposureURL reports a gateway response we cannot route.
+func errDaemonExposureURL(raw string) error {
+	return fmt.Errorf("daemon exposure: gateway returned an unroutable service URL %q", raw)
+}
+
+// ExposeDaemon publishes the sandbox's daemon port through the gateway
+// (kape#274) and returns the endpoint authority. Idempotent: the gateway keeps
+// one unnamed endpoint per sandbox, and a repeat call returns the same address,
+// so a restarted controller re-derives it without state.
+//
+// This is the ONLY way the controller can reach the daemon: the workload pod's
+// NetworkPolicy admits the supervisor alone, so a pod-IP dial is dropped.
+func (g *Gateway) ExposeDaemon(ctx context.Context, sandboxName string) (string, error) {
+	g.exposureMu.Lock()
+	if g.exposures == nil {
+		g.exposures = map[string]string{}
+	}
+	if addr, ok := g.exposures[sandboxName]; ok {
+		g.exposureMu.Unlock()
+		return addr, nil
+	}
+	g.exposureMu.Unlock()
+
+	port, err := parseDaemonPort(g.daemonPort)
+	if err != nil {
+		return "", err
+	}
+	resp, err := g.client.ExposeService(ctx, &v1.ExposeServiceRequest{
+		WorkspaceScope: g.scope(),
+		Sandbox:        sandboxName,
+		Name:           daemonExposureName,
+		TargetPort:     port,
+		// Not domain=true: the browser-facing URL is not what an in-cluster
+		// caller wants, and the authority is identical either way.
+		Domain: false,
+		// BEARER_PASSTHROUGH is mandatory here, not a preference: the default
+		// (STRIP) removes the caller's Authorization header, which is exactly
+		// the ADR-0083 D5 daemon credential — every pull then fails 401 while
+		// the endpoint itself is reachable. Requires a gateway >= v0.1.3, the
+		// first release with this field; older gateways drop it silently and
+		// keep stripping, so the daemon token never arrives.
+		AuthorizationMode: v1.ServiceAuthorizationMode_SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ExposeService(%s:%d): %w", sandboxName, port, err)
+	}
+	authority, err := daemonAuthority(resp.GetUrl())
+	if err != nil {
+		return "", err
+	}
+	g.exposureMu.Lock()
+	g.exposures[sandboxName] = authority
+	g.exposureMu.Unlock()
+	log.Printf("[daemon] exposed %s:%d at %s", sandboxName, port, authority)
+	return authority, nil
+}
+
+// WithdrawDaemon removes the sandbox's exposed endpoint. A missing endpoint is
+// not an error: teardown runs whether or not creation got that far.
+func (g *Gateway) WithdrawDaemon(ctx context.Context, sandboxName string) error {
+	_, err := g.client.DeleteService(ctx, &v1.DeleteServiceRequest{
+		WorkspaceScope: g.scope(),
+		Sandbox:        sandboxName,
+		Name:           daemonExposureName,
+		AllowMissing:   true,
+	})
+	g.exposureMu.Lock()
+	delete(g.exposures, sandboxName)
+	g.exposureMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("DeleteService(%s): %w", sandboxName, err)
+	}
+	return nil
+}
+
+// ForgetsDaemonExposure drops the cached address without calling the gateway
+// (used when the sandbox is already gone).
+func (g *Gateway) ForgetDaemonExposure(sandboxName string) {
+	g.exposureMu.Lock()
+	delete(g.exposures, sandboxName)
+	g.exposureMu.Unlock()
+}
+
+// parseDaemonPort reads the configured daemon port, defaulting to 9090.
+func parseDaemonPort(raw string) (uint32, error) {
+	if raw == "" {
+		return 9090, nil
+	}
+	var port uint32
+	if _, err := fmt.Sscanf(raw, "%d", &port); err != nil || port == 0 || port > 65535 {
+		return 0, fmt.Errorf("daemon port %q is not a valid port", raw)
+	}
+	return port, nil
 }

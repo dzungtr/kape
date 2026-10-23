@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -61,6 +62,8 @@ func main() {
 	}
 	gw := NewGateway(conn, cfg.ModelGatewayURL).WithDaemonToken(cfg.DaemonToken).
 		WithDaemonCommand(cfg.DaemonCommandArgv()).
+		WithDaemonPort(cfg.DaemonPort).
+		WithHostLookup(net.LookupHost).
 		WithCredentialBindings(cfg.CredentialBindings)
 
 	// Durable event store (issue #195): one controller-local single-file log,
@@ -71,6 +74,12 @@ func main() {
 	}
 	defer store.Close()
 
+	// Optional: pin the model-gateway allowlist when its address moves (headless
+	// service behind an ExternalName, kape#274).
+	modelGatewayAllowedIPs = parseAllowedIPs(os.Getenv("KAPE_MODEL_GATEWAY_ALLOWED_IPS"))
+	if len(modelGatewayAllowedIPs) > 0 {
+		log.Printf("model gateway allowlist pinned from env: %v", modelGatewayAllowedIPs)
+	}
 	mgr := NewAgentManager(gw, cfg, store)
 	if cfg.Monitor.Enabled() {
 		// SLM monitor loop (issue #232): one timer per running agent,
@@ -78,14 +87,12 @@ func main() {
 		mgr = mgr.WithMonitor(NewMonitor(NewSLMClient(cfg.Monitor, nil), cfg.Monitor.Interval))
 	}
 	if cfg.Transport == TransportPull {
-		// Daemon addressing comes from the Sandbox CR (issue #214, D7): the
-		// controller's first k8s API client (in-cluster SA, get/watch
-		// sandboxes only — controller/deploy/rbac.yaml).
-		res, err := NewCRDaemonAddressResolver(cfg.SandboxNamespace, cfg.DaemonPort)
-		if err != nil {
-			log.Fatalf("build sandbox CR address resolver: %v", err)
-		}
-		mgr = mgr.WithResolver(res)
+		// Daemon addressing is the gateway's exposed service endpoint
+		// (kape#274). The Sandbox CR pod IP from D7 is unreachable by design:
+		// OpenShell's `openshell-sandbox-workloads` NetworkPolicy admits only
+		// the supervisor, so pod-IP dials are dropped (verified live).
+		mgr = mgr.WithResolver(NewDaemonExposureResolver(gw))
+		mgr.daemonTransport = NewDaemonProxyTransport(tlsCfg, cfg.GatewayAddr)
 	}
 	if err := mgr.RebuildFromLog(context.Background()); err != nil {
 		// Degrade, don't die: CR-derived views keep list/get working while
