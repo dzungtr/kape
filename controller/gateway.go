@@ -199,6 +199,15 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 			port = "9090"
 		}
 		env["KAPE_DAEMON_ADDR"] = "127.0.0.1:" + port
+		// The daemon runs its BUILT-IN fake pi when KAPE_PI_COMMAND is empty
+		// (daemon/main.go: "empty = built-in fake pi"). That default is right
+		// for the smoke/fake-pi test posture and wrong for a real agent: every
+		// turn then answers from the scripted fake and can never run a tool.
+		// The deployed image ships pi on PATH, so name it here — the same way
+		// the spool path is injected for the main-process daemon.
+		if _, ok := env["KAPE_PI_COMMAND"]; !ok {
+			env["KAPE_PI_COMMAND"] = "pi"
+		}
 	}
 	return env
 }

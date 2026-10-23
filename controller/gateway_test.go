@@ -47,6 +47,12 @@ func TestDaemonEnv_MainProcessInjection(t *testing.T) {
 	if env["KAPE_DAEMON_ADDR"] != "127.0.0.1:9090" {
 		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 127.0.0.1:9090", env["KAPE_DAEMON_ADDR"])
 	}
+	// Empty KAPE_PI_COMMAND selects the daemon's BUILT-IN fake pi, so a real
+	// deployment must name pi or every turn answers from the scripted fake and
+	// can never run a tool (kape#274 AC2/AC3).
+	if env["KAPE_PI_COMMAND"] != "pi" {
+		t.Fatalf("KAPE_PI_COMMAND = %q, want pi", env["KAPE_PI_COMMAND"])
+	}
 }
 
 // TestDaemonEnv_HonoursConfiguredPort: the bind port tracks KAPE_DAEMON_PORT so
