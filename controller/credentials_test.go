@@ -417,6 +417,10 @@ type stubPolicyClient struct {
 	// abortedOnce makes the FIRST UpdateConfig fail ABORTED so the guarded
 	// retry is exercised; the stub then accepts.
 	abortedOnce bool
+	// basePolicy is what the image declares; it becomes the exposed policy
+	// after the first UpdateConfig (gateway backfill), so a create-time merge
+	// stamps against it instead of an empty read.
+	basePolicy *v1.SandboxPolicy
 }
 
 func (s *stubPolicyClient) GetSandboxConfig(ctx context.Context, req *v1.GetSandboxConfigRequest, opts ...grpc.CallOption) (*v1.GetSandboxConfigResponse, error) {
@@ -434,6 +438,11 @@ func (s *stubPolicyClient) GetSandboxConfig(ctx context.Context, req *v1.GetSand
 // (kape#274): 0 here, since ExpectedResourceVersion=0 is the gateway's own
 // "backward compatibility" wildcard. resourceVersion exists so concurrency
 // tests can pin a real value.
+//
+// After the FIRST UpdateConfig the stub behaves like the live gateway, which
+// backfills spec.policy from the image on that call ("backfilled spec.policy
+// from sandbox-discovered policy"): a basePolicy is exposed so the stamping
+// merge sees the endpoints instead of an empty policy.
 func (s *stubPolicyClient) GetSandbox(ctx context.Context, req *v1.GetSandboxRequest, opts ...grpc.CallOption) (*v1.SandboxResponse, error) {
 	return &v1.SandboxResponse{
 		Sandbox: &v1.Sandbox{Metadata: &v1.ObjectMeta{Name: req.GetName(), ResourceVersion: s.resourceVersion}},
@@ -449,13 +458,19 @@ func (s *stubPolicyClient) UpdateConfig(ctx context.Context, req *v1.UpdateConfi
 	if s.err != nil {
 		return nil, s.err
 	}
+	// Backfill: the first accepted merge exposes the image policy to the next
+	// GetSandboxConfig (gateway behavior on an UpdateConfig against a sandbox
+	// that has never carried a policy).
+	if s.policy == nil && s.basePolicy != nil {
+		s.policy = s.basePolicy
+	}
 	return &v1.UpdateConfigResponse{}, nil
 }
 
 // TestApplyModelGatewayPolicy_MergesCredentials: the seam sends the untouched
 // model-gateway rule plus one credential-binding rule, in a single update.
 func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
-	client := &stubPolicyClient{}
+	client := &stubPolicyClient{basePolicy: imagePolicyDeclaringBoundHosts()}
 	gw := newPolicyTestGateway(client).WithCredentialBindings([]Binding{{
 		Provider: "kape-openshell-kape-github",
 		Hosts:    []string{"github.com:443", "api.github.com:443"},
@@ -464,37 +479,49 @@ func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
 		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
 	}
-	if len(client.requests) != 1 {
-		t.Fatalf("UpdateConfig calls = %d, want 1", len(client.requests))
+	// Two calls: the first backfills the image policy (model-gateway rule),
+	// the second stamps the bindings into it.
+	if len(client.requests) != 2 {
+		t.Fatalf("UpdateConfig calls = %d, want 2 (backfill + stamp)", len(client.requests))
 	}
-	req := client.requests[0]
-	if req.GetSandbox() != "sbx-1" {
-		t.Fatalf("request sandbox = %q, want sbx-1 (exec-by-canonical-name)", req.GetSandbox())
+	first := client.requests[0]
+	if first.GetSandbox() != "sbx-1" {
+		t.Fatalf("request sandbox = %q, want sbx-1 (exec-by-canonical-name)", first.GetSandbox())
 	}
-	if got := req.GetWorkspaceScope().GetWorkspace(); got != defaultWorkspace {
+	if got := first.GetWorkspaceScope().GetWorkspace(); got != defaultWorkspace {
 		t.Fatalf("workspace_scope = %q, want %q", got, defaultWorkspace)
 	}
-	if len(req.GetMergeOperations()) != 2 {
-		t.Fatalf("merge operations = %d, want 2 (model gateway + credential binding)", len(req.GetMergeOperations()))
+	if len(first.GetMergeOperations()) != 1 {
+		t.Fatalf("backfill merge operations = %d, want 1 (model gateway only)", len(first.GetMergeOperations()))
 	}
-	gatewayAdd := req.GetMergeOperations()[0].GetAddRule()
+	gatewayAdd := first.GetMergeOperations()[0].GetAddRule()
 	if gatewayAdd.GetRuleName() != "m1_model_gateway" {
 		t.Fatalf("op[0] rule = %q, want m1_model_gateway", gatewayAdd.GetRuleName())
 	}
 	if !proto.Equal(gatewayAdd.GetRule(), mustModelGatewayRule(t)) {
 		t.Fatalf("op[0] rule = %v, want the model-gateway rule unchanged", gatewayAdd.GetRule())
 	}
-	bindingAdd := req.GetMergeOperations()[1].GetAddRule()
-	if bindingAdd.GetRuleName() != CredentialBindingRuleName {
-		t.Fatalf("op[1] rule = %q, want %q", bindingAdd.GetRuleName(), CredentialBindingRuleName)
-	}
-	if got := len(bindingAdd.GetRule().GetEndpoints()); got != 2 {
-		t.Fatalf("binding endpoints = %d, want 2", got)
-	}
-	for _, ep := range bindingAdd.GetRule().GetEndpoints() {
-		if ep.GetCredentialBinding().GetProvider() != "kape-openshell-kape-github" {
-			t.Fatalf("endpoint %s:%d lost its credential binding: %v", ep.GetHost(), ep.GetPort(), ep)
+	// The second merge carries the stamping ops, and NO additive rule.
+	second := client.requests[1]
+	for _, op := range second.GetMergeOperations() {
+		if op.GetAddRule().GetRuleName() == CredentialBindingRuleName {
+			t.Fatal("additive credential-binding rule emitted although the policy declares every bound host")
 		}
+	}
+	if len(second.GetMergeOperations()) == 0 {
+		t.Fatal("stamp merge has no operations")
+	}
+	// Every stamped endpoint carries the binding.
+	found := 0
+	for _, op := range second.GetMergeOperations() {
+		for _, ep := range op.GetAddRule().GetRule().GetEndpoints() {
+			if ep.GetCredentialBinding().GetProvider() == "kape-openshell-kape-github" {
+				found++
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no stamped endpoint carries the credential binding")
 	}
 }
 
@@ -504,24 +531,24 @@ func TestApplyModelGatewayPolicy_MergesCredentials(t *testing.T) {
 // second declaration of the same host:port, which the gateway rejects as
 // ambiguous credential metadata.
 func TestApplyModelGatewayPolicy_StampsImageDeclaredEndpoints(t *testing.T) {
-	client := &stubPolicyClient{policy: imagePolicyDeclaringBoundHosts()}
+	client := &stubPolicyClient{basePolicy: imagePolicyDeclaringBoundHosts()}
 	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
 
 	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
 		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
 	}
-	if len(client.requests) != 1 {
-		t.Fatalf("UpdateConfig calls = %d, want 1", len(client.requests))
+	if len(client.requests) != 2 {
+		t.Fatalf("UpdateConfig calls = %d, want 2 (backfill + stamp)", len(client.requests))
 	}
-	ops := client.requests[0].GetMergeOperations()
-	if got, want := len(ops), 4; got != want { // model gateway + 3 declaring rules
+	ops := client.requests[1].GetMergeOperations()
+	if got, want := len(ops), 3; got != want { // the 3 declaring rules
 		names := []string{}
 		for _, op := range ops {
 			names = append(names, op.GetAddRule().GetRuleName())
 		}
 		t.Fatalf("merge operations = %d %v, want %d", got, names, want)
 	}
-	for _, op := range ops[1:] {
+	for _, op := range ops {
 		if op.GetAddRule().GetRuleName() == CredentialBindingRuleName {
 			t.Fatal("additive credential-binding rule emitted despite the policy already declaring every bound host")
 		}
@@ -547,14 +574,15 @@ func TestApplyModelGatewayPolicy_FailClosedOnUnreadablePolicy(t *testing.T) {
 // retries a merge the gateway aborts (kape#274 — provider composition races
 // the credential stamping) instead of rolling the sandbox back.
 func TestApplyModelGatewayPolicy_RetriesAborted(t *testing.T) {
-	client := &stubPolicyClient{abortedOnce: true}
+	client := &stubPolicyClient{abortedOnce: true, basePolicy: imagePolicyDeclaringBoundHosts()}
 	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
 
 	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
 		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
 	}
-	if len(client.requests) != 2 {
-		t.Fatalf("UpdateConfig calls = %d, want 2 (aborted, then retried)", len(client.requests))
+	// backfill (aborted, retried) + stamp
+	if len(client.requests) != 3 {
+		t.Fatalf("UpdateConfig calls = %d, want 3 (backfill aborted+retried, then stamp)", len(client.requests))
 	}
 }
 
@@ -588,7 +616,7 @@ func TestApplyModelGatewayPolicy_NoBindingsKeepsModelGatewayOnly(t *testing.T) {
 // TestApplyModelGatewayPolicy_FailClosedOnBadBinding: a binding that cannot be
 // materialised aborts before the gateway is called — no half-applied policy.
 func TestApplyModelGatewayPolicy_FailClosedOnBadBinding(t *testing.T) {
-	client := &stubPolicyClient{}
+	client := &stubPolicyClient{basePolicy: imagePolicyDeclaringBoundHosts()}
 	gw := newPolicyTestGateway(client).WithCredentialBindings([]Binding{{Provider: "p-git", Hosts: []string{"github.com"}}})
 
 	err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1")

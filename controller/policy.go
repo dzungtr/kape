@@ -22,6 +22,22 @@ const (
 	policyMergeBackoff  = 500 * time.Millisecond
 )
 
+// validateBindings checks the binding table BEFORE any UpdateConfig is sent
+// (fail closed, ADR-0088): a malformed binding must never leave a sandbox
+// half-provisioned with its model-gateway rule applied and its credentials
+// unbound. ParseBindings already refuses malformed input at startup; this
+// catches the runtime edge (e.g. a binding whose hosts were edited after parse).
+func validateBindings(bindings []Binding) error {
+	for _, binding := range bindings {
+		for _, spec := range binding.Hosts {
+			if _, _, err := splitHostSpec(spec); err != nil {
+				return fmt.Errorf("credential binding %q: %w", binding.Provider, err)
+			}
+		}
+	}
+	return nil
+}
+
 // ModelGatewayRuleName is the stable name of the model-gateway egress rule. The
 // credential-binding merge (#264) proves its addition additive against exactly
 // this rule, so the name is part of the policy contract.
@@ -137,6 +153,70 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 	// create, and an unguarded merge raced that composition: the request was
 	// accepted, then recomposed over, and the credential metadata never reached
 	// the enforced policy — silently, since the call succeeded.
+	if err := validateBindings(g.credentialBindings); err != nil {
+		return fmt.Errorf("credential binding policy: %w", err)
+	}
+	mergeOps := ops
+	var expected uint64
+	if len(g.credentialBindings) > 0 {
+		// Bindings are stamped into the sandbox's CURRENT policy: an endpoint the
+		// policy already declares must be re-sent with credential_binding, not
+		// appended as a second declaration of the same host:port (the gateway
+		// rejects that overlap as ambiguous credential metadata).
+		policy, readVersion, err := g.GetSandboxPolicy(ctx, sandboxName)
+		if err != nil {
+			// Fail closed: a policy we cannot read is a policy we cannot bind
+			// safely, and the sandbox must not run with credentials it may owe.
+			return fmt.Errorf("credential binding policy (read sandbox policy): %w", err)
+		}
+		// A sandbox created moments ago reports an EMPTY policy: the gateway
+		// backfills spec.policy from the image on the first UpdateConfig
+		// ("backfilled spec.policy from sandbox-discovered policy"). Stamping
+		// against that empty read silently takes the additive path, whose rule
+		// then collides with the image's own endpoints — the exact ambiguity
+		// this stamping exists to avoid. Spend one merge to trigger the
+		// backfill, then re-read.
+		if len(policy.GetNetworkPolicies()) == 0 {
+			if err := g.mergeOrRetry(ctx, sandboxName, ops, readVersion); err != nil {
+				return err
+			}
+			policy, readVersion, err = g.GetSandboxPolicy(ctx, sandboxName)
+			if err != nil {
+				return fmt.Errorf("credential binding policy (re-read after backfill): %w", err)
+			}
+			if len(policy.GetNetworkPolicies()) == 0 {
+				return fmt.Errorf("credential binding policy: %s still reports no policy after backfill; refusing to add a second declaration of bound endpoints", sandboxName)
+			}
+			// The model-gateway rule is already applied; only the bindings remain.
+			mergeOps = nil
+		}
+		bindingOps, err := CredentialPolicyOps(policy, g.credentialBindings)
+		if err != nil {
+			// Fail closed before anything reaches the gateway: a binding that
+			// cannot be materialised must not yield a sandbox that egresses
+			// without the credentials it was promised.
+			return fmt.Errorf("credential binding policy: %w", err)
+		}
+		mergeOps = append(mergeOps, bindingOps...)
+		expected = readVersion
+	}
+	if len(mergeOps) > 0 {
+		if err := g.mergeOrRetry(ctx, sandboxName, mergeOps, expected); err != nil {
+			return err
+		}
+	}
+	log.Printf("[policy] model-gateway rule submitted for %s", sandboxName)
+	if len(g.credentialBindings) > 0 {
+		log.Printf("[policy] credential-binding rule submitted for %s (%d bindings)", sandboxName, len(g.credentialBindings))
+	}
+	return nil
+}
+
+// mergeOrRetry applies one policy merge, retrying ABORTED (the sandbox moved
+// under us: provider composition, a revocation, a concurrent merge) a bounded
+// number of times. Anything else surfaces immediately — a silent discard is
+// what made the credential stamping invisible for a whole debugging session.
+func (g *Gateway) mergeOrRetry(ctx context.Context, sandboxName string, ops []*v1.PolicyMergeOperation, expected uint64) error {
 	var lastErr error
 	for attempt := 0; attempt < policyMergeAttempts; attempt++ {
 		if attempt > 0 {
@@ -146,57 +226,22 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 			case <-time.After(policyMergeBackoff * time.Duration(attempt)):
 			}
 		}
-		mergeOps := ops
-		var expected uint64
-		if len(g.credentialBindings) > 0 {
-			// Bindings are applied against the sandbox's CURRENT policy: an
-			// endpoint the policy already declares must be stamped in place,
-			// not appended as a second declaration of the same host:port (the
-			// gateway rejects that overlap as ambiguous credential metadata).
-			policy, readVersion, err := g.GetSandboxPolicy(ctx, sandboxName)
-			if err != nil {
-				// Fail closed: a policy we cannot read is a policy we cannot
-				// bind safely, and the sandbox must not run with credentials it
-				// may owe.
-				return fmt.Errorf("credential binding policy (read sandbox policy): %w", err)
-			}
-			bindingOps, err := CredentialPolicyOps(policy, g.credentialBindings)
-			if err != nil {
-				// Fail closed before anything reaches the gateway: a binding
-				// that cannot be materialised must not yield a sandbox that
-				// egresses without the credentials it was promised.
-				return fmt.Errorf("credential binding policy: %w", err)
-			}
-			mergeOps = append(append([]*v1.PolicyMergeOperation(nil), ops...), bindingOps...)
-			expected = readVersion
-		}
 		req := &v1.UpdateConfigRequest{
 			WorkspaceScope:          g.scope(),
 			Sandbox:                 sandboxName,
-			MergeOperations:         mergeOps,
+			MergeOperations:         ops,
 			ExpectedResourceVersion: expected,
 		}
 		if _, err := g.client.UpdateConfig(ctx, req); err != nil {
-			// ABORTED = the sandbox moved under us (provider composition, a
-			// revocation, another merge). Re-read and retry; anything else is a
-			// real rejection and must surface.
 			if status.Code(err) == codes.Aborted && attempt < policyMergeAttempts-1 {
 				lastErr = err
 				continue
 			}
 			return fmt.Errorf("UpdateConfig(policy merge): %w", err)
 		}
-		lastErr = nil
-		break
+		return nil
 	}
-	if lastErr != nil {
-		return fmt.Errorf("UpdateConfig(policy merge) after %d attempts: %w", policyMergeAttempts, lastErr)
-	}
-	log.Printf("[policy] model-gateway rule submitted for %s", sandboxName)
-	if len(g.credentialBindings) > 0 {
-		log.Printf("[policy] credential-binding rule submitted for %s (%d bindings)", sandboxName, len(g.credentialBindings))
-	}
-	return nil
+	return fmt.Errorf("UpdateConfig(policy merge) after %d attempts: %w", policyMergeAttempts, lastErr)
 }
 
 // ApplyControllerEgressDeny merges an explicit L7 deny for the controller's
