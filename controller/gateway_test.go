@@ -41,11 +41,11 @@ func TestDaemonEnv_MainProcessInjection(t *testing.T) {
 	if env["KAPE_SPOOL_PATH"] != "/sandbox/kape-daemon-spool.jsonl" {
 		t.Fatal("PVC spool path env missing (main process has no profile hook)")
 	}
-	// The controller dials the sandbox POD IP, so a loopback bind (the daemon's
-	// compiled default) is unreachable: the daemon must be told to bind the
-	// configured port on all interfaces (kape#274 prompt path).
-	if env["KAPE_DAEMON_ADDR"] != "0.0.0.0:9090" {
-		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 0.0.0.0:9090", env["KAPE_DAEMON_ADDR"])
+	// The daemon binds LOOPBACK: the gateway's exposed endpoint targets
+	// 127.0.0.1 inside the sandbox, and the workload NetworkPolicy admits no
+	// other peer anyway (kape#274).
+	if env["KAPE_DAEMON_ADDR"] != "127.0.0.1:9090" {
+		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 127.0.0.1:9090", env["KAPE_DAEMON_ADDR"])
 	}
 }
 
@@ -53,8 +53,8 @@ func TestDaemonEnv_MainProcessInjection(t *testing.T) {
 // the dial address and the bind address cannot drift.
 func TestDaemonEnv_HonoursConfiguredPort(t *testing.T) {
 	gw := (&Gateway{}).WithDaemonCommand([]string{"kape-daemon"}).WithDaemonPort("9191")
-	if got := gw.daemonEnv(map[string]string{}, "")["KAPE_DAEMON_ADDR"]; got != "0.0.0.0:9191" {
-		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 0.0.0.0:9191", got)
+	if got := gw.daemonEnv(map[string]string{}, "")["KAPE_DAEMON_ADDR"]; got != "127.0.0.1:9191" {
+		t.Fatalf("KAPE_DAEMON_ADDR = %q, want 127.0.0.1:9191", got)
 	}
 }
 

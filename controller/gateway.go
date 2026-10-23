@@ -188,17 +188,17 @@ func (g *Gateway) daemonEnv(labels map[string]string, piSessionID string) map[st
 			env = map[string]string{}
 		}
 		env["KAPE_SPOOL_PATH"] = "/sandbox/kape-daemon-spool.jsonl"
-		// The daemon's compiled default is 127.0.0.1:<port>, but the controller
-		// dials the sandbox POD IP (:9090) through the CR resolver, so a
-		// loopback bind is unreachable and every prompt dies as
-		// "daemon rejected prompt: ... context deadline exceeded". Bind the
-		// configured port on all interfaces instead; the sandbox's egress
-		// policy still governs what the daemon can reach.
+		// Loopback on purpose: the controller reaches the daemon through the
+		// gateway's exposed service endpoint, which targets 127.0.0.1 inside
+		// the sandbox (kape#274). Binding wider would expose the daemon to the
+		// pod network for no gain — the workload NetworkPolicy already denies
+		// every non-supervisor peer, and silence is better than a listener that
+		// can only be reached through the boundary anyway.
 		port := g.daemonPort
 		if port == "" {
 			port = "9090"
 		}
-		env["KAPE_DAEMON_ADDR"] = "0.0.0.0:" + port
+		env["KAPE_DAEMON_ADDR"] = "127.0.0.1:" + port
 	}
 	return env
 }
