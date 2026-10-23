@@ -266,6 +266,14 @@ func CredentialPolicyOps(policy *v1.SandboxPolicy, bindings []Binding) ([]*v1.Po
 			}
 			clone := proto.Clone(ep).(*v1.NetworkEndpoint)
 			clone.CredentialBinding = &v1.NetworkCredentialBinding{Provider: provider}
+			// A credentialed endpoint must be L7-inspected. OpenShell v0.1.5
+			// rejects the whole policy otherwise: "credentialed endpoint
+			// 'host:port' in rule '<rule>' uses L4-only; configure L7
+			// inspection or explicitly set allow_uninspected_credentials".
+			// Image policies routinely list a host as bare L4 (the pi rule
+			// lists github.com that way), so the stamped copy upgrades it
+			// rather than failing the apply.
+			ensureL7(clone)
 			endpoints = append(endpoints, clone)
 			changed = true
 		}
@@ -313,4 +321,23 @@ func CredentialPolicyOps(policy *v1.SandboxPolicy, bindings []Binding) ([]*v1.Po
 		})
 	}
 	return ops, nil
+}
+
+// ensureL7 turns a bare L4 endpoint into an L7-inspected one so it may carry a
+// credential binding. An endpoint that already declares L7 (protocol, an access
+// preset or explicit rules) is left exactly as it is: the credential boundary
+// stays the host pattern, and any path restriction the policy author wrote is
+// preserved.
+func ensureL7(ep *v1.NetworkEndpoint) {
+	if ep == nil {
+		return
+	}
+	if ep.GetProtocol() != "" && ep.GetProtocol() != "tcp" {
+		return
+	}
+	if ep.GetAccess() != v1.NetworkAccessPreset_NETWORK_ACCESS_PRESET_UNSPECIFIED || len(ep.GetRules()) > 0 {
+		return
+	}
+	ep.Protocol = "rest"
+	ep.Rules = []*v1.L7Rule{{Allow: &v1.L7Allow{Method: "*", Path: "**"}}}
 }

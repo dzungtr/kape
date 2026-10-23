@@ -765,6 +765,53 @@ func TestCredentialPolicyOps_StampsEveryDeclaringRule(t *testing.T) {
 	}
 }
 
+// TestCredentialPolicyOps_UpgradesBareL4Endpoint: OpenShell v0.1.5 rejects a
+// credentialed L4-only endpoint, and image policies list hosts bare (the pi
+// rule's github.com), so stamping must make the endpoint L7 rather than emit a
+// policy the gateway refuses.
+func TestCredentialPolicyOps_UpgradesBareL4Endpoint(t *testing.T) {
+	policy := &v1.SandboxPolicy{NetworkPolicies: map[string]*v1.NetworkPolicyRule{
+		"pi": {
+			Name: "pi",
+			// Bare L4, exactly how the image lists github.com in the pi rule.
+			Endpoints: []*v1.NetworkEndpoint{{Host: "github.com", Port: 443}},
+			Binaries:  []*v1.NetworkBinary{{Path: "/usr/local/bin/pi"}},
+		},
+	}}
+	ops, err := CredentialPolicyOps(policy, []Binding{{Provider: "cred", Hosts: []string{"github.com:443"}}})
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps: %v", err)
+	}
+	ep := ops[0].GetAddRule().GetRule().GetEndpoints()[0]
+	if ep.GetProtocol() != "rest" {
+		t.Fatalf("protocol = %q, want rest (L7 inspection on a credentialed endpoint)", ep.GetProtocol())
+	}
+	if len(ep.GetRules()) != 1 || ep.GetRules()[0].GetAllow().GetMethod() != "*" {
+		t.Fatalf("rules = %v, want one allow * /**", ep.GetRules())
+	}
+	if ep.GetCredentialBinding().GetProvider() != "cred" {
+		t.Fatalf("binding = %v", ep.GetCredentialBinding())
+	}
+	// An already-L7 endpoint keeps its own restrictions untouched.
+	keep := &v1.SandboxPolicy{NetworkPolicies: map[string]*v1.NetworkPolicyRule{
+		"github_rest_api": {
+			Name: "github-rest-api",
+			Endpoints: []*v1.NetworkEndpoint{{
+				Host: "api.github.com", Port: 443, Protocol: "rest",
+				Rules: []*v1.L7Rule{{Allow: &v1.L7Allow{Method: "GET", Path: "/user"}}},
+			}},
+		},
+	}}
+	ops2, err := CredentialPolicyOps(keep, []Binding{{Provider: "cred", Hosts: []string{"api.github.com:443"}}})
+	if err != nil {
+		t.Fatalf("CredentialPolicyOps (L7): %v", err)
+	}
+	rules := ops2[0].GetAddRule().GetRule().GetEndpoints()[0].GetRules()
+	if len(rules) != 1 || rules[0].GetAllow().GetPath() != "/user" {
+		t.Fatalf("existing L7 rules rewritten: %v", rules)
+	}
+}
+
 // TestCredentialPolicyOps_FallsBackToAdditiveRule: a bound host the policy does
 // not declare keeps the original additive behaviour.
 func TestCredentialPolicyOps_FallsBackToAdditiveRule(t *testing.T) {
