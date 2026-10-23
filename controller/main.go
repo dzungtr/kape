@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -62,6 +63,7 @@ func main() {
 	gw := NewGateway(conn, cfg.ModelGatewayURL).WithDaemonToken(cfg.DaemonToken).
 		WithDaemonCommand(cfg.DaemonCommandArgv()).
 		WithDaemonPort(cfg.DaemonPort).
+		WithHostLookup(net.LookupHost).
 		WithCredentialBindings(cfg.CredentialBindings)
 
 	// Durable event store (issue #195): one controller-local single-file log,

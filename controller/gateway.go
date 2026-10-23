@@ -100,6 +100,7 @@ type Gateway struct {
 	daemonToken        string            // controller→daemon bearer placeholder (ADR-0083 D5); injected into the sandbox env so the in-sandbox daemon accepts the controller's pulls
 	daemonCommand      []string          // canonical main process argv threaded as SandboxSpec.command (issue #247, spec #245 E2); nil keeps the gateway's default main process
 	daemonPort         string            // in-sandbox daemon port the resolver dials (D7, default 9090); the daemon is told to bind it on all interfaces
+	lookupIPs          hostLookup        // model-gateway host resolution (nil in tests = no allowlist)
 	exposureMu         sync.Mutex        // guards exposures
 	exposures          map[string]string // sandbox -> exposed endpoint authority (kape#274)
 	credentialBindings []Binding         // env-fed credential binding table (KAPE_CREDENTIAL_BINDINGS, issue #264/H1); empty keeps the policy merge byte-identical
@@ -143,6 +144,14 @@ func (g *Gateway) WithCredentialBindings(bindings []Binding) *Gateway {
 // lifetime == sandbox lifetime. Nil/empty keeps the request without a
 // command (gateway default main process — the #217 profile-hook fallback
 // posture).
+// WithHostLookup installs the resolver used to build the model-gateway
+// endpoint allowlist (kape#274). Nil keeps the endpoint without allowed_ips —
+// the public-host posture and the test default.
+func (g *Gateway) WithHostLookup(lookup hostLookup) *Gateway {
+	g.lookupIPs = lookup
+	return g
+}
+
 // WithDaemonPort sets the fixed in-sandbox daemon port the controller dials
 // (KAPE_DAEMON_PORT, D7). It is threaded into the daemon environment as the
 // bind address, so the port the controller dials and the port the daemon

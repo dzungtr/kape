@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 
@@ -51,8 +53,12 @@ const ModelGatewayRuleName = "m1_model_gateway"
 // The endpoint is never compiled in: patching models.json at one gateway while
 // the policy allowlists another would leave the sandbox fail-closed against its
 // own model traffic. A malformed URL is an error, not a silent fallback.
-func modelGatewayRule(endpoint string) (*v1.NetworkPolicyRule, error) {
+func modelGatewayRule(endpoint string, lookup hostLookup) (*v1.NetworkPolicyRule, error) {
 	host, port, err := endpointHostPort(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	allowed, err := allowedIPsFor(host, lookup)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +68,12 @@ func modelGatewayRule(endpoint string) (*v1.NetworkPolicyRule, error) {
 			Host:     host,
 			Port:     port,
 			Protocol: "rest",
+			// The in-cluster model gateway resolves to a private address, which
+			// the sandbox boundary's SSRF guard rejects by default. A non-empty
+			// allowlist replaces that guard for this endpoint only (kape#274 —
+			// without it pi's first model call never connects and every turn
+			// hangs with no error).
+			AllowedIps: allowed,
 			Rules: []*v1.L7Rule{{
 				Allow: &v1.L7Allow{Method: "*", Path: "**"},
 			}},
@@ -137,7 +149,7 @@ func (g *Gateway) GetSandboxPolicy(ctx context.Context, sandboxName string) (*v1
 // the sandbox never runs with a policy that silently lost its model-gateway
 // egress or its promised credentials (fail closed).
 func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName string) error {
-	rule, err := modelGatewayRule(g.modelGatewayURL)
+	rule, err := modelGatewayRule(g.modelGatewayURL, g.lookupIPs)
 	if err != nil {
 		// Fail closed before anything reaches the gateway: a policy that cannot
 		// be materialised must not leave a sandbox egressing without it.
@@ -299,4 +311,46 @@ func (g *Gateway) ApplyControllerEgressDeny(ctx context.Context, sandboxName, ho
 	}
 	log.Printf("[policy] controller egress deny (%s:%d) submitted for %s", host, port, sandboxName)
 	return nil
+}
+
+// hostLookup resolves a hostname to addresses (net.LookupHost in production,
+// a stub in tests).
+type hostLookup func(host string) ([]string, error)
+
+// allowedIPsFor returns the endpoint's allowlist: the resolved PRIVATE
+// addresses of host, as /32 entries. A public target needs no allowlist (the
+// SSRF guard only rejects internal addresses), and loopback/link-local are
+// never allowed — the gateway blocks them regardless.
+//
+// An unresolvable host is an error, not an empty allowlist: shipping the rule
+// without it would leave the sandbox unable to reach its own model gateway, and
+// the symptom is a silently hanging turn rather than a policy error.
+func allowedIPsFor(host string, lookup hostLookup) ([]string, error) {
+	if lookup == nil {
+		return nil, nil
+	}
+	addrs, err := lookup(host)
+	if err != nil {
+		return nil, fmt.Errorf("resolving model-gateway host %q: %w", host, err)
+	}
+	var allowed []string
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue // the gateway blocks these regardless of the allowlist
+		}
+		if isPrivateIP(ip) {
+			allowed = append(allowed, ip.String())
+		}
+	}
+	sort.Strings(allowed)
+	return allowed, nil
+}
+
+// isPrivateIP reports RFC1918 / cluster-internal space.
+func isPrivateIP(ip net.IP) bool {
+	return ip.IsPrivate()
 }

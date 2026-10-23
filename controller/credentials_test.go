@@ -26,7 +26,7 @@ const testModelGatewayURL = "http://gw.kape-system.svc.cluster.local:80/v1"
 // mustModelGatewayRule builds the model-gateway rule for the test endpoint.
 func mustModelGatewayRule(t *testing.T) *v1.NetworkPolicyRule {
 	t.Helper()
-	rule, err := modelGatewayRule(testModelGatewayURL)
+	rule, err := modelGatewayRule(testModelGatewayURL, nil)
 	if err != nil {
 		t.Fatalf("modelGatewayRule(%q): %v", testModelGatewayURL, err)
 	}
