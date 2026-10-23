@@ -455,3 +455,68 @@ func TestCreateExposesDaemonAndDeleteWithdraws(t *testing.T) {
 		t.Fatalf("withdrawn = %v, want [%s]", got, agent.Sandbox)
 	}
 }
+
+// stubExposeClient records ExposeService/DeleteService calls (kape#274).
+type stubExposeClient struct {
+	v1.OpenShellClient
+	exposeReqs []*v1.ExposeServiceRequest
+	deleteReqs []*v1.DeleteServiceRequest
+	url        string
+}
+
+func (s *stubExposeClient) ExposeService(ctx context.Context, req *v1.ExposeServiceRequest, _ ...grpc.CallOption) (*v1.ServiceEndpointResponse, error) {
+	s.exposeReqs = append(s.exposeReqs, req)
+	return &v1.ServiceEndpointResponse{Url: s.url}, nil
+}
+
+func (s *stubExposeClient) DeleteService(ctx context.Context, req *v1.DeleteServiceRequest, _ ...grpc.CallOption) (*v1.DeleteServiceResponse, error) {
+	s.deleteReqs = append(s.deleteReqs, req)
+	return &v1.DeleteServiceResponse{}, nil
+}
+
+// TestExposeDaemon_RequestsBearerPassthrough pins the wire contract that makes
+// the daemon reachable at all: the gateway strips Authorization by default, so
+// the exposure must opt into passthrough or every D5 daemon request is 401.
+func TestExposeDaemon_RequestsBearerPassthrough(t *testing.T) {
+	client := &stubExposeClient{url: "https://default--sbx-1.openshell.localhost:32353/"}
+	gw := newPolicyTestGateway(client).WithDaemonPort("9090")
+
+	authority, err := gw.ExposeDaemon(context.Background(), "sbx-1")
+	if err != nil {
+		t.Fatalf("ExposeDaemon: %v", err)
+	}
+	if authority != "default--sbx-1.openshell.localhost:32353" {
+		t.Fatalf("authority = %q", authority)
+	}
+	if len(client.exposeReqs) != 1 {
+		t.Fatalf("ExposeService calls = %d, want 1", len(client.exposeReqs))
+	}
+	req := client.exposeReqs[0]
+	if req.GetAuthorizationMode() != v1.ServiceAuthorizationMode_SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH {
+		t.Fatalf("authorization_mode = %v, want BEARER_PASSTHROUGH", req.GetAuthorizationMode())
+	}
+	if req.GetTargetPort() != 9090 || req.GetSandbox() != "sbx-1" {
+		t.Fatalf("exposure = %s:%d (want sbx-1:9090)", req.GetSandbox(), req.GetTargetPort())
+	}
+
+	// Cached: a second resolve must not re-expose.
+	if _, err := gw.ExposeDaemon(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("ExposeDaemon (cached): %v", err)
+	}
+	if len(client.exposeReqs) != 1 {
+		t.Fatalf("ExposeService called %d times, want 1 (cached)", len(client.exposeReqs))
+	}
+}
+
+// TestWithdrawDaemon_AllowsMissing: teardown runs whether or not the exposure
+// exists.
+func TestWithdrawDaemon_AllowsMissing(t *testing.T) {
+	client := &stubExposeClient{}
+	gw := newPolicyTestGateway(client)
+	if err := gw.WithdrawDaemon(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("WithdrawDaemon: %v", err)
+	}
+	if len(client.deleteReqs) != 1 || !client.deleteReqs[0].GetAllowMissing() {
+		t.Fatalf("DeleteService request = %v, want allow_missing", client.deleteReqs)
+	}
+}

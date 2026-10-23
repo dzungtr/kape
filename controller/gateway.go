@@ -509,6 +509,13 @@ func (g *Gateway) ExposeDaemon(ctx context.Context, sandboxName string) (string,
 		// Not domain=true: the browser-facing URL is not what an in-cluster
 		// caller wants, and the authority is identical either way.
 		Domain: false,
+		// BEARER_PASSTHROUGH is mandatory here, not a preference: the default
+		// (STRIP) removes the caller's Authorization header, which is exactly
+		// the ADR-0083 D5 daemon credential — every pull then fails 401 while
+		// the endpoint itself is reachable. Requires a gateway >= v0.1.3, the
+		// first release with this field; older gateways drop it silently and
+		// keep stripping, so the daemon token never arrives.
+		AuthorizationMode: v1.ServiceAuthorizationMode_SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH,
 	})
 	if err != nil {
 		return "", fmt.Errorf("ExposeService(%s:%d): %w", sandboxName, port, err)
