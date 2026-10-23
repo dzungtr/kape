@@ -369,3 +369,35 @@ func TestProfileMissingCredentialKeys(t *testing.T) {
 	assert.Equal(t, []string{"token"}, profile.MissingCredentialKeys(map[string]string{"other": "value"}))
 	assert.Empty(t, profile.MissingCredentialKeys(map[string]string{"token": "value"}))
 }
+
+// kape#274 (ADR-0083 D5): the daemon token reaches the controller Deployment as
+// a SecretKeyRef — the value never enters the Deployment spec or the CR.
+func TestRenderWithDaemonToken_InjectsSecretRef(t *testing.T) {
+	server := testServer()
+	desired := agentserver.RenderWithDaemonToken(server, nil, "sre-daemon-token")
+
+	var found bool
+	for _, env := range desired.DeploymentEnv {
+		if env.Name != agentserver.EnvDaemonToken {
+			continue
+		}
+		found = true
+		if env.Value != "" {
+			t.Fatalf("%s carries a literal value, want a SecretKeyRef only", agentserver.EnvDaemonToken)
+		}
+		ref := env.ValueFrom.SecretKeyRef
+		if ref.Name != "sre-daemon-token" || ref.Key != "token" {
+			t.Fatalf("secretKeyRef = %s/%s, want sre-daemon-token/token", ref.Name, ref.Key)
+		}
+	}
+	if !found {
+		t.Fatalf("%s missing from the rendered env", agentserver.EnvDaemonToken)
+	}
+
+	// Render (no token provisioned) stays byte-identical: no token env at all.
+	for _, env := range agentserver.Render(server, nil).DeploymentEnv {
+		if env.Name == agentserver.EnvDaemonToken {
+			t.Fatal("Render injected a daemon token env without a provisioned Secret")
+		}
+	}
+}

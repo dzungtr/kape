@@ -6,8 +6,20 @@ import (
 	"log"
 	"net/url"
 	"strconv"
+	"time"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// Policy merge concurrency (kape#274): the merge is a read-modify-write against
+// the sandbox resource version, so a concurrent composition or revocation wins
+// the race as ABORTED and is retried. Bounded on purpose — a merge that cannot
+// converge inside the window is a failure the caller must see.
+const (
+	policyMergeAttempts = 4
+	policyMergeBackoff  = 500 * time.Millisecond
 )
 
 // ModelGatewayRuleName is the stable name of the model-gateway egress rule. The
@@ -79,18 +91,27 @@ func endpointHostPort(endpoint string) (string, uint32, error) {
 	return host, 80, nil
 }
 
-// GetSandboxPolicy reads the sandbox's current effective policy. It backs the
-// credential stamping path (kape#274): the controller must know which rules
-// already declare a bound endpoint before it merges credential metadata in.
-func (g *Gateway) GetSandboxPolicy(ctx context.Context, sandboxName string) (*v1.SandboxPolicy, error) {
+// GetSandboxPolicy reads the sandbox's current effective policy together with
+// the sandbox resource version it was read at. It backs the credential stamping
+// path (kape#274): the controller must know which rules already declare a bound
+// endpoint before it merges credential metadata in, and must pin the write to
+// the version it read.
+func (g *Gateway) GetSandboxPolicy(ctx context.Context, sandboxName string) (*v1.SandboxPolicy, uint64, error) {
 	resp, err := g.client.GetSandboxConfig(ctx, &v1.GetSandboxConfigRequest{
 		WorkspaceScope: g.scope(),
 		Name:           sandboxName,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("GetSandboxConfig(%s): %w", sandboxName, err)
+		return nil, 0, fmt.Errorf("GetSandboxConfig(%s): %w", sandboxName, err)
 	}
-	return resp.GetPolicy(), nil
+	// The concurrency token the gateway validates is the SANDBOX resource
+	// version (ObjectMeta.resource_version), not the policy version: it moves
+	// on any sandbox-scoped mutation, including provider composition.
+	sandbox, err := g.client.GetSandbox(ctx, &v1.GetSandboxRequest{WorkspaceScope: g.scope(), Name: sandboxName})
+	if err != nil {
+		return nil, 0, fmt.Errorf("GetSandbox(%s): %w", sandboxName, err)
+	}
+	return resp.GetPolicy(), sandbox.GetSandbox().GetMetadata().GetResourceVersion(), nil
 }
 
 // ApplyModelGatewayPolicy merges a network rule allowing the sandbox to reach
@@ -111,33 +132,65 @@ func (g *Gateway) ApplyModelGatewayPolicy(ctx context.Context, sandboxName strin
 			AddRule: &v1.AddNetworkRule{RuleName: rule.GetName(), Rule: rule},
 		},
 	}}
-	if len(g.credentialBindings) > 0 {
-		// Bindings are applied against the sandbox's CURRENT policy: an endpoint
-		// the base policy already declares must be stamped in place, not
-		// appended as a second declaration of the same host:port (kape#274 —
-		// the gateway rejects that overlap as ambiguous credential metadata).
-		policy, err := g.GetSandboxPolicy(ctx, sandboxName)
-		if err != nil {
-			// Fail closed: a policy we cannot read is a policy we cannot bind
-			// safely, and the sandbox must not run with credentials it may owe.
-			return fmt.Errorf("credential binding policy (read sandbox policy): %w", err)
+	// Read-modify-write under the sandbox resource version (kape#274). The
+	// gateway composes provider rules into the policy asynchronously after
+	// create, and an unguarded merge raced that composition: the request was
+	// accepted, then recomposed over, and the credential metadata never reached
+	// the enforced policy — silently, since the call succeeded.
+	var lastErr error
+	for attempt := 0; attempt < policyMergeAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("policy merge: %w", ctx.Err())
+			case <-time.After(policyMergeBackoff * time.Duration(attempt)):
+			}
 		}
-		bindingOps, err := CredentialPolicyOps(policy, g.credentialBindings)
-		if err != nil {
-			// Fail closed before anything reaches the gateway: a binding that
-			// cannot be materialised must not yield a sandbox that egresses
-			// without the credentials it was promised.
-			return fmt.Errorf("credential binding policy: %w", err)
+		mergeOps := ops
+		var expected uint64
+		if len(g.credentialBindings) > 0 {
+			// Bindings are applied against the sandbox's CURRENT policy: an
+			// endpoint the policy already declares must be stamped in place,
+			// not appended as a second declaration of the same host:port (the
+			// gateway rejects that overlap as ambiguous credential metadata).
+			policy, readVersion, err := g.GetSandboxPolicy(ctx, sandboxName)
+			if err != nil {
+				// Fail closed: a policy we cannot read is a policy we cannot
+				// bind safely, and the sandbox must not run with credentials it
+				// may owe.
+				return fmt.Errorf("credential binding policy (read sandbox policy): %w", err)
+			}
+			bindingOps, err := CredentialPolicyOps(policy, g.credentialBindings)
+			if err != nil {
+				// Fail closed before anything reaches the gateway: a binding
+				// that cannot be materialised must not yield a sandbox that
+				// egresses without the credentials it was promised.
+				return fmt.Errorf("credential binding policy: %w", err)
+			}
+			mergeOps = append(append([]*v1.PolicyMergeOperation(nil), ops...), bindingOps...)
+			expected = readVersion
 		}
-		ops = append(ops, bindingOps...)
+		req := &v1.UpdateConfigRequest{
+			WorkspaceScope:          g.scope(),
+			Sandbox:                 sandboxName,
+			MergeOperations:         mergeOps,
+			ExpectedResourceVersion: expected,
+		}
+		if _, err := g.client.UpdateConfig(ctx, req); err != nil {
+			// ABORTED = the sandbox moved under us (provider composition, a
+			// revocation, another merge). Re-read and retry; anything else is a
+			// real rejection and must surface.
+			if status.Code(err) == codes.Aborted && attempt < policyMergeAttempts-1 {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("UpdateConfig(policy merge): %w", err)
+		}
+		lastErr = nil
+		break
 	}
-	req := &v1.UpdateConfigRequest{
-		WorkspaceScope:  g.scope(),
-		Sandbox:         sandboxName,
-		MergeOperations: ops,
-	}
-	if _, err := g.client.UpdateConfig(ctx, req); err != nil {
-		return fmt.Errorf("UpdateConfig(policy merge): %w", err)
+	if lastErr != nil {
+		return fmt.Errorf("UpdateConfig(policy merge) after %d attempts: %w", policyMergeAttempts, lastErr)
 	}
 	log.Printf("[policy] model-gateway rule submitted for %s", sandboxName)
 	if len(g.credentialBindings) > 0 {

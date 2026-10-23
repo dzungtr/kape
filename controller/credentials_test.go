@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
@@ -410,6 +412,11 @@ type stubPolicyClient struct {
 	policy *v1.SandboxPolicy
 	// configErr makes GetSandboxConfig fail (fail-closed coverage).
 	configErr error
+	// resourceVersion is what GetSandbox reports (ObjectMeta.resource_version).
+	resourceVersion uint64
+	// abortedOnce makes the FIRST UpdateConfig fail ABORTED so the guarded
+	// retry is exercised; the stub then accepts.
+	abortedOnce bool
 }
 
 func (s *stubPolicyClient) GetSandboxConfig(ctx context.Context, req *v1.GetSandboxConfigRequest, opts ...grpc.CallOption) (*v1.GetSandboxConfigResponse, error) {
@@ -423,8 +430,22 @@ func (s *stubPolicyClient) GetSandboxConfig(ctx context.Context, req *v1.GetSand
 	return &v1.GetSandboxConfigResponse{Policy: policy}, nil
 }
 
+// GetSandbox returns the resource version the guarded merge pins to
+// (kape#274): 0 here, since ExpectedResourceVersion=0 is the gateway's own
+// "backward compatibility" wildcard. resourceVersion exists so concurrency
+// tests can pin a real value.
+func (s *stubPolicyClient) GetSandbox(ctx context.Context, req *v1.GetSandboxRequest, opts ...grpc.CallOption) (*v1.SandboxResponse, error) {
+	return &v1.SandboxResponse{
+		Sandbox: &v1.Sandbox{Metadata: &v1.ObjectMeta{Name: req.GetName(), ResourceVersion: s.resourceVersion}},
+	}, nil
+}
+
 func (s *stubPolicyClient) UpdateConfig(ctx context.Context, req *v1.UpdateConfigRequest, opts ...grpc.CallOption) (*v1.UpdateConfigResponse, error) {
 	s.requests = append(s.requests, req)
+	if s.abortedOnce {
+		s.abortedOnce = false
+		return nil, status.Error(codes.Aborted, "sandbox resource_version changed under the caller")
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -519,6 +540,32 @@ func TestApplyModelGatewayPolicy_FailClosedOnUnreadablePolicy(t *testing.T) {
 	}
 	if len(client.requests) != 0 {
 		t.Fatalf("UpdateConfig called %d times, want 0 (fail closed before any merge)", len(client.requests))
+	}
+}
+
+// TestApplyModelGatewayPolicy_RetriesAborted: the guarded read-modify-write
+// retries a merge the gateway aborts (kape#274 — provider composition races
+// the credential stamping) instead of rolling the sandbox back.
+func TestApplyModelGatewayPolicy_RetriesAborted(t *testing.T) {
+	client := &stubPolicyClient{abortedOnce: true}
+	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
+
+	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err != nil {
+		t.Fatalf("ApplyModelGatewayPolicy: %v", err)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("UpdateConfig calls = %d, want 2 (aborted, then retried)", len(client.requests))
+	}
+}
+
+// TestApplyModelGatewayPolicy_FailClosedOnPersistentAbort: an ABORTED that
+// never resolves surfaces instead of looping forever.
+func TestApplyModelGatewayPolicy_FailClosedOnPersistentAbort(t *testing.T) {
+	client := &stubPolicyClient{err: status.Error(codes.Aborted, "stuck")}
+	gw := newPolicyTestGateway(client).WithCredentialBindings(testGithubBindings())
+
+	if err := gw.ApplyModelGatewayPolicy(context.Background(), "sbx-1"); err == nil {
+		t.Fatal("ApplyModelGatewayPolicy succeeded on a permanently aborting gateway, want failure")
 	}
 }
 
