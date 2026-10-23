@@ -50,19 +50,20 @@ network_policies:
       - { host: api.groq.com, port: 443 }
       - { host: api.cerebras.ai, port: 443 }
       - { host: api.x.ai, port: 443 }
-      # pi-openshell: provider-contract egress (issue #273): credentials come
-      # from the gateway's `openrouter` provider profile, injected at the
-      # sandbox egress proxy for api.openrouter.ai — not from an env API key.
-      # The gateway requires L7 (REST method/path) inspection on credentialed
-      # endpoints — a bare L4 entry is rejected with "uses L4-only".
-      - { host: openrouter.ai, port: 443 }
-      - host: api.openrouter.ai
-        port: 443
-        protocol: rest
-        rules:
-          - allow:
-              method: "*"
-              path: "**"
+      # pi-openshell: openrouter hosts are DELIBERATELY absent here.
+      # The gateway composes an `_provider_openrouter` rule from the attached
+      # provider profile, which already allows openrouter.ai:443 and
+      # api.openrouter.ai:443 for inference. Declaring them in this policy too
+      # makes OpenShell v0.1.5 refuse the sandbox at policy load:
+      #
+      #   network endpoint ambiguity validation failed: network policies 'pi'
+      #   endpoint[8] (openrouter.ai:443) and '_provider_openrouter'
+      #   endpoint[0] (openrouter.ai:443) overlap on port 443 with conflicting
+      #   metadata: enforcement=2 vs 1
+      #
+      # The provider-composed rule is not client-writable (`_provider_` is a
+      # reserved prefix), so the image cannot be reconciled with it — the image
+      # yields. Attach the `openrouter` provider to reach these hosts.
       # pi-openshell: pi's extension manager installs deps at runtime; the
       # image pre-installs them, but keep this on upstream re-sync.
       - { host: registry.npmjs.org, port: 443 }
