@@ -79,14 +79,12 @@ func main() {
 		mgr = mgr.WithMonitor(NewMonitor(NewSLMClient(cfg.Monitor, nil), cfg.Monitor.Interval))
 	}
 	if cfg.Transport == TransportPull {
-		// Daemon addressing comes from the Sandbox CR (issue #214, D7): the
-		// controller's first k8s API client (in-cluster SA, get/watch
-		// sandboxes only — controller/deploy/rbac.yaml).
-		res, err := NewCRDaemonAddressResolver(cfg.SandboxNamespace, cfg.DaemonPort)
-		if err != nil {
-			log.Fatalf("build sandbox CR address resolver: %v", err)
-		}
-		mgr = mgr.WithResolver(res)
+		// Daemon addressing is the gateway's exposed service endpoint
+		// (kape#274). The Sandbox CR pod IP from D7 is unreachable by design:
+		// OpenShell's `openshell-sandbox-workloads` NetworkPolicy admits only
+		// the supervisor, so pod-IP dials are dropped (verified live).
+		mgr = mgr.WithResolver(NewDaemonExposureResolver(gw))
+		mgr.daemonTransport = NewDaemonProxyTransport(tlsCfg, cfg.GatewayAddr)
 	}
 	if err := mgr.RebuildFromLog(context.Background()); err != nil {
 		// Degrade, don't die: CR-derived views keep list/get working while

@@ -304,6 +304,16 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 		return nil, err
 	}
 	log.Printf("[agent %s] sandbox %s READY", id, name)
+	// Publish the daemon through the gateway before anything tries to talk to
+	// it (kape#274): the workload pod's NetworkPolicy admits only the
+	// supervisor, so a pod-IP dial is dropped and this endpoint is the single
+	// reachable path to the daemon.
+	if m.cfg.Transport == TransportPull {
+		if _, err := m.gw.ExposeDaemon(ctx, name); err != nil {
+			m.rollbackSandbox(name, err)
+			return nil, fmt.Errorf("expose sandbox daemon: %w", err)
+		}
+	}
 	// created and sandbox land in the log so a restart rebuilds the view
 	// from replay alone (issue #197); the sandbox CR stays the address
 	// source — this payload only lets the replayed view echo it.
@@ -396,6 +406,9 @@ func (m *AgentManager) Create(ctx context.Context, profile *CreateProfile) (*Age
 // gateway refuses to delete leaked silently (kape#274 — the real cause, a
 // rejected policy merge, surfaced nowhere).
 func (m *AgentManager) rollbackSandbox(name string, cause error) {
+	if err := m.gw.WithdrawDaemon(context.Background(), name); err != nil {
+		log.Printf("[sandbox %s] withdraw daemon exposure failed (provisioning cause: %v): %v", name, cause, err)
+	}
 	if err := m.gw.DeleteSandbox(context.Background(), name); err != nil {
 		log.Printf("[sandbox %s] rollback delete failed (provisioning cause: %v): %v", name, cause, err)
 		return
@@ -613,6 +626,11 @@ func (m *AgentManager) deleteOne(ctx context.Context, id string) error {
 	// Termination disarms the monitor timer (issue #232).
 	m.monitor.Disarm(id)
 	agent.hub.Close()
+	// Withdraw the daemon endpoint before the sandbox goes away (kape#274): a
+	// leftover exposure would route to a dead port.
+	if err := m.gw.WithdrawDaemon(ctx, agent.Sandbox); err != nil {
+		log.Printf("[agent %s] withdraw daemon exposure failed: %v", id, err)
+	}
 	if err := m.gw.DeleteSandbox(ctx, agent.Sandbox); err != nil {
 		return err
 	}

@@ -430,3 +430,28 @@ func TestCreateSandboxRequest_AttachesCredentialProviders(t *testing.T) {
 		t.Fatalf("providers = %v, want [openrouter] with no duplicate", p)
 	}
 }
+
+// kape#274: the daemon is reachable only through the gateway's exposed service
+// endpoint — the workload pod's NetworkPolicy admits the supervisor alone.
+func TestCreateExposesDaemonAndDeleteWithdraws(t *testing.T) {
+	gw := NewFakeGateway()
+	cfg := testConfig()
+	cfg.Transport = TransportPull // the exposure path is the pull transport
+	m := NewAgentManager(gw, cfg, testStore(t))
+	m = m.WithResolver(NewDaemonExposureResolver(gw))
+
+	agent, err := m.Create(context.Background(), &CreateProfile{Name: "expose-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := gw.Exposed(); len(got) != 1 || got[0] != agent.Sandbox {
+		t.Fatalf("exposed = %v, want [%s]", got, agent.Sandbox)
+	}
+
+	if err := m.Delete(context.Background(), agent.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := gw.Withdrawn(); len(got) != 1 || got[0] != agent.Sandbox {
+		t.Fatalf("withdrawn = %v, want [%s]", got, agent.Sandbox)
+	}
+}
