@@ -74,6 +74,12 @@ func main() {
 	}
 	defer store.Close()
 
+	// Optional: pin the model-gateway allowlist when its address moves (headless
+	// service behind an ExternalName, kape#274).
+	modelGatewayAllowedIPs = parseAllowedIPs(os.Getenv("KAPE_MODEL_GATEWAY_ALLOWED_IPS"))
+	if len(modelGatewayAllowedIPs) > 0 {
+		log.Printf("model gateway allowlist pinned from env: %v", modelGatewayAllowedIPs)
+	}
 	mgr := NewAgentManager(gw, cfg, store)
 	if cfg.Monitor.Enabled() {
 		// SLM monitor loop (issue #232): one timer per running agent,

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	v1 "github.com/dzungtr/kape/controller/gen"
@@ -23,6 +24,10 @@ const (
 	policyMergeAttempts = 4
 	policyMergeBackoff  = 500 * time.Millisecond
 )
+
+// modelGatewayAllowedIPs is the operator-supplied allowlist override
+// (KAPE_MODEL_GATEWAY_ALLOWED_IPS), empty by default.
+var modelGatewayAllowedIPs []string
 
 // validateBindings checks the binding table BEFORE any UpdateConfig is sent
 // (fail closed, ADR-0088): a malformed binding must never leave a sandbox
@@ -58,9 +63,15 @@ func modelGatewayRule(endpoint string, lookup hostLookup) (*v1.NetworkPolicyRule
 	if err != nil {
 		return nil, err
 	}
-	allowed, err := allowedIPsFor(host, lookup)
-	if err != nil {
-		return nil, err
+	var allowed []string
+	if len(modelGatewayAllowedIPs) > 0 {
+		allowed = append([]string(nil), modelGatewayAllowedIPs...)
+	} else {
+		var err error
+		allowed, err = allowedIPsFor(host, lookup)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &v1.NetworkPolicyRule{
 		Name: ModelGatewayRuleName,
@@ -329,25 +340,61 @@ func allowedIPsFor(host string, lookup hostLookup) ([]string, error) {
 	if lookup == nil {
 		return nil, nil
 	}
-	addrs, err := lookup(host)
-	if err != nil {
-		return nil, fmt.Errorf("resolving model-gateway host %q: %w", host, err)
+	// Follow the DNS chain: an in-cluster model gateway is typically an
+	// ExternalName service pointing at a headless (ClusterIP: None) service, so
+	// the address the SANDBOX connects to is the backing POD, not the service
+	// address the controller resolves first (verified live: resolving the
+	// ExternalName yielded a service-network address that never answered, and
+	// the sandbox's connections to the real pod IPs were blocked).
+	hosts := []string{host}
+	if canonical, err := lookupCNAME(host); err == nil && canonical != "" && canonical != host {
+		hosts = append(hosts, strings.TrimSuffix(canonical, "."))
 	}
 	var allowed []string
-	for _, addr := range addrs {
-		ip := net.ParseIP(addr)
-		if ip == nil || ip.To4() == nil {
-			continue
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		addrs, err := lookup(h)
+		if err != nil && h == host {
+			return nil, fmt.Errorf("resolving model-gateway host %q: %w", h, err)
 		}
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			continue // the gateway blocks these regardless of the allowlist
-		}
-		if isPrivateIP(ip) {
+		for _, addr := range addrs {
+			ip := net.ParseIP(addr)
+			if ip == nil || ip.To4() == nil {
+				continue
+			}
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue // the gateway blocks these regardless of the allowlist
+			}
+			if !isPrivateIP(ip) || seen[ip.String()] {
+				continue
+			}
+			seen[ip.String()] = true
 			allowed = append(allowed, ip.String())
 		}
 	}
 	sort.Strings(allowed)
 	return allowed, nil
+}
+
+// lookupCNAME resolves the canonical name of host (net.LookupCNAME in
+// production). Kept separate so tests drive both halves of the chain.
+var lookupCNAME = net.LookupCNAME
+
+// parseAllowedIPs reads an operator-supplied allowlist (KAPE_MODEL_GATEWAY_ALLOWED_IPS):
+// comma-separated IPs or CIDRs, used verbatim when set. Resolution is a
+// best-effort convenience; a moving pod IP is not, so a deployment whose model
+// gateway sits behind a headless service should pin its pod/service CIDR here.
+func parseAllowedIPs(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // isPrivateIP reports RFC1918 / cluster-internal space.

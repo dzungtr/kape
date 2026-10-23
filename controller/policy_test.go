@@ -166,3 +166,49 @@ func TestModelGatewayRule_AllowlistsPrivateAddress(t *testing.T) {
 		t.Fatal("unresolvable model-gateway host: want error, got none")
 	}
 }
+
+// An in-cluster model gateway is usually an ExternalName -> headless service, so
+// the address the sandbox dials is the backing POD, not the first address the
+// controller resolves. The allowlist must follow the CNAME chain (kape#274) and
+// an operator override must win outright.
+func TestModelGatewayRule_FollowsCNAMEChain(t *testing.T) {
+	oldCNAME := lookupCNAME
+	t.Cleanup(func() { lookupCNAME = oldCNAME })
+	lookupCNAME = func(string) (string, error) {
+		return "ts-model-gateway.aperture.svc.cluster.local.", nil
+	}
+	lookup := func(host string) ([]string, error) {
+		if host == "ts-model-gateway.aperture.svc.cluster.local" {
+			return []string{"10.1.124.247", "10.1.124.219"}, nil
+		}
+		return []string{"10.152.183.70"}, nil // service-network address, unused
+	}
+	rule, err := modelGatewayRule("http://model-gateway.aperture.svc.cluster.local/v1", lookup)
+	if err != nil {
+		t.Fatalf("modelGatewayRule: %v", err)
+	}
+	got := rule.GetEndpoints()[0].GetAllowedIps()
+	want := []string{"10.1.124.219", "10.1.124.247", "10.152.183.70"}
+	if len(got) != len(want) {
+		t.Fatalf("allowed_ips = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("allowed_ips = %v, want %v", got, want)
+		}
+	}
+
+	// Operator override wins verbatim, even for a public host.
+	oldOverride := modelGatewayAllowedIPs
+	t.Cleanup(func() { modelGatewayAllowedIPs = oldOverride })
+	modelGatewayAllowedIPs = parseAllowedIPs("10.1.0.0/16, 10.152.0.0/16")
+	pinned, err := modelGatewayRule("http://model-gateway.aperture.svc.cluster.local/v1", nil)
+	if err != nil {
+		t.Fatalf("modelGatewayRule (override): %v", err)
+	}
+	got = pinned.GetEndpoints()[0].GetAllowedIps()
+	if len(got) != 2 || got[0] != "10.1.0.0/16" || got[1] != "10.152.0.0/16" {
+		t.Fatalf("allowed_ips = %v, want the override verbatim", got)
+	}
+	modelGatewayAllowedIPs = oldOverride
+}
